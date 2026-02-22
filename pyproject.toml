@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reasongraph"
+version = "0.1.0"
+description = "A graph-based reasoning library with embedding search and multi-hop traversal"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    {name = "Berk"},
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "sentence-transformers>=2.2.0",
+    "aiosqlite>=0.19.0",
+    "numpy>=1.24.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/bgokden/reasongraph"
+Repository = "https://github.com/bgokden/reasongraph"
+Issues = "https://github.com/bgokden/reasongraph/issues"
+
+[project.optional-dependencies]
+gliner2 = [
+    "gliner2>=1.2.0",
+    "urllib3>=2.0.0",
+    "requests>=2.28.0",
+]
+postgres = [
+    "psycopg[binary]>=3.1.0",
+    "psycopg-pool>=3.1.0",
+    "pgvector>=0.2.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reasongraph"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

@@ -1,0 +1,87 @@
+{
+  "name": "taxonomy",
+  "description": "Hierarchical concept taxonomy. Tests is-a relationships, inheritance reasoning, and category traversal.",
+  "nodes": [
+    {"content": "A living organism is any entity that exhibits life processes.", "type": "text"},
+    {"content": "Animals are multicellular organisms that consume organic material.", "type": "text"},
+    {"content": "Plants are organisms that produce energy through photosynthesis.", "type": "text"},
+
+    {"content": "Mammals are warm-blooded animals that nurse their young with milk.", "type": "text"},
+    {"content": "Reptiles are cold-blooded animals with scales.", "type": "text"},
+    {"content": "Birds are warm-blooded animals with feathers that lay eggs.", "type": "text"},
+
+    {"content": "Canines are mammals in the family Canidae.", "type": "text"},
+    {"content": "Felines are mammals in the family Felidae.", "type": "text"},
+    {"content": "Domestic dogs are canines bred as companions.", "type": "text"},
+    {"content": "Wolves are wild canines that live in packs.", "type": "text"},
+    {"content": "Domestic cats are small felines kept as pets.", "type": "text"},
+    {"content": "Lions are large felines that live in prides.", "type": "text"},
+
+    {"content": "Flowering plants produce seeds enclosed in fruit.", "type": "text"},
+    {"content": "Conifers are non-flowering plants that bear cones.", "type": "text"},
+    {"content": "Roses are flowering plants of the genus Rosa.", "type": "text"},
+    {"content": "Oak trees are flowering plants of the genus Quercus.", "type": "text"},
+    {"content": "Pine trees are conifers of the genus Pinus.", "type": "text"},
+
+    {"content": "living organism", "type": "entity"},
+    {"content": "animal", "type": "entity"},
+    {"content": "plant", "type": "entity"},
+    {"content": "mammal", "type": "entity"},
+    {"content": "reptile", "type": "entity"},
+    {"content": "bird", "type": "entity"},
+    {"content": "canine", "type": "entity"},
+    {"content": "feline", "type": "entity"},
+    {"content": "dog", "type": "entity"},
+    {"content": "wolf", "type": "entity"},
+    {"content": "cat", "type": "entity"},
+    {"content": "lion", "type": "entity"},
+    {"content": "flowering plant", "type": "entity"},
+    {"content": "conifer", "type": "entity"},
+    {"content": "rose", "type": "entity"},
+    {"content": "oak", "type": "entity"},
+    {"content": "pine", "type": "entity"}
+  ],
+  "edges": [
+    {"from": "living organism", "to": "A living organism is any entity that exhibits life processes."},
+
+    {"from": "animal", "to": "Animals are multicellular organisms that consume organic material."},
+    {"from": "A living organism is any entity that exhibits life processes.", "to": "Animals are multicellular organisms that consume organic material."},
+    {"from": "A living organism is any entity that exhibits life processes.", "to": "Plants are organisms that produce energy through photosynthesis."},
+    {"from": "plant", "to": "Plants are organisms that produce energy through photosynthesis."},
+
+    {"from": "Animals are multicellular organisms that consume organic material.", "to": "Mammals are warm-blooded animals that nurse their young with milk."},
+    {"from": "Animals are multicellular organisms that consume organic material.", "to": "Reptiles are cold-blooded animals with scales."},
+    {"from": "Animals are multicellular organisms that consume organic material.", "to": "Birds are warm-blooded animals with feathers that lay eggs."},
+    {"from": "mammal", "to": "Mammals are warm-blooded animals that nurse their young with milk."},
+    {"from": "reptile", "to": "Reptiles are cold-blooded animals with scales."},
+    {"from": "bird", "to": "Birds are warm-blooded animals with feathers that lay eggs."},
+
+    {"from": "Mammals are warm-blooded animals that nurse their young with milk.", "to": "Canines are mammals in the family Canidae."},
+    {"from": "Mammals are warm-blooded animals that nurse their young with milk.", "to": "Felines are mammals in the family Felidae."},
+    {"from": "canine", "to": "Canines are mammals in the family Canidae."},
+    {"from": "feline", "to": "Felines are mammals in the family Felidae."},
+
+    {"from": "Canines are mammals in the family Canidae.", "to": "Domestic dogs are canines bred as companions."},
+    {"from": "Canines are mammals in the family Canidae.", "to": "Wolves are wild canines that live in packs."},
+    {"from": "dog", "to": "Domestic dogs are canines bred as companions."},
+    {"from": "wolf", "to": "Wolves are wild canines that live in packs."},
+
+    {"from": "Felines are mammals in the family Felidae.", "to": "Domestic cats are small felines kept as pets."},
+    {"from": "Felines are mammals in the family Felidae.", "to": "Lions are large felines that live in prides."},
+    {"from": "cat", "to": "Domestic cats are small felines kept as pets."},
+    {"from": "lion", "to": "Lions are large felines that live in prides."},
+
+    {"from": "Plants are organisms that produce energy through photosynthesis.", "to": "Flowering plants produce seeds enclosed in fruit."},
+    {"from": "Plants are organisms that produce energy through photosynthesis.", "to": "Conifers are non-flowering plants that bear cones."},
+    {"from": "flowering plant", "to": "Flowering plants produce seeds enclosed in fruit."},
+    {"from": "conifer", "to": "Conifers are non-flowering plants that bear cones."},
+
+    {"from": "Flowering plants produce seeds enclosed in fruit.", "to": "Roses are flowering plants of the genus Rosa."},
+    {"from": "Flowering plants produce seeds enclosed in fruit.", "to": "Oak trees are flowering plants of the genus Quercus."},
+    {"from": "rose", "to": "Roses are flowering plants of the genus Rosa."},
+    {"from": "oak", "to": "Oak trees are flowering plants of the genus Quercus."},
+
+    {"from": "Conifers are non-flowering plants that bear cones.", "to": "Pine trees are conifers of the genus Pinus."},
+    {"from": "pine", "to": "Pine trees are conifers of the genus Pinus."}
+  ]
+}

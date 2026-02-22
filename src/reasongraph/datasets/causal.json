@@ -1,0 +1,83 @@
+{
+  "name": "causal",
+  "description": "Cause-effect reasoning chains with entity annotations. Inspired by structured causal extraction patterns.",
+  "nodes": [
+    {"content": "Heavy rainfall caused the river to overflow.", "type": "text"},
+    {"content": "The river overflowed its banks, causing flooding in nearby villages.", "type": "text"},
+    {"content": "Flooding submerged roads and houses, forcing residents to evacuate.", "type": "text"},
+    {"content": "heavy rainfall", "type": "entity"},
+    {"content": "river overflow", "type": "entity"},
+    {"content": "flooding", "type": "entity"},
+    {"content": "evacuation", "type": "entity"},
+
+    {"content": "Deforestation reduced the tree cover on hillsides.", "type": "text"},
+    {"content": "Reduced tree cover caused increased soil erosion.", "type": "text"},
+    {"content": "Increased soil erosion led to landslides during heavy rains.", "type": "text"},
+    {"content": "deforestation", "type": "entity"},
+    {"content": "soil erosion", "type": "entity"},
+    {"content": "landslides", "type": "entity"},
+
+    {"content": "Rising greenhouse gas emissions trap more heat in the atmosphere.", "type": "text"},
+    {"content": "Trapped heat causes global average temperatures to rise.", "type": "text"},
+    {"content": "Rising temperatures accelerate polar ice cap melting.", "type": "text"},
+    {"content": "Polar ice melting causes sea levels to rise.", "type": "text"},
+    {"content": "greenhouse gases", "type": "entity"},
+    {"content": "global warming", "type": "entity"},
+    {"content": "ice melting", "type": "entity"},
+    {"content": "sea level rise", "type": "entity"},
+
+    {"content": "A factory released untreated waste into the river.", "type": "text"},
+    {"content": "Untreated waste contaminated the river water supply.", "type": "text"},
+    {"content": "Contaminated water caused illness among downstream communities.", "type": "text"},
+    {"content": "industrial pollution", "type": "entity"},
+    {"content": "water contamination", "type": "entity"},
+    {"content": "public health", "type": "entity"},
+
+    {"content": "Overuse of antibiotics promotes the survival of resistant bacteria.", "type": "text"},
+    {"content": "Resistant bacteria spread, making standard treatments ineffective.", "type": "text"},
+    {"content": "Ineffective treatments lead to longer hospital stays and higher mortality.", "type": "text"},
+    {"content": "antibiotics", "type": "entity"},
+    {"content": "antibiotic resistance", "type": "entity"},
+    {"content": "mortality", "type": "entity"}
+  ],
+  "edges": [
+    {"from": "Heavy rainfall caused the river to overflow.", "to": "The river overflowed its banks, causing flooding in nearby villages."},
+    {"from": "The river overflowed its banks, causing flooding in nearby villages.", "to": "Flooding submerged roads and houses, forcing residents to evacuate."},
+    {"from": "heavy rainfall", "to": "Heavy rainfall caused the river to overflow."},
+    {"from": "river overflow", "to": "Heavy rainfall caused the river to overflow."},
+    {"from": "river overflow", "to": "The river overflowed its banks, causing flooding in nearby villages."},
+    {"from": "flooding", "to": "The river overflowed its banks, causing flooding in nearby villages."},
+    {"from": "flooding", "to": "Flooding submerged roads and houses, forcing residents to evacuate."},
+    {"from": "evacuation", "to": "Flooding submerged roads and houses, forcing residents to evacuate."},
+
+    {"from": "Deforestation reduced the tree cover on hillsides.", "to": "Reduced tree cover caused increased soil erosion."},
+    {"from": "Reduced tree cover caused increased soil erosion.", "to": "Increased soil erosion led to landslides during heavy rains."},
+    {"from": "deforestation", "to": "Deforestation reduced the tree cover on hillsides."},
+    {"from": "soil erosion", "to": "Reduced tree cover caused increased soil erosion."},
+    {"from": "soil erosion", "to": "Increased soil erosion led to landslides during heavy rains."},
+    {"from": "landslides", "to": "Increased soil erosion led to landslides during heavy rains."},
+
+    {"from": "Rising greenhouse gas emissions trap more heat in the atmosphere.", "to": "Trapped heat causes global average temperatures to rise."},
+    {"from": "Trapped heat causes global average temperatures to rise.", "to": "Rising temperatures accelerate polar ice cap melting."},
+    {"from": "Rising temperatures accelerate polar ice cap melting.", "to": "Polar ice melting causes sea levels to rise."},
+    {"from": "greenhouse gases", "to": "Rising greenhouse gas emissions trap more heat in the atmosphere."},
+    {"from": "global warming", "to": "Trapped heat causes global average temperatures to rise."},
+    {"from": "global warming", "to": "Rising temperatures accelerate polar ice cap melting."},
+    {"from": "ice melting", "to": "Rising temperatures accelerate polar ice cap melting."},
+    {"from": "ice melting", "to": "Polar ice melting causes sea levels to rise."},
+    {"from": "sea level rise", "to": "Polar ice melting causes sea levels to rise."},
+
+    {"from": "A factory released untreated waste into the river.", "to": "Untreated waste contaminated the river water supply."},
+    {"from": "Untreated waste contaminated the river water supply.", "to": "Contaminated water caused illness among downstream communities."},
+    {"from": "industrial pollution", "to": "A factory released untreated waste into the river."},
+    {"from": "water contamination", "to": "Untreated waste contaminated the river water supply."},
+    {"from": "water contamination", "to": "Contaminated water caused illness among downstream communities."},
+    {"from": "public health", "to": "Contaminated water caused illness among downstream communities."},
+
+    {"from": "Overuse of antibiotics promotes the survival of resistant bacteria.", "to": "Resistant bacteria spread, making standard treatments ineffective."},
+    {"from": "Resistant bacteria spread, making standard treatments ineffective.", "to": "Ineffective treatments lead to longer hospital stays and higher mortality."},
+    {"from": "antibiotics", "to": "Overuse of antibiotics promotes the survival of resistant bacteria."},
+    {"from": "antibiotic resistance", "to": "Resistant bacteria spread, making standard treatments ineffective."},
+    {"from": "mortality", "to": "Ineffective treatments lead to longer hospital stays and higher mortality."}
+  ]
+}
