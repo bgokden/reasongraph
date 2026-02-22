@@ -9,14 +9,15 @@ A graph-based reasoning library with embedding search, multi-hop traversal, and 
 ## Installation
 
 ```bash
-pip install reasongraph
+pip install reasongraph[all]        # everything included
 ```
 
-Optional extras:
+Or install only what you need:
 
 ```bash
-pip install reasongraph[postgres]   # PostgreSQL + pgvector backend
-pip install reasongraph[gliner2]    # GLiNER2 entity extraction
+pip install reasongraph             # core: SQLite backend, NER, embeddings
+pip install reasongraph[postgres]   # + PostgreSQL + pgvector backend
+pip install reasongraph[gliner2]    # + GLiNER2 entity extraction
 ```
 
 ## Quick Start
