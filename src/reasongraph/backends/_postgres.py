@@ -147,38 +147,34 @@ class PostgresBackend(Backend):
                         for row in await cur.fetchall()
                     ]
 
-                # Fetch all nodes with both scores for RRF
+                # RRF entirely in SQL using window functions
                 await cur.execute(
                     f"""
-                    SELECT content, type,
-                        1 - (embedding <=> '{vec_str}') AS cosine_sim,
-                        similarity(content, %s) AS trgm_sim
-                    FROM nodes
+                    WITH emb_ranked AS (
+                        SELECT content, type,
+                            ROW_NUMBER() OVER (
+                                ORDER BY embedding <=> '{vec_str}'
+                            ) AS rank
+                        FROM nodes
+                    ),
+                    kw_ranked AS (
+                        SELECT content,
+                            ROW_NUMBER() OVER (
+                                ORDER BY similarity(content, %s) DESC
+                            ) AS rank
+                        FROM nodes
+                    )
+                    SELECT e.content, e.type
+                    FROM emb_ranked e
+                    JOIN kw_ranked k ON e.content = k.content
+                    ORDER BY 1.0 / (%s + e.rank) + 1.0 / (%s + k.rank) DESC
+                    LIMIT %s
                     """,
-                    (query_text,),
+                    (query_text, rrf_k, rrf_k, top_k),
                 )
-                rows = await cur.fetchall()
-                if not rows:
-                    return []
-
-                # Rank independently (1-based)
-                by_emb = sorted(rows, key=lambda r: r[2], reverse=True)
-                by_kw = sorted(rows, key=lambda r: r[3], reverse=True)
-
-                emb_rank = {r[0]: rank for rank, r in enumerate(by_emb, start=1)}
-                kw_rank = {r[0]: rank for rank, r in enumerate(by_kw, start=1)}
-                content_type = {r[0]: r[1] for r in rows}
-
-                # Reciprocal Rank Fusion
-                rrf_scored = []
-                for content in emb_rank:
-                    score = 1.0 / (rrf_k + emb_rank[content]) + 1.0 / (rrf_k + kw_rank[content])
-                    rrf_scored.append((score, content, content_type[content]))
-
-                rrf_scored.sort(key=lambda x: x[0], reverse=True)
                 return [
-                    {"content": item[1], "type": item[2]}
-                    for item in rrf_scored[:top_k]
+                    {"content": row[0], "type": row[1]}
+                    for row in await cur.fetchall()
                 ]
 
     async def get_neighbors(self, content: str) -> list[dict[str, str]]:
