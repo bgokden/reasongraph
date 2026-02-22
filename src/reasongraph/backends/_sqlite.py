@@ -167,61 +167,61 @@ class SqliteBackend(Backend):
         rrf_k: int = 60, keyword_only: bool = False,
     ) -> list[dict[str, str]]:
         db = await self._conn()
+        query_vec = np.array(embedding, dtype=np.float32)
+        query_norm = float(np.linalg.norm(query_vec))
 
-        cursor = await db.execute("SELECT content, type, embedding FROM nodes")
-        rows = await cursor.fetchall()
-        if not rows:
-            return []
+        # Register custom SQL functions so RRF runs inside SQLite
+        def _cosine_sim(blob: bytes) -> float:
+            if query_norm == 0:
+                return 0.0
+            node_vec = _blob_to_embedding(blob)
+            node_norm = float(np.linalg.norm(node_vec))
+            if node_norm == 0:
+                return 0.0
+            return float(np.dot(query_vec, node_vec) / (query_norm * node_norm))
 
-        # Compute trigram scores for all nodes
-        trgm_scores = []
-        for content, node_type, blob in rows:
-            trgm_scores.append((_trigram_similarity(query_text, content), content, node_type))
+        def _trgm_sim(content: str) -> float:
+            return _trigram_similarity(query_text, content)
+
+        await db.create_function("cosine_sim", 1, _cosine_sim)
+        await db.create_function("trgm_sim", 1, _trgm_sim)
 
         if keyword_only:
-            trgm_scores.sort(key=lambda x: x[0], reverse=True)
-            now = datetime.now().isoformat()
-            results = []
-            for _, content, node_type in trgm_scores[:top_k]:
-                await db.execute(
-                    "UPDATE nodes SET last_accessed = ? WHERE content = ?",
-                    (now, content),
+            cursor = await db.execute(
+                """
+                SELECT content, type
+                FROM nodes
+                ORDER BY trgm_sim(content) DESC
+                LIMIT ?
+                """,
+                (top_k,),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                WITH emb_ranked AS (
+                    SELECT content, type,
+                        ROW_NUMBER() OVER (ORDER BY cosine_sim(embedding) DESC) AS rank
+                    FROM nodes
+                ),
+                kw_ranked AS (
+                    SELECT content,
+                        ROW_NUMBER() OVER (ORDER BY trgm_sim(content) DESC) AS rank
+                    FROM nodes
                 )
-                results.append({"content": content, "type": node_type})
-            await db.commit()
-            return results
+                SELECT e.content, e.type
+                FROM emb_ranked e
+                JOIN kw_ranked k ON e.content = k.content
+                ORDER BY 1.0 / (? + e.rank) + 1.0 / (? + k.rank) DESC
+                LIMIT ?
+                """,
+                (rrf_k, rrf_k, top_k),
+            )
 
-        # Compute embedding cosine scores for all nodes
-        query_vec = np.array(embedding, dtype=np.float32)
-        query_norm = np.linalg.norm(query_vec)
-        emb_scores = []
-        for content, node_type, blob in rows:
-            cosine_sim = 0.0
-            if query_norm > 0:
-                node_vec = _blob_to_embedding(blob)
-                node_norm = np.linalg.norm(node_vec)
-                if node_norm > 0:
-                    cosine_sim = float(np.dot(query_vec, node_vec) / (query_norm * node_norm))
-            emb_scores.append((cosine_sim, content, node_type))
-
-        # Rank independently (1-based ranks)
-        emb_scores.sort(key=lambda x: x[0], reverse=True)
-        trgm_scores.sort(key=lambda x: x[0], reverse=True)
-
-        emb_rank = {item[1]: rank for rank, item in enumerate(emb_scores, start=1)}
-        trgm_rank = {item[1]: rank for rank, item in enumerate(trgm_scores, start=1)}
-        content_type = {content: node_type for _, content, node_type in emb_scores}
-
-        # Reciprocal Rank Fusion
-        rrf_scored = []
-        for content in emb_rank:
-            score = 1.0 / (rrf_k + emb_rank[content]) + 1.0 / (rrf_k + trgm_rank[content])
-            rrf_scored.append((score, content, content_type[content]))
-
-        rrf_scored.sort(key=lambda x: x[0], reverse=True)
+        rows = await cursor.fetchall()
         now = datetime.now().isoformat()
         results = []
-        for _, content, node_type in rrf_scored[:top_k]:
+        for content, node_type in rows:
             await db.execute(
                 "UPDATE nodes SET last_accessed = ? WHERE content = ?",
                 (now, content),
