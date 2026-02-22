@@ -45,12 +45,26 @@ class Backend(ABC):
     @abstractmethod
     async def hybrid_search(
         self, embedding: list[float], query_text: str, top_k: int,
-        embedding_weight: float = 0.7,
+        rrf_k: int = 60, keyword_only: bool = False,
     ) -> list[dict[str, str]]:
-        """Combined embedding + trigram search.
+        """Combined embedding + trigram search using Reciprocal Rank Fusion.
 
-        Scores = embedding_weight * cosine_sim + (1 - embedding_weight) * trigram_sim.
-        Returns top_k nodes as dicts with 'content' and 'type' keys.
+        Each node is ranked independently by cosine similarity and by trigram
+        similarity.  The final score is:
+            rrf_score(d) = 1/(rrf_k + rank_emb(d)) + 1/(rrf_k + rank_kw(d))
+
+        When keyword_only=True, nodes are ranked by trigram similarity alone
+        (no embedding component).
+
+        Args:
+            embedding: Query embedding vector.
+            query_text: Raw query string for trigram matching.
+            top_k: Number of results to return.
+            rrf_k: RRF smoothing constant (default 60).
+            keyword_only: If True, rank by trigram similarity only.
+
+        Returns:
+            Top-k nodes as dicts with 'content' and 'type' keys.
         """
 
     @abstractmethod

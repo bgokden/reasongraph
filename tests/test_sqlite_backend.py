@@ -140,8 +140,8 @@ async def test_hybrid_search_boosts_keyword_match(backend):
         Node(content="Quantum physics is complex", type="text", embedding=emb),
     ])
 
-    # Hybrid search for "cat" — trigram match should boost the cat node
-    results = await backend.hybrid_search(emb, "cat", top_k=2, embedding_weight=0.3)
+    # Hybrid search for "cat" — trigram match should boost the cat node via RRF
+    results = await backend.hybrid_search(emb, "cat", top_k=2)
     assert results[0]["content"] == "The cat sat on the mat"
 
 
@@ -153,8 +153,8 @@ async def test_hybrid_search_pure_keyword(backend):
         Node(content="sunny day at the beach", type="text", embedding=emb),
     ])
 
-    # With embedding_weight=0, only trigram matters
-    results = await backend.hybrid_search(emb, "flood", top_k=2, embedding_weight=0.0)
+    # keyword_only=True ranks by trigram similarity only
+    results = await backend.hybrid_search(emb, "flood", top_k=2, keyword_only=True)
     assert results[0]["content"] == "flooding in the village"
 
 

@@ -89,8 +89,11 @@ results = graph.query_sync("credit freeze", search_mode="embedding")
 # Pure keyword/trigram matching
 results = graph.query_sync("credit freeze", search_mode="keyword")
 
-# Hybrid: weighted combination (embedding_weight controls the balance)
-results = graph.query_sync("credit freeze", search_mode="hybrid", embedding_weight=0.7)
+# Hybrid: Reciprocal Rank Fusion of embedding + trigram rankings
+results = graph.query_sync("credit freeze", search_mode="hybrid")
+
+# Tune the RRF smoothing constant (default 60, lower = more weight to top ranks)
+results = graph.query_sync("credit freeze", search_mode="hybrid", rrf_k=30)
 ```
 
 ## Entity Extraction
@@ -134,13 +137,13 @@ We evaluate reasoning quality by loading all 4 built-in datasets into a single g
 
 | Domain | Cases | Chain Completeness | Recall@5 | Precision@5 | Domain Accuracy |
 |--------|------:|--------------------|----------|-------------|-----------------|
-| Financial | 6 | 77% | 71% | 65% | 100% |
+| Financial | 6 | 85% | 82% | 67% | 100% |
 | Causal | 3 | 89% | 89% | 80% | 100% |
 | Syllogisms | 3 | 100% | 100% | 92% | 92% |
-| Taxonomy | 3 | 72% | 72% | 64% | 83% |
-| **Overall** | **15** | **83%** | **80%** | **73%** | **95%** |
+| Taxonomy | 3 | 72% | 72% | 61% | 89% |
+| **Overall** | **15** | **86%** | **85%** | **73%** | **96%** |
 
-All 15/15 cases pass (>= 50% chain completeness). 8 out of 15 cases achieve 100% chain completeness. Domain accuracy of 95% means queries almost never return results from the wrong knowledge domain.
+All 15/15 cases pass (>= 50% chain completeness). 8 out of 15 cases achieve 100% chain completeness. Domain accuracy of 96% means queries almost never return results from the wrong knowledge domain.
 
 **Search mode comparison:**
 
@@ -148,7 +151,7 @@ All 15/15 cases pass (>= 50% chain completeness). 8 out of 15 cases achieve 100%
 |------|-------------------|----------|-------------|-----------------|
 | Embedding | 80% | 80% | 74% | 95% |
 | Keyword | 89% | 82% | 62% | 82% |
-| Hybrid | 83% | 80% | 73% | 95% |
+| Hybrid | 86% | 85% | 73% | 96% |
 
 Reproduce: `uv run python tests/eval_financial_reasoning.py`
 
@@ -162,7 +165,7 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 | `add_edges(edges)` | Add `(from, to)` content edges |
 | `add_text(text, extractor=None)` | Add text with automatic entity extraction |
 | `add_texts(texts, extractor=None, causal_extractor=None)` | Batch add with NER + optional causal extraction |
-| `query(query, top_k=5, hops=2, search_mode="embedding")` | Search and traverse the graph |
+| `query(query, top_k=5, hops=2, search_mode="embedding", rrf_k=60)` | Search and traverse the graph |
 | `load_dataset(name)` | Load a built-in dataset |
 | `delete_stale()` | Remove nodes not accessed within `forget_after` days |
 | `get_all_nodes()` / `get_all_edges()` | Inspect graph contents |

@@ -164,38 +164,64 @@ class SqliteBackend(Backend):
 
     async def hybrid_search(
         self, embedding: list[float], query_text: str, top_k: int,
-        embedding_weight: float = 0.7,
+        rrf_k: int = 60, keyword_only: bool = False,
     ) -> list[dict[str, str]]:
         db = await self._conn()
-        query_vec = np.array(embedding, dtype=np.float32)
-        query_norm = np.linalg.norm(query_vec)
 
         cursor = await db.execute("SELECT content, type, embedding FROM nodes")
         rows = await cursor.fetchall()
         if not rows:
             return []
 
-        keyword_weight = 1.0 - embedding_weight
-        scored = []
+        # Compute trigram scores for all nodes
+        trgm_scores = []
         for content, node_type, blob in rows:
-            # Embedding score
+            trgm_scores.append((_trigram_similarity(query_text, content), content, node_type))
+
+        if keyword_only:
+            trgm_scores.sort(key=lambda x: x[0], reverse=True)
+            now = datetime.now().isoformat()
+            results = []
+            for _, content, node_type in trgm_scores[:top_k]:
+                await db.execute(
+                    "UPDATE nodes SET last_accessed = ? WHERE content = ?",
+                    (now, content),
+                )
+                results.append({"content": content, "type": node_type})
+            await db.commit()
+            return results
+
+        # Compute embedding cosine scores for all nodes
+        query_vec = np.array(embedding, dtype=np.float32)
+        query_norm = np.linalg.norm(query_vec)
+        emb_scores = []
+        for content, node_type, blob in rows:
             cosine_sim = 0.0
             if query_norm > 0:
                 node_vec = _blob_to_embedding(blob)
                 node_norm = np.linalg.norm(node_vec)
                 if node_norm > 0:
                     cosine_sim = float(np.dot(query_vec, node_vec) / (query_norm * node_norm))
+            emb_scores.append((cosine_sim, content, node_type))
 
-            # Trigram score
-            trgm_sim = _trigram_similarity(query_text, content)
+        # Rank independently (1-based ranks)
+        emb_scores.sort(key=lambda x: x[0], reverse=True)
+        trgm_scores.sort(key=lambda x: x[0], reverse=True)
 
-            combined = embedding_weight * cosine_sim + keyword_weight * trgm_sim
-            scored.append((combined, content, node_type))
+        emb_rank = {item[1]: rank for rank, item in enumerate(emb_scores, start=1)}
+        trgm_rank = {item[1]: rank for rank, item in enumerate(trgm_scores, start=1)}
+        content_type = {content: node_type for _, content, node_type in emb_scores}
 
-        scored.sort(key=lambda x: x[0], reverse=True)
+        # Reciprocal Rank Fusion
+        rrf_scored = []
+        for content in emb_rank:
+            score = 1.0 / (rrf_k + emb_rank[content]) + 1.0 / (rrf_k + trgm_rank[content])
+            rrf_scored.append((score, content, content_type[content]))
+
+        rrf_scored.sort(key=lambda x: x[0], reverse=True)
         now = datetime.now().isoformat()
         results = []
-        for _, content, node_type in scored[:top_k]:
+        for _, content, node_type in rrf_scored[:top_k]:
             await db.execute(
                 "UPDATE nodes SET last_accessed = ? WHERE content = ?",
                 (now, content),

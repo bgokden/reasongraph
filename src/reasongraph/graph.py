@@ -176,7 +176,7 @@ class ReasonGraph:
         hops: int = 2,
         rerank_top_k: int = 3,
         search_mode: str = "embedding",
-        embedding_weight: float = 0.7,
+        rrf_k: int = 60,
     ) -> list[str]:
         """Query the graph with vector similarity and multi-hop traversal.
 
@@ -186,8 +186,7 @@ class ReasonGraph:
             hops: Number of graph traversal hops.
             rerank_top_k: Number of results to keep after reranking at each hop.
             search_mode: 'embedding', 'keyword', or 'hybrid'.
-            embedding_weight: Weight for embedding score in hybrid mode (0-1).
-                The keyword (trigram) weight is 1 - embedding_weight.
+            rrf_k: RRF smoothing constant for hybrid mode (default 60).
 
         Returns:
             List of text-type node contents in relevance order.
@@ -201,11 +200,11 @@ class ReasonGraph:
             seeds = await self.backend.knn_search(embedding, top_k)
         elif search_mode == "keyword":
             seeds = await self.backend.hybrid_search(
-                embedding, query, top_k, embedding_weight=0.0,
+                embedding, query, top_k, keyword_only=True,
             )
         else:
             seeds = await self.backend.hybrid_search(
-                embedding, query, top_k, embedding_weight=embedding_weight,
+                embedding, query, top_k, rrf_k=rrf_k,
             )
 
         visited: set[str] = set()
@@ -316,10 +315,10 @@ class ReasonGraph:
         hops: int = 2,
         rerank_top_k: int = 3,
         search_mode: str = "embedding",
-        embedding_weight: float = 0.7,
+        rrf_k: int = 60,
     ) -> list[str]:
         return self._run(self.query(
-            query, top_k, hops, rerank_top_k, search_mode, embedding_weight,
+            query, top_k, hops, rerank_top_k, search_mode, rrf_k,
         ))
 
     def load_dataset_sync(self, name: str) -> None:

@@ -125,29 +125,60 @@ class PostgresBackend(Backend):
 
     async def hybrid_search(
         self, embedding: list[float], query_text: str, top_k: int,
-        embedding_weight: float = 0.7,
+        rrf_k: int = 60, keyword_only: bool = False,
     ) -> list[dict[str, str]]:
         pool = await self._get_pool()
         vec_str = f"[{', '.join(map(str, embedding))}]"
-        keyword_weight = 1.0 - embedding_weight
         async with pool.connection() as conn:
             await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
             async with conn.cursor() as cur:
+                if keyword_only:
+                    await cur.execute(
+                        """
+                        SELECT content, type
+                        FROM nodes
+                        ORDER BY similarity(content, %s) DESC
+                        LIMIT %s
+                        """,
+                        (query_text, top_k),
+                    )
+                    return [
+                        {"content": row[0], "type": row[1]}
+                        for row in await cur.fetchall()
+                    ]
+
+                # Fetch all nodes with both scores for RRF
                 await cur.execute(
                     f"""
                     SELECT content, type,
-                        {embedding_weight} * (1 - (embedding <=> '{vec_str}'))
-                        + {keyword_weight} * similarity(content, %s)
-                        AS score
+                        1 - (embedding <=> '{vec_str}') AS cosine_sim,
+                        similarity(content, %s) AS trgm_sim
                     FROM nodes
-                    ORDER BY score DESC
-                    LIMIT {top_k}
                     """,
                     (query_text,),
                 )
+                rows = await cur.fetchall()
+                if not rows:
+                    return []
+
+                # Rank independently (1-based)
+                by_emb = sorted(rows, key=lambda r: r[2], reverse=True)
+                by_kw = sorted(rows, key=lambda r: r[3], reverse=True)
+
+                emb_rank = {r[0]: rank for rank, r in enumerate(by_emb, start=1)}
+                kw_rank = {r[0]: rank for rank, r in enumerate(by_kw, start=1)}
+                content_type = {r[0]: r[1] for r in rows}
+
+                # Reciprocal Rank Fusion
+                rrf_scored = []
+                for content in emb_rank:
+                    score = 1.0 / (rrf_k + emb_rank[content]) + 1.0 / (rrf_k + kw_rank[content])
+                    rrf_scored.append((score, content, content_type[content]))
+
+                rrf_scored.sort(key=lambda x: x[0], reverse=True)
                 return [
-                    {"content": row[0], "type": row[1]}
-                    for row in await cur.fetchall()
+                    {"content": item[1], "type": item[2]}
+                    for item in rrf_scored[:top_k]
                 ]
 
     async def get_neighbors(self, content: str) -> list[dict[str, str]]:
