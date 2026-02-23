@@ -95,20 +95,26 @@ asyncio.run(main())
 
 ## Cross-Source Discovery
 
-ReasonGraph's real power is connecting facts across independent sources. Feed in two unrelated reports and query across them -- the graph bridges shared entities and causal relations that flat embedding search cannot.
+Standard RAG finds documents similar to your query. ReasonGraph finds *connections between documents that don't know about each other*.
+
+Consider two independent reports that share no common topic:
 
 ```python
 import asyncio
 from reasongraph import ReasonGraph
 
-source_a = [  # Tech industry report
+# Source A: tech industry report
+source_a = [
     "Meridian Technologies opened a semiconductor fabrication plant in Phoenix, Arizona in 2023.",
+    "Dr. Sarah Chen, chief engineer at Meridian Technologies, developed a new chip architecture requiring enormous water usage for cooling.",
     "The Phoenix fabrication plant consumes 10 million gallons of water daily for semiconductor manufacturing.",
     "Meridian Technologies signed a five-year supply contract with Apex Electronics to deliver next-generation processors.",
 ]
 
-source_b = [  # Water crisis report (never mentions Meridian or semiconductors)
+# Source B: environmental report -- never mentions Meridian, semiconductors, or chips
+source_b = [
     "Phoenix, Arizona declared a water emergency in 2024 due to declining Colorado River levels.",
+    "The Arizona Department of Water Resources imposed mandatory 40% water cuts on industrial users in the Phoenix metropolitan area.",
     "Large-scale manufacturing facilities in Phoenix face production shutdowns under the new water restrictions.",
     "Apex Electronics warned investors that supply chain disruptions from its key suppliers could delay product launches through 2026.",
 ]
@@ -117,24 +123,26 @@ async def main():
     async with ReasonGraph() as graph:
         await graph.add_texts(source_a)
         await graph.add_texts(source_b)
+
         results = await graph.query("How might the water crisis affect chip manufacturing?")
-        for text in results:
-            print(text)
+        for i, text in enumerate(results, 1):
+            source = "A" if text in source_a else "B"
+            print(f"{i}. [Source {source}] {text}")
 
 asyncio.run(main())
 ```
 
 ```
-Dr. Sarah Chen, chief engineer at Meridian Technologies, developed a new chip architecture requiring enormous water usage for cooling.
-Large-scale manufacturing facilities in Phoenix face production shutdowns under the new water restrictions.
-The Arizona Department of Water Resources imposed mandatory 40% water cuts on industrial users in the Phoenix metropolitan area.
-Phoenix, Arizona declared a water emergency in 2024 due to declining Colorado River levels.
-The Phoenix fabrication plant consumes 10 million gallons of water daily for semiconductor manufacturing.
-Meridian Technologies opened a semiconductor fabrication plant in Phoenix, Arizona in 2023.
-Meridian Technologies signed a five-year supply contract with Apex Electronics to deliver next-generation processors.
+1. [Source A] Dr. Sarah Chen developed a new chip architecture requiring enormous water usage for cooling.
+2. [Source B] Large-scale manufacturing facilities in Phoenix face production shutdowns under the new water restrictions.
+3. [Source B] The Arizona Department of Water Resources imposed mandatory 40% water cuts on industrial users.
+4. [Source B] Phoenix, Arizona declared a water emergency in 2024 due to declining Colorado River levels.
+5. [Source A] The Phoenix fabrication plant consumes 10 million gallons of water daily for semiconductor manufacturing.
+6. [Source A] Meridian Technologies opened a semiconductor fabrication plant in Phoenix, Arizona in 2023.
+7. [Source A] Meridian Technologies signed a five-year supply contract with Apex Electronics.
 ```
 
-Neither source mentions the other's topic. GLiNER2 extracts "Phoenix" and "Apex Electronics" as shared entities, and the graph traversal connects water restrictions -> Phoenix manufacturing -> Meridian's plant -> Apex supply chain.
+No single source contains the answer. An embedding search for "water crisis + chip manufacturing" would find source A (chips) or source B (water) but not both -- the texts are about different topics. ReasonGraph connects them because GLiNER2 extracts shared entities ("Phoenix", "Apex Electronics") that bridge the two sources in the graph. Multi-hop traversal then walks: water emergency in Phoenix -> water cuts on industrial users -> Meridian's water-intensive plant in Phoenix -> supply contract with Apex -> Apex warns of supply chain delays.
 
 Full demo: `uv run python examples/cross_source_discovery.py`
 
