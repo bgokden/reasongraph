@@ -4,47 +4,38 @@ import struct
 from datetime import datetime, timedelta
 
 import aiosqlite
-import numpy as np
+import sqlite_vec
 
 from reasongraph._types import Node, Edge
 from reasongraph.backends._base import Backend
 
 
-def _trigrams(text: str) -> set[str]:
-    """Extract character trigrams from text, lowercased with padding."""
-    if not text:
-        return set()
-    s = f"  {text.lower()}  "
-    return {s[i:i + 3] for i in range(len(s) - 2)}
-
-
-def _trigram_similarity(a: str, b: str) -> float:
-    """Jaccard similarity between trigram sets of two strings."""
-    trgm_a = _trigrams(a)
-    trgm_b = _trigrams(b)
-    if not trgm_a or not trgm_b:
-        return 0.0
-    intersection = len(trgm_a & trgm_b)
-    union = len(trgm_a | trgm_b)
-    return intersection / union if union else 0.0
-
-
 def _embedding_to_blob(embedding: list[float]) -> bytes:
-    """Pack a float list into a compact binary blob."""
+    """Pack a float list into a compact binary blob (same format sqlite-vec uses)."""
     return struct.pack(f"{len(embedding)}f", *embedding)
 
 
-def _blob_to_embedding(blob: bytes) -> np.ndarray:
-    """Unpack a binary blob back to a numpy array."""
+def _blob_to_list(blob: bytes) -> list[float]:
+    """Unpack a binary blob back to a list of floats."""
     n = len(blob) // 4
-    return np.array(struct.unpack(f"{n}f", blob), dtype=np.float32)
+    return list(struct.unpack(f"{n}f", blob))
+
+
+def _escape_fts5(query: str) -> str:
+    """Escape a query string for safe use in FTS5 MATCH.
+
+    Wraps the query in double quotes so FTS5 treats it as a literal phrase,
+    and escapes any internal double quotes by doubling them.
+    """
+    return '"' + query.replace('"', '""') + '"'
 
 
 class SqliteBackend(Backend):
-    """SQLite backend with brute-force numpy cosine similarity for vector search."""
+    """SQLite backend with sqlite-vec for vector search and FTS5 trigram for text search."""
 
-    def __init__(self, db_path: str = ":memory:") -> None:
+    def __init__(self, db_path: str = ":memory:", embedding_dim: int = 384) -> None:
         self.db_path = db_path
+        self.embedding_dim = embedding_dim
         self._db: aiosqlite.Connection | None = None
 
     async def _conn(self) -> aiosqlite.Connection:
@@ -54,12 +45,19 @@ class SqliteBackend(Backend):
 
     async def initialize(self) -> None:
         self._db = await aiosqlite.connect(self.db_path)
+
+        # Load sqlite-vec extension
+        await self._db.enable_load_extension(True)
+        await self._db.load_extension(sqlite_vec.loadable_path())
+        await self._db.enable_load_extension(False)
+
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
 
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS nodes (
-                content TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT UNIQUE NOT NULL,
                 embedding BLOB NOT NULL,
                 created_at TEXT NOT NULL,
                 last_accessed TEXT NOT NULL,
@@ -82,6 +80,19 @@ class SqliteBackend(Backend):
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS edges_to_idx ON edges (to_content)"
         )
+
+        # vec0 virtual table for cosine-distance vector search
+        await self._db.execute(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS vec_nodes
+            USING vec0(node_id INTEGER PRIMARY KEY, embedding float[{self.embedding_dim}] distance_metric=cosine)
+        """)
+
+        # FTS5 with trigram tokenizer for substring text search
+        await self._db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS fts_nodes
+            USING fts5(content, tokenize='trigram')
+        """)
+
         await self._db.commit()
 
     async def close(self) -> None:
@@ -92,25 +103,57 @@ class SqliteBackend(Backend):
     async def insert_nodes(self, nodes: list[Node]) -> None:
         db = await self._conn()
         now = datetime.now().isoformat()
-        rows = []
+
         for node in nodes:
             if node.embedding is None:
                 raise ValueError(f"Node '{node.content}' has no embedding")
-            rows.append((
-                node.content,
-                _embedding_to_blob(node.embedding),
-                node.created_at.isoformat(),
-                now,
-                node.type,
-            ))
-        await db.executemany(
-            """
-            INSERT INTO nodes (content, embedding, created_at, last_accessed, type)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(content) DO UPDATE SET last_accessed = excluded.last_accessed
-            """,
-            rows,
+
+        # Deduplicate within the batch (keep first occurrence)
+        seen: dict[str, Node] = {}
+        unique_nodes: list[Node] = []
+        for node in nodes:
+            if node.content not in seen:
+                seen[node.content] = node
+                unique_nodes.append(node)
+
+        # Check which contents already exist in the database
+        contents = [node.content for node in unique_nodes]
+        placeholders = ",".join("?" for _ in contents)
+        cursor = await db.execute(
+            f"SELECT content FROM nodes WHERE content IN ({placeholders})",
+            contents,
         )
+        existing = {row[0] for row in await cursor.fetchall()}
+
+        # Update last_accessed for existing nodes
+        for node in unique_nodes:
+            if node.content in existing:
+                await db.execute(
+                    "UPDATE nodes SET last_accessed = ? WHERE content = ?",
+                    (now, node.content),
+                )
+
+        # Insert new nodes into all three tables
+        for node in unique_nodes:
+            if node.content not in existing:
+                blob = _embedding_to_blob(node.embedding)
+                cursor = await db.execute(
+                    """
+                    INSERT INTO nodes (content, embedding, created_at, last_accessed, type)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (node.content, blob, node.created_at.isoformat(), now, node.type),
+                )
+                row_id = cursor.lastrowid
+                await db.execute(
+                    "INSERT INTO vec_nodes (node_id, embedding) VALUES (?, ?)",
+                    (row_id, blob),
+                )
+                await db.execute(
+                    "INSERT INTO fts_nodes (rowid, content) VALUES (?, ?)",
+                    (row_id, node.content),
+                )
+
         await db.commit()
 
     async def insert_edges(self, edges: list[Edge]) -> None:
@@ -131,29 +174,23 @@ class SqliteBackend(Backend):
         self, embedding: list[float], top_k: int
     ) -> list[dict[str, str]]:
         db = await self._conn()
-        query_vec = np.array(embedding, dtype=np.float32)
-        query_norm = np.linalg.norm(query_vec)
-        if query_norm == 0:
-            return []
+        query_blob = _embedding_to_blob(embedding)
 
-        cursor = await db.execute("SELECT content, type, embedding FROM nodes")
+        cursor = await db.execute(
+            """
+            SELECT n.content, n.type
+            FROM vec_nodes v
+            JOIN nodes n ON n.id = v.node_id
+            WHERE v.embedding MATCH ? AND k = ?
+            ORDER BY v.distance
+            """,
+            (query_blob, top_k),
+        )
         rows = await cursor.fetchall()
-        if not rows:
-            return []
 
-        scored = []
-        for content, node_type, blob in rows:
-            node_vec = _blob_to_embedding(blob)
-            node_norm = np.linalg.norm(node_vec)
-            if node_norm == 0:
-                continue
-            similarity = float(np.dot(query_vec, node_vec) / (query_norm * node_norm))
-            scored.append((similarity, content, node_type))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
         now = datetime.now().isoformat()
         results = []
-        for _, content, node_type in scored[:top_k]:
+        for content, node_type in rows:
             await db.execute(
                 "UPDATE nodes SET last_accessed = ? WHERE content = ?",
                 (now, content),
@@ -167,55 +204,64 @@ class SqliteBackend(Backend):
         rrf_k: int = 60, keyword_only: bool = False,
     ) -> list[dict[str, str]]:
         db = await self._conn()
-        query_vec = np.array(embedding, dtype=np.float32)
-        query_norm = float(np.linalg.norm(query_vec))
-
-        # Register custom SQL functions so RRF runs inside SQLite
-        def _cosine_sim(blob: bytes) -> float:
-            if query_norm == 0:
-                return 0.0
-            node_vec = _blob_to_embedding(blob)
-            node_norm = float(np.linalg.norm(node_vec))
-            if node_norm == 0:
-                return 0.0
-            return float(np.dot(query_vec, node_vec) / (query_norm * node_norm))
-
-        def _trgm_sim(content: str) -> float:
-            return _trigram_similarity(query_text, content)
-
-        await db.create_function("cosine_sim", 1, _cosine_sim)
-        await db.create_function("trgm_sim", 1, _trgm_sim)
+        short_query = len(query_text) < 3
 
         if keyword_only:
-            cursor = await db.execute(
-                """
-                SELECT content, type
-                FROM nodes
-                ORDER BY trgm_sim(content) DESC
-                LIMIT ?
-                """,
-                (top_k,),
-            )
+            if short_query:
+                # FTS5 trigram needs >= 3 chars; fall back to LIKE
+                cursor = await db.execute(
+                    """
+                    SELECT content, type FROM nodes
+                    WHERE content LIKE ?
+                    LIMIT ?
+                    """,
+                    (f"%{query_text}%", top_k),
+                )
+            else:
+                escaped = _escape_fts5(query_text)
+                cursor = await db.execute(
+                    """
+                    SELECT n.content, n.type
+                    FROM fts_nodes f
+                    JOIN nodes n ON n.id = f.rowid
+                    WHERE fts_nodes MATCH ?
+                    ORDER BY f.rank
+                    LIMIT ?
+                    """,
+                    (escaped, top_k),
+                )
         else:
+            if short_query:
+                # Can't use FTS5; fall back to embedding-only
+                return await self.knn_search(embedding, top_k)
+
+            query_blob = _embedding_to_blob(embedding)
+            escaped = _escape_fts5(query_text)
+            fetch_k = top_k * 3
+
             cursor = await db.execute(
                 """
                 WITH emb_ranked AS (
-                    SELECT content, type,
-                        ROW_NUMBER() OVER (ORDER BY cosine_sim(embedding) DESC) AS rank
-                    FROM nodes
+                    SELECT node_id,
+                        ROW_NUMBER() OVER (ORDER BY distance) AS rank
+                    FROM vec_nodes
+                    WHERE embedding MATCH ? AND k = ?
                 ),
                 kw_ranked AS (
-                    SELECT content,
-                        ROW_NUMBER() OVER (ORDER BY trgm_sim(content) DESC) AS rank
-                    FROM nodes
+                    SELECT rowid AS node_id,
+                        ROW_NUMBER() OVER (ORDER BY rank) AS kw_rank
+                    FROM fts_nodes
+                    WHERE fts_nodes MATCH ?
                 )
-                SELECT e.content, e.type
-                FROM emb_ranked e
-                JOIN kw_ranked k ON e.content = k.content
-                ORDER BY 1.0 / (? + e.rank) + 1.0 / (? + k.rank) DESC
+                SELECT n.content, n.type
+                FROM nodes n
+                LEFT JOIN emb_ranked e ON e.node_id = n.id
+                LEFT JOIN kw_ranked k ON k.node_id = n.id
+                WHERE e.node_id IS NOT NULL OR k.node_id IS NOT NULL
+                ORDER BY COALESCE(1.0 / (? + e.rank), 0) + COALESCE(1.0 / (? + k.kw_rank), 0) DESC
                 LIMIT ?
                 """,
-                (rrf_k, rrf_k, top_k),
+                (query_blob, fetch_k, escaped, rrf_k, rrf_k, top_k),
             )
 
         rows = await cursor.fetchall()
@@ -245,8 +291,32 @@ class SqliteBackend(Backend):
     async def delete_stale_nodes(self, days: int) -> int:
         db = await self._conn()
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+        # Fetch stale node IDs before deleting (needed for vec_nodes/fts_nodes cleanup)
         cursor = await db.execute(
-            "DELETE FROM nodes WHERE last_accessed < ?", (cutoff,)
+            "SELECT id FROM nodes WHERE last_accessed < ?", (cutoff,)
+        )
+        stale_ids = [row[0] for row in await cursor.fetchall()]
+
+        if not stale_ids:
+            return 0
+
+        placeholders = ",".join("?" for _ in stale_ids)
+
+        # Delete from virtual tables first
+        await db.execute(
+            f"DELETE FROM vec_nodes WHERE node_id IN ({placeholders})",
+            stale_ids,
+        )
+        await db.execute(
+            f"DELETE FROM fts_nodes WHERE rowid IN ({placeholders})",
+            stale_ids,
+        )
+
+        # Delete from main table (CASCADE handles edges)
+        cursor = await db.execute(
+            f"DELETE FROM nodes WHERE id IN ({placeholders})",
+            stale_ids,
         )
         await db.commit()
         return cursor.rowcount
@@ -261,7 +331,7 @@ class SqliteBackend(Backend):
             nodes.append(Node(
                 content=content,
                 type=node_type,
-                embedding=_blob_to_embedding(blob).tolist(),
+                embedding=_blob_to_list(blob),
                 created_at=datetime.fromisoformat(created_at),
                 last_accessed=datetime.fromisoformat(last_accessed),
             ))

@@ -1,7 +1,7 @@
 import pytest
 
 from reasongraph._types import Node, Edge
-from reasongraph.backends._sqlite import SqliteBackend, _trigrams, _trigram_similarity
+from reasongraph.backends._sqlite import SqliteBackend, _escape_fts5
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ async def test_knn_search(backend):
     ]
     await backend.insert_nodes(nodes)
 
-    # Search using the embedding of the first node — it should come back first
+    # Search using the embedding of the first node -- it should come back first
     results = await backend.knn_search(nodes[0].embedding, top_k=2)
     assert len(results) == 2
     assert results[0]["content"] == "hello world"
@@ -101,34 +101,6 @@ async def test_node_without_embedding_raises(backend):
         await backend.insert_nodes([node])
 
 
-# -- Trigram utilities --
-
-def test_trigrams_basic():
-    trgms = _trigrams("cat")
-    # With padding "  cat  " -> {"  c", " ca", "cat", "at ", "t  "}
-    assert "cat" in trgms
-    assert " ca" in trgms
-    assert "at " in trgms
-
-
-def test_trigram_similarity_identical():
-    assert _trigram_similarity("flooding", "flooding") == 1.0
-
-
-def test_trigram_similarity_partial():
-    sim = _trigram_similarity("flood", "flooding")
-    assert sim > 0.3  # Significant overlap expected
-
-
-def test_trigram_similarity_unrelated():
-    sim = _trigram_similarity("apple", "quantum")
-    assert sim < 0.1
-
-
-def test_trigram_similarity_empty():
-    assert _trigram_similarity("", "") == 0.0
-
-
 # -- Hybrid search --
 
 @pytest.mark.asyncio
@@ -140,7 +112,7 @@ async def test_hybrid_search_boosts_keyword_match(backend):
         Node(content="Quantum physics is complex", type="text", embedding=emb),
     ])
 
-    # Hybrid search for "cat" — trigram match should boost the cat node via RRF
+    # Hybrid search for "cat" -- trigram match should boost the cat node via RRF
     results = await backend.hybrid_search(emb, "cat", top_k=2)
     assert results[0]["content"] == "The cat sat on the mat"
 
@@ -153,7 +125,7 @@ async def test_hybrid_search_pure_keyword(backend):
         Node(content="sunny day at the beach", type="text", embedding=emb),
     ])
 
-    # keyword_only=True ranks by trigram similarity only
+    # keyword_only=True ranks by FTS5 trigram match
     results = await backend.hybrid_search(emb, "flood", top_k=2, keyword_only=True)
     assert results[0]["content"] == "flooding in the village"
 
@@ -165,3 +137,50 @@ async def test_hybrid_search_returns_correct_count(backend):
 
     results = await backend.hybrid_search(nodes[0].embedding, "node", top_k=3)
     assert len(results) == 3
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_short_query_keyword_fallback(backend):
+    """Queries shorter than 3 chars can't use FTS5 trigram; verify LIKE fallback."""
+    emb = [0.5] * 384
+    await backend.insert_nodes([
+        Node(content="an ox is strong", type="text", embedding=emb),
+        Node(content="a cat is quick", type="text", embedding=emb),
+    ])
+
+    results = await backend.hybrid_search(emb, "ox", top_k=2, keyword_only=True)
+    assert any("ox" in r["content"] for r in results)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_short_query_hybrid_fallback(backend):
+    """Hybrid mode with < 3 char query falls back to embedding-only search."""
+    nodes = [_make_node("hello"), _make_node("world")]
+    await backend.insert_nodes(nodes)
+
+    results = await backend.hybrid_search(nodes[0].embedding, "hi", top_k=2)
+    assert len(results) == 2
+    # Should return embedding-ranked results (same as knn_search)
+    assert results[0]["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_fts5_special_characters(backend):
+    """FTS5 special characters in queries should be safely escaped."""
+    emb = [0.5] * 384
+    await backend.insert_nodes([
+        Node(content='value is "important" here', type="text", embedding=emb),
+        Node(content="nothing special", type="text", embedding=emb),
+    ])
+
+    # Query with double quotes -- should not break FTS5 MATCH
+    results = await backend.hybrid_search(emb, '"important"', top_k=2, keyword_only=True)
+    assert results[0]["content"] == 'value is "important" here'
+
+
+def test_escape_fts5_basic():
+    assert _escape_fts5("hello") == '"hello"'
+
+
+def test_escape_fts5_quotes():
+    assert _escape_fts5('say "hi"') == '"say ""hi"""'
