@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [
-    {name = "Berk"},
+    {name = "Berk Gokden", email = "berkgokden@gmail.com"},
 ]
 keywords = [
     "knowledge-graph", "reasoning", "rag", "embeddings", "nlp",
