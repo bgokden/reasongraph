@@ -1,4 +1,4 @@
-# reasongraph
+# ReasonGraph
 
 A graph-based reasoning library with embedding search, multi-hop traversal, and automatic entity/causal extraction.
 
