@@ -8,6 +8,7 @@ def test_available_datasets():
     assert "causal" in AVAILABLE_DATASETS
     assert "taxonomy" in AVAILABLE_DATASETS
     assert "financial" in AVAILABLE_DATASETS
+    assert "analysis_patterns" in AVAILABLE_DATASETS
 
 
 @pytest.mark.parametrize("name", AVAILABLE_DATASETS)

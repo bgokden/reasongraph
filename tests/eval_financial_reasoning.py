@@ -1,12 +1,12 @@
 """Mixed-domain reasoning evaluation for reasongraph.
 
-Loads ALL built-in datasets (syllogisms, causal, taxonomy, financial) into a
-single graph and tests whether the library can still reason correctly across
-domains.  This is the realistic scenario: an agent's memory contains diverse
-knowledge, and queries must find the right reasoning chain without being
-distracted by unrelated facts.
+Loads ALL built-in datasets (syllogisms, causal, taxonomy, financial, medical,
+analysis_patterns) into a single graph and tests whether the library can still
+reason correctly across domains.  This is the realistic scenario: an agent's
+memory contains diverse knowledge, and queries must find the right reasoning
+chain without being distracted by unrelated facts.
 
-Graph size: ~94 text nodes, ~80 entity nodes, ~210 edges across 5 domains.
+Graph size: ~130 text nodes, ~104 entity nodes, ~280 edges across 6 domains.
 
 Metrics:
     Chain Completeness -- fraction of expected chain nodes found in results
@@ -295,6 +295,94 @@ CASES = [
             "Immunotherapy trains the patient's immune system to recognize and attack cancer cells.",
         ],
     ),
+    # ── Analysis Patterns: histogram chain ──
+    ReasoningCase(
+        name="Analysis: single numeric column distribution",
+        domain="analysis_patterns",
+        agent_thought="I have a single numeric column of revenue values",
+        expected_chain=[
+            "A single numeric column suggests examining its distribution shape and summary statistics.",
+            "Distribution analysis uses histograms to reveal skewness, modality, and spread.",
+            "Plot a histogram with plt.hist() and summarize with df.describe() to profile a numeric column.",
+        ],
+    ),
+    # ── Analysis Patterns: scatter/correlation chain ──
+    ReasoningCase(
+        name="Analysis: two numeric columns correlation",
+        domain="analysis_patterns",
+        agent_thought="I have two numeric columns, check if related",
+        expected_chain=[
+            "Two numeric columns invite testing whether they move together or independently.",
+            "Scatter plots reveal linear, nonlinear, or absent relationships between two variables.",
+            "Use plt.scatter() for the visual and df[cols].corr() to quantify the Pearson correlation.",
+        ],
+    ),
+    # ── Analysis Patterns: bar chart comparison chain ──
+    ReasoningCase(
+        name="Analysis: categorical vs numeric comparison",
+        domain="analysis_patterns",
+        agent_thought="I have revenue by region, how to visualize",
+        expected_chain=[
+            "A categorical column paired with a numeric column calls for group comparison.",
+            "Grouped bar charts compare the central tendency of each category side by side.",
+            "Use df.groupby(cat_col)[num_col].mean().plot.bar() to compare group averages.",
+        ],
+    ),
+    # ── Analysis Patterns: time series chain ──
+    ReasoningCase(
+        name="Analysis: time series trend",
+        domain="analysis_patterns",
+        agent_thought="Daily sales data with dates, analyze trend",
+        expected_chain=[
+            "A datetime column with a numeric column suggests analyzing trends over time.",
+            "Line plots connected by time order reveal trends, seasonality, and change points.",
+            "Plot with plt.plot(dates, values) and smooth with df[col].rolling(window).mean().",
+        ],
+    ),
+    # ── Analysis Patterns: box plot chain ──
+    ReasoningCase(
+        name="Analysis: outlier detection",
+        domain="analysis_patterns",
+        agent_thought="Find outliers in salary column",
+        expected_chain=[
+            "Extreme values in a numeric column call for quartile-based outlier detection.",
+            "Box plots display median, interquartile range, and outlier points beyond the whiskers.",
+            "Use plt.boxplot() on the column to visualize quartiles and flag statistical outliers.",
+        ],
+    ),
+    # ── Analysis Patterns: frequency chain ──
+    ReasoningCase(
+        name="Analysis: category frequency count",
+        domain="analysis_patterns",
+        agent_thought="Column of product categories, count each",
+        expected_chain=[
+            "A single categorical column warrants counting how often each value appears.",
+            "Frequency bar charts rank categories by count, exposing dominant and rare values.",
+            "Use df[col].value_counts().plot.bar() to display the frequency of each category.",
+        ],
+    ),
+    # ── Analysis Patterns: pivot table chain ──
+    ReasoningCase(
+        name="Analysis: cross-tabulation pivot",
+        domain="analysis_patterns",
+        agent_thought="Region, product type, sales amount - cross-tabulate",
+        expected_chain=[
+            "Two categorical columns and a numeric measure call for cross-tabulation.",
+            "A pivot table aggregates the numeric measure at each combination of the two categories.",
+            "Use pd.pivot_table(df, values=num, index=cat1, columns=cat2, aggfunc='mean').",
+        ],
+    ),
+    # ── Analysis Patterns: summary stats chain ──
+    ReasoningCase(
+        name="Analysis: new dataset overview",
+        domain="analysis_patterns",
+        agent_thought="New CSV file, what to do first",
+        expected_chain=[
+            "A new dataset should be profiled before any specific analysis is attempted.",
+            "Summary statistics and type inspection reveal column types, ranges, and data quality.",
+            "Run df.info() for types and nulls, then df.describe() for numeric summaries.",
+        ],
+    ),
     # ── Cross-domain: financial crisis NOT returning biology ──
     ReasoningCase(
         name="Domain isolation: crisis query ignores biology",
@@ -425,6 +513,44 @@ DOMAIN_TEXTS = {
         "Roses are flowering plants of the genus Rosa.",
         "Oak trees are flowering plants of the genus Quercus.",
         "Pine trees are conifers of the genus Pinus.",
+    },
+    "analysis_patterns": {
+        "A single numeric column suggests examining its distribution shape and summary statistics.",
+        "Distribution analysis uses histograms to reveal skewness, modality, and spread.",
+        "Plot a histogram with plt.hist() and summarize with df.describe() to profile a numeric column.",
+        "Extreme values in a numeric column call for quartile-based outlier detection.",
+        "Box plots display median, interquartile range, and outlier points beyond the whiskers.",
+        "Use plt.boxplot() on the column to visualize quartiles and flag statistical outliers.",
+        "Two numeric columns invite testing whether they move together or independently.",
+        "Scatter plots reveal linear, nonlinear, or absent relationships between two variables.",
+        "Use plt.scatter() for the visual and df[cols].corr() to quantify the Pearson correlation.",
+        "A dataframe with many numeric columns requires pairwise relationship overview.",
+        "A correlation matrix summarizes all pairwise linear relationships in one table.",
+        "Compute df.corr() and render with sns.heatmap(annot=True) for a color-coded matrix.",
+        "A categorical column paired with a numeric column calls for group comparison.",
+        "Grouped bar charts compare the central tendency of each category side by side.",
+        "Use df.groupby(cat_col)[num_col].mean().plot.bar() to compare group averages.",
+        "A single categorical column warrants counting how often each value appears.",
+        "Frequency bar charts rank categories by count, exposing dominant and rare values.",
+        "Use df[col].value_counts().plot.bar() to display the frequency of each category.",
+        "A datetime column with a numeric column suggests analyzing trends over time.",
+        "Line plots connected by time order reveal trends, seasonality, and change points.",
+        "Plot with plt.plot(dates, values) and smooth with df[col].rolling(window).mean().",
+        "A datetime column with a categorical grouping variable calls for comparing trends across groups.",
+        "Multiple line series on one axis let you compare how each group evolves over time.",
+        "Use groupby on the category, plot each group as a separate line, and add a legend.",
+        "Two categorical columns and a numeric measure call for cross-tabulation.",
+        "A pivot table aggregates the numeric measure at each combination of the two categories.",
+        "Use pd.pivot_table(df, values=num, index=cat1, columns=cat2, aggfunc='mean').",
+        "A categorical column with very many unique values needs cardinality reduction before plotting.",
+        "Filtering to the top-N most frequent or largest categories keeps charts readable.",
+        "Use value_counts().nlargest(10) or groupby().sum().nlargest(10) to select top categories.",
+        "A new dataset should be profiled before any specific analysis is attempted.",
+        "Summary statistics and type inspection reveal column types, ranges, and data quality.",
+        "Run df.info() for types and nulls, then df.describe() for numeric summaries.",
+        "Columns with missing values require a null pattern assessment before imputation.",
+        "A missingness heatmap shows which columns and rows have gaps, revealing patterns.",
+        "Use sns.heatmap(df.isnull(), cbar=False) to visualize the null pattern across the dataframe.",
     },
     "medical": {
         "Unhealthy diet high in saturated fat raises blood cholesterol levels.",

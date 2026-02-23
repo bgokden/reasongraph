@@ -76,6 +76,7 @@ asyncio.run(main())
 | `taxonomy` | Hierarchical concept taxonomy |
 | `financial` | Financial crisis causal chains (2008 crisis, dot-com, inflation, eurozone) |
 | `medical` | Medical causal chains (heart disease, diabetes, infectious disease, cancer) |
+| `analysis_patterns` | Data analysis reasoning: scenario detection, technique selection, implementation patterns |
 
 ```python
 graph.load_dataset_sync("financial")
@@ -130,9 +131,9 @@ Requires `pip install reasongraph[postgres]` and the `pgvector` + `pg_trgm` exte
 
 ## Evaluation: Mixed-Domain Reasoning
 
-We evaluate reasoning quality by loading all 5 built-in datasets into a single graph (94 text nodes, 93 entity nodes, 192 edges) and testing whether the library can trace the correct causal chains, syllogistic proofs, and taxonomic hierarchies -- without being distracted by unrelated facts from other domains.
+We evaluate reasoning quality by loading all 6 built-in datasets into a single graph (~130 text nodes, ~104 entity nodes, ~280 edges) and testing whether the library can trace the correct causal chains, syllogistic proofs, taxonomic hierarchies, and data analysis patterns -- without being distracted by unrelated facts from other domains.
 
-24 test cases simulate agent-style queries like *"I need to understand what caused the 2008 financial crisis"* or *"How does insulin resistance lead to kidney failure?"* and check whether the returned reasoning chain matches the expected ground truth.
+32 test cases simulate agent-style queries like *"I need to understand what caused the 2008 financial crisis"*, *"How does insulin resistance lead to kidney failure?"*, or *"I have two numeric columns, check if related"* and check whether the returned reasoning chain matches the expected ground truth.
 
 **Per-domain results (hybrid search, 3 hops):**
 
@@ -143,17 +144,18 @@ We evaluate reasoning quality by loading all 5 built-in datasets into a single g
 | Medical | 5 | 84% | 84% | 80% | 90% |
 | Taxonomy | 3 | 72% | 72% | 64% | 83% |
 | Financial | 6 | 64% | 64% | 61% | 100% |
-| **Overall** | **24** | **84%** | **84%** | **80%** | **95%** |
+| Analysis Patterns | 8 | 62% | 58% | 44% | 96% |
+| **Overall** | **32** | **79%** | **78%** | **71%** | **95%** |
 
-23/24 cases pass (>= 50% chain completeness). The one case below threshold queries "How does a new pathogen spread and how is it controlled?" -- the system correctly finds the first two nodes in the infectious disease chain, then follows a semantic link to the antibiotic resistance chain (bacteria "spreading" is genuinely related to pathogen "spreading"). This is the graph discovering real cross-concept connections rather than a retrieval failure.
+28/32 cases pass (>= 50% chain completeness). The analysis_patterns domain uses meta-knowledge about *how to analyze data* (rather than domain facts), so short abstract queries like "single numeric column" are harder for the embedding model to match against declarative technique descriptions. Domain accuracy remains at 96%, confirming the graph structure works well.
 
 **Search mode comparison:**
 
 | Mode | Chain Completeness | Recall@5 | Precision@5 | Domain Accuracy |
 |------|-------------------|----------|-------------|-----------------|
-| Embedding | 84% | 84% | 80% | 95% |
+| Embedding | 79% | 78% | 71% | 95% |
 | Keyword | 0% | 0% | 0% | 0% |
-| Hybrid | 84% | 84% | 80% | 95% |
+| Hybrid | 79% | 78% | 71% | 95% |
 
 Keyword-only mode scores 0% because the eval queries are natural language questions that don't substring-match the dataset's declarative statements. This is expected -- keyword search is designed for known-term lookups, not question answering.
 

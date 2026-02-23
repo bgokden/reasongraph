@@ -1,0 +1,203 @@
+{
+  "name": "analysis_patterns",
+  "description": "Data analysis reasoning patterns: scenario detection, technique selection, and implementation for common CSV data analysis tasks.",
+  "nodes": [
+    {"content": "A single numeric column suggests examining its distribution shape and summary statistics.", "type": "text"},
+    {"content": "Distribution analysis uses histograms to reveal skewness, modality, and spread.", "type": "text"},
+    {"content": "Plot a histogram with plt.hist() and summarize with df.describe() to profile a numeric column.", "type": "text"},
+
+    {"content": "Extreme values in a numeric column call for quartile-based outlier detection.", "type": "text"},
+    {"content": "Box plots display median, interquartile range, and outlier points beyond the whiskers.", "type": "text"},
+    {"content": "Use plt.boxplot() on the column to visualize quartiles and flag statistical outliers.", "type": "text"},
+
+    {"content": "Two numeric columns invite testing whether they move together or independently.", "type": "text"},
+    {"content": "Scatter plots reveal linear, nonlinear, or absent relationships between two variables.", "type": "text"},
+    {"content": "Use plt.scatter() for the visual and df[cols].corr() to quantify the Pearson correlation.", "type": "text"},
+
+    {"content": "A dataframe with many numeric columns requires pairwise relationship overview.", "type": "text"},
+    {"content": "A correlation matrix summarizes all pairwise linear relationships in one table.", "type": "text"},
+    {"content": "Compute df.corr() and render with sns.heatmap(annot=True) for a color-coded matrix.", "type": "text"},
+
+    {"content": "A categorical column paired with a numeric column calls for group comparison.", "type": "text"},
+    {"content": "Grouped bar charts compare the central tendency of each category side by side.", "type": "text"},
+    {"content": "Use df.groupby(cat_col)[num_col].mean().plot.bar() to compare group averages.", "type": "text"},
+
+    {"content": "A single categorical column warrants counting how often each value appears.", "type": "text"},
+    {"content": "Frequency bar charts rank categories by count, exposing dominant and rare values.", "type": "text"},
+    {"content": "Use df[col].value_counts().plot.bar() to display the frequency of each category.", "type": "text"},
+
+    {"content": "A datetime column with a numeric column suggests analyzing trends over time.", "type": "text"},
+    {"content": "Line plots connected by time order reveal trends, seasonality, and change points.", "type": "text"},
+    {"content": "Plot with plt.plot(dates, values) and smooth with df[col].rolling(window).mean().", "type": "text"},
+
+    {"content": "A datetime column with a categorical grouping variable calls for comparing trends across groups.", "type": "text"},
+    {"content": "Multiple line series on one axis let you compare how each group evolves over time.", "type": "text"},
+    {"content": "Use groupby on the category, plot each group as a separate line, and add a legend.", "type": "text"},
+
+    {"content": "Two categorical columns and a numeric measure call for cross-tabulation.", "type": "text"},
+    {"content": "A pivot table aggregates the numeric measure at each combination of the two categories.", "type": "text"},
+    {"content": "Use pd.pivot_table(df, values=num, index=cat1, columns=cat2, aggfunc='mean').", "type": "text"},
+
+    {"content": "A categorical column with very many unique values needs cardinality reduction before plotting.", "type": "text"},
+    {"content": "Filtering to the top-N most frequent or largest categories keeps charts readable.", "type": "text"},
+    {"content": "Use value_counts().nlargest(10) or groupby().sum().nlargest(10) to select top categories.", "type": "text"},
+
+    {"content": "A new dataset should be profiled before any specific analysis is attempted.", "type": "text"},
+    {"content": "Summary statistics and type inspection reveal column types, ranges, and data quality.", "type": "text"},
+    {"content": "Run df.info() for types and nulls, then df.describe() for numeric summaries.", "type": "text"},
+
+    {"content": "Columns with missing values require a null pattern assessment before imputation.", "type": "text"},
+    {"content": "A missingness heatmap shows which columns and rows have gaps, revealing patterns.", "type": "text"},
+    {"content": "Use sns.heatmap(df.isnull(), cbar=False) to visualize the null pattern across the dataframe.", "type": "text"},
+
+    {"content": "numeric column", "type": "entity"},
+    {"content": "categorical column", "type": "entity"},
+    {"content": "datetime column", "type": "entity"},
+    {"content": "histogram", "type": "entity"},
+    {"content": "box plot", "type": "entity"},
+    {"content": "scatter plot", "type": "entity"},
+    {"content": "correlation", "type": "entity"},
+    {"content": "heatmap", "type": "entity"},
+    {"content": "bar chart", "type": "entity"},
+    {"content": "line plot", "type": "entity"},
+    {"content": "pivot table", "type": "entity"},
+    {"content": "groupby", "type": "entity"},
+    {"content": "value_counts", "type": "entity"},
+    {"content": "rolling average", "type": "entity"},
+    {"content": "distribution", "type": "entity"},
+    {"content": "outlier", "type": "entity"},
+    {"content": "trend", "type": "entity"},
+    {"content": "missing values", "type": "entity"},
+    {"content": "summary statistics", "type": "entity"},
+    {"content": "top-N filtering", "type": "entity"},
+    {"content": "cross-tabulation", "type": "entity"},
+    {"content": "frequency", "type": "entity"},
+    {"content": "df.describe()", "type": "entity"},
+    {"content": "df.info()", "type": "entity"}
+  ],
+  "edges": [
+    {"from": "A single numeric column suggests examining its distribution shape and summary statistics.", "to": "Distribution analysis uses histograms to reveal skewness, modality, and spread."},
+    {"from": "Distribution analysis uses histograms to reveal skewness, modality, and spread.", "to": "Plot a histogram with plt.hist() and summarize with df.describe() to profile a numeric column."},
+
+    {"from": "Extreme values in a numeric column call for quartile-based outlier detection.", "to": "Box plots display median, interquartile range, and outlier points beyond the whiskers."},
+    {"from": "Box plots display median, interquartile range, and outlier points beyond the whiskers.", "to": "Use plt.boxplot() on the column to visualize quartiles and flag statistical outliers."},
+
+    {"from": "Two numeric columns invite testing whether they move together or independently.", "to": "Scatter plots reveal linear, nonlinear, or absent relationships between two variables."},
+    {"from": "Scatter plots reveal linear, nonlinear, or absent relationships between two variables.", "to": "Use plt.scatter() for the visual and df[cols].corr() to quantify the Pearson correlation."},
+
+    {"from": "A dataframe with many numeric columns requires pairwise relationship overview.", "to": "A correlation matrix summarizes all pairwise linear relationships in one table."},
+    {"from": "A correlation matrix summarizes all pairwise linear relationships in one table.", "to": "Compute df.corr() and render with sns.heatmap(annot=True) for a color-coded matrix."},
+
+    {"from": "A categorical column paired with a numeric column calls for group comparison.", "to": "Grouped bar charts compare the central tendency of each category side by side."},
+    {"from": "Grouped bar charts compare the central tendency of each category side by side.", "to": "Use df.groupby(cat_col)[num_col].mean().plot.bar() to compare group averages."},
+
+    {"from": "A single categorical column warrants counting how often each value appears.", "to": "Frequency bar charts rank categories by count, exposing dominant and rare values."},
+    {"from": "Frequency bar charts rank categories by count, exposing dominant and rare values.", "to": "Use df[col].value_counts().plot.bar() to display the frequency of each category."},
+
+    {"from": "A datetime column with a numeric column suggests analyzing trends over time.", "to": "Line plots connected by time order reveal trends, seasonality, and change points."},
+    {"from": "Line plots connected by time order reveal trends, seasonality, and change points.", "to": "Plot with plt.plot(dates, values) and smooth with df[col].rolling(window).mean()."},
+
+    {"from": "A datetime column with a categorical grouping variable calls for comparing trends across groups.", "to": "Multiple line series on one axis let you compare how each group evolves over time."},
+    {"from": "Multiple line series on one axis let you compare how each group evolves over time.", "to": "Use groupby on the category, plot each group as a separate line, and add a legend."},
+
+    {"from": "Two categorical columns and a numeric measure call for cross-tabulation.", "to": "A pivot table aggregates the numeric measure at each combination of the two categories."},
+    {"from": "A pivot table aggregates the numeric measure at each combination of the two categories.", "to": "Use pd.pivot_table(df, values=num, index=cat1, columns=cat2, aggfunc='mean')."},
+
+    {"from": "A categorical column with very many unique values needs cardinality reduction before plotting.", "to": "Filtering to the top-N most frequent or largest categories keeps charts readable."},
+    {"from": "Filtering to the top-N most frequent or largest categories keeps charts readable.", "to": "Use value_counts().nlargest(10) or groupby().sum().nlargest(10) to select top categories."},
+
+    {"from": "A new dataset should be profiled before any specific analysis is attempted.", "to": "Summary statistics and type inspection reveal column types, ranges, and data quality."},
+    {"from": "Summary statistics and type inspection reveal column types, ranges, and data quality.", "to": "Run df.info() for types and nulls, then df.describe() for numeric summaries."},
+
+    {"from": "Columns with missing values require a null pattern assessment before imputation.", "to": "A missingness heatmap shows which columns and rows have gaps, revealing patterns."},
+    {"from": "A missingness heatmap shows which columns and rows have gaps, revealing patterns.", "to": "Use sns.heatmap(df.isnull(), cbar=False) to visualize the null pattern across the dataframe."},
+
+    {"from": "numeric column", "to": "A single numeric column suggests examining its distribution shape and summary statistics."},
+    {"from": "numeric column", "to": "Extreme values in a numeric column call for quartile-based outlier detection."},
+    {"from": "numeric column", "to": "Two numeric columns invite testing whether they move together or independently."},
+    {"from": "numeric column", "to": "A dataframe with many numeric columns requires pairwise relationship overview."},
+    {"from": "numeric column", "to": "A categorical column paired with a numeric column calls for group comparison."},
+    {"from": "numeric column", "to": "A datetime column with a numeric column suggests analyzing trends over time."},
+    {"from": "numeric column", "to": "Two categorical columns and a numeric measure call for cross-tabulation."},
+
+    {"from": "categorical column", "to": "A categorical column paired with a numeric column calls for group comparison."},
+    {"from": "categorical column", "to": "A single categorical column warrants counting how often each value appears."},
+    {"from": "categorical column", "to": "A datetime column with a categorical grouping variable calls for comparing trends across groups."},
+    {"from": "categorical column", "to": "Two categorical columns and a numeric measure call for cross-tabulation."},
+    {"from": "categorical column", "to": "A categorical column with very many unique values needs cardinality reduction before plotting."},
+
+    {"from": "datetime column", "to": "A datetime column with a numeric column suggests analyzing trends over time."},
+    {"from": "datetime column", "to": "A datetime column with a categorical grouping variable calls for comparing trends across groups."},
+
+    {"from": "histogram", "to": "Distribution analysis uses histograms to reveal skewness, modality, and spread."},
+    {"from": "histogram", "to": "Plot a histogram with plt.hist() and summarize with df.describe() to profile a numeric column."},
+
+    {"from": "box plot", "to": "Box plots display median, interquartile range, and outlier points beyond the whiskers."},
+    {"from": "box plot", "to": "Use plt.boxplot() on the column to visualize quartiles and flag statistical outliers."},
+
+    {"from": "scatter plot", "to": "Scatter plots reveal linear, nonlinear, or absent relationships between two variables."},
+    {"from": "scatter plot", "to": "Use plt.scatter() for the visual and df[cols].corr() to quantify the Pearson correlation."},
+
+    {"from": "correlation", "to": "Two numeric columns invite testing whether they move together or independently."},
+    {"from": "correlation", "to": "A correlation matrix summarizes all pairwise linear relationships in one table."},
+    {"from": "correlation", "to": "Use plt.scatter() for the visual and df[cols].corr() to quantify the Pearson correlation."},
+    {"from": "correlation", "to": "Compute df.corr() and render with sns.heatmap(annot=True) for a color-coded matrix."},
+
+    {"from": "heatmap", "to": "Compute df.corr() and render with sns.heatmap(annot=True) for a color-coded matrix."},
+    {"from": "heatmap", "to": "A missingness heatmap shows which columns and rows have gaps, revealing patterns."},
+    {"from": "heatmap", "to": "Use sns.heatmap(df.isnull(), cbar=False) to visualize the null pattern across the dataframe."},
+
+    {"from": "bar chart", "to": "Grouped bar charts compare the central tendency of each category side by side."},
+    {"from": "bar chart", "to": "Use df.groupby(cat_col)[num_col].mean().plot.bar() to compare group averages."},
+    {"from": "bar chart", "to": "Frequency bar charts rank categories by count, exposing dominant and rare values."},
+    {"from": "bar chart", "to": "Use df[col].value_counts().plot.bar() to display the frequency of each category."},
+
+    {"from": "line plot", "to": "Line plots connected by time order reveal trends, seasonality, and change points."},
+    {"from": "line plot", "to": "Plot with plt.plot(dates, values) and smooth with df[col].rolling(window).mean()."},
+    {"from": "line plot", "to": "Multiple line series on one axis let you compare how each group evolves over time."},
+
+    {"from": "pivot table", "to": "A pivot table aggregates the numeric measure at each combination of the two categories."},
+    {"from": "pivot table", "to": "Use pd.pivot_table(df, values=num, index=cat1, columns=cat2, aggfunc='mean')."},
+
+    {"from": "groupby", "to": "Use df.groupby(cat_col)[num_col].mean().plot.bar() to compare group averages."},
+    {"from": "groupby", "to": "Use groupby on the category, plot each group as a separate line, and add a legend."},
+
+    {"from": "value_counts", "to": "Frequency bar charts rank categories by count, exposing dominant and rare values."},
+    {"from": "value_counts", "to": "Use df[col].value_counts().plot.bar() to display the frequency of each category."},
+    {"from": "value_counts", "to": "Use value_counts().nlargest(10) or groupby().sum().nlargest(10) to select top categories."},
+
+    {"from": "rolling average", "to": "Plot with plt.plot(dates, values) and smooth with df[col].rolling(window).mean()."},
+
+    {"from": "distribution", "to": "A single numeric column suggests examining its distribution shape and summary statistics."},
+    {"from": "distribution", "to": "Distribution analysis uses histograms to reveal skewness, modality, and spread."},
+
+    {"from": "outlier", "to": "Extreme values in a numeric column call for quartile-based outlier detection."},
+    {"from": "outlier", "to": "Box plots display median, interquartile range, and outlier points beyond the whiskers."},
+    {"from": "outlier", "to": "Use plt.boxplot() on the column to visualize quartiles and flag statistical outliers."},
+
+    {"from": "trend", "to": "A datetime column with a numeric column suggests analyzing trends over time."},
+    {"from": "trend", "to": "Line plots connected by time order reveal trends, seasonality, and change points."},
+
+    {"from": "missing values", "to": "Columns with missing values require a null pattern assessment before imputation."},
+    {"from": "missing values", "to": "A missingness heatmap shows which columns and rows have gaps, revealing patterns."},
+
+    {"from": "summary statistics", "to": "A new dataset should be profiled before any specific analysis is attempted."},
+    {"from": "summary statistics", "to": "Summary statistics and type inspection reveal column types, ranges, and data quality."},
+
+    {"from": "top-N filtering", "to": "A categorical column with very many unique values needs cardinality reduction before plotting."},
+    {"from": "top-N filtering", "to": "Filtering to the top-N most frequent or largest categories keeps charts readable."},
+    {"from": "top-N filtering", "to": "Use value_counts().nlargest(10) or groupby().sum().nlargest(10) to select top categories."},
+
+    {"from": "cross-tabulation", "to": "Two categorical columns and a numeric measure call for cross-tabulation."},
+    {"from": "cross-tabulation", "to": "A pivot table aggregates the numeric measure at each combination of the two categories."},
+
+    {"from": "frequency", "to": "A single categorical column warrants counting how often each value appears."},
+    {"from": "frequency", "to": "Frequency bar charts rank categories by count, exposing dominant and rare values."},
+
+    {"from": "df.describe()", "to": "Plot a histogram with plt.hist() and summarize with df.describe() to profile a numeric column."},
+    {"from": "df.describe()", "to": "Run df.info() for types and nulls, then df.describe() for numeric summaries."},
+
+    {"from": "df.info()", "to": "Summary statistics and type inspection reveal column types, ranges, and data quality."},
+    {"from": "df.info()", "to": "Run df.info() for types and nulls, then df.describe() for numeric summaries."}
+  ]
+}
