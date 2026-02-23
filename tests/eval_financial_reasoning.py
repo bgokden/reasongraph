@@ -32,7 +32,7 @@ class ReasoningCase:
     agent_thought: str
     expected_chain: list[str]
     search_mode: str = "hybrid"
-    hops: int = 3
+    hops: int = 4
     top_k: int = 5
 
 

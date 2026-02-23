@@ -173,8 +173,8 @@ class ReasonGraph:
         self,
         query: str,
         top_k: int = 5,
-        hops: int = 2,
-        rerank_top_k: int = 3,
+        hops: int = 4,
+        rerank_top_k: int = 4,
         search_mode: str = "embedding",
         rrf_k: int = 60,
     ) -> list[str]:
@@ -217,8 +217,25 @@ class ReasonGraph:
             text_seeds = [s for s in seeds if s.get("type") == "text"]
             entity_seeds = [s for s in seeds if s.get("type") != "text"]
 
-            ranked = self.embeddings.rerank(query, text_seeds, rerank_top_k)
-            next_seeds: list[dict[str, str]] = []
+            # Split text seeds by provenance: chain continuations (from
+            # text->text edges) get priority access to the rerank budget,
+            # bridge discoveries (from entity->text edges) fill remaining
+            # slots.  On the first hop there is no provenance tag, so all
+            # seeds go into the chain pool (they came from the initial
+            # vector search, not from entity bridges).
+            chain_pool = [s for s in text_seeds if s.get("_source", "chain") == "chain"]
+            bridge_pool = [s for s in text_seeds if s.get("_source") == "bridge"]
+
+            ranked_chain = self.embeddings.rerank(query, chain_pool, rerank_top_k)
+            remaining_budget = max(0, rerank_top_k - len(ranked_chain))
+            if remaining_budget > 0 and bridge_pool:
+                ranked_bridge = self.embeddings.rerank(query, bridge_pool, remaining_budget)
+            else:
+                ranked_bridge = []
+            ranked = ranked_chain + ranked_bridge
+
+            chain_next: list[dict[str, str]] = []
+            entity_next: list[dict[str, str]] = []
 
             for seed in ranked:
                 if seed["content"] in visited:
@@ -226,17 +243,30 @@ class ReasonGraph:
                 results.append(seed)
                 visited.add(seed["content"])
                 neighbors = await self.backend.get_neighbors(seed["content"])
-                next_seeds.extend(neighbors)
+                for n in neighbors:
+                    if n["content"] not in visited:
+                        if n["type"] == "text":
+                            n["_source"] = "chain"
+                            chain_next.append(n)
+                        else:
+                            entity_next.append(n)
 
             # Traverse entity edges transparently (no rerank cost)
+            bridge_next: list[dict[str, str]] = []
             for seed in entity_seeds:
                 if seed["content"] in visited:
                     continue
                 visited.add(seed["content"])
                 neighbors = await self.backend.get_neighbors(seed["content"])
-                next_seeds.extend(neighbors)
+                for n in neighbors:
+                    if n["content"] not in visited:
+                        if n["type"] == "text":
+                            n["_source"] = "bridge"
+                            bridge_next.append(n)
+                        else:
+                            entity_next.append(n)
 
-            seeds = next_seeds
+            seeds = chain_next + bridge_next + entity_next
 
         return [node["content"] for node in results if node["type"] == "text"]
 
@@ -312,8 +342,8 @@ class ReasonGraph:
         self,
         query: str,
         top_k: int = 5,
-        hops: int = 2,
-        rerank_top_k: int = 3,
+        hops: int = 4,
+        rerank_top_k: int = 4,
         search_mode: str = "embedding",
         rrf_k: int = 60,
     ) -> list[str]:
