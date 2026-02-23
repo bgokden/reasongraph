@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from importlib import resources
 
-AVAILABLE_DATASETS = ("syllogisms", "causal", "taxonomy", "financial")
+AVAILABLE_DATASETS = ("syllogisms", "causal", "taxonomy", "financial", "medical")
 
 
 def load_dataset(name: str) -> dict:
     """Load a built-in dataset by name.
 
     Args:
-        name: One of 'syllogisms', 'causal', 'taxonomy', 'financial'.
+        name: One of 'syllogisms', 'causal', 'taxonomy', 'financial', 'medical'.
 
     Returns:
         Dict with 'name', 'description', 'nodes', and 'edges' keys.

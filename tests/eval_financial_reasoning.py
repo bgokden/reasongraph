@@ -6,7 +6,7 @@ domains.  This is the realistic scenario: an agent's memory contains diverse
 knowledge, and queries must find the right reasoning chain without being
 distracted by unrelated facts.
 
-Graph size: ~80 text nodes, ~72 entity nodes, ~150 edges across 4 domains.
+Graph size: ~94 text nodes, ~80 entity nodes, ~210 edges across 5 domains.
 
 Metrics:
     Chain Completeness -- fraction of expected chain nodes found in results
@@ -201,6 +201,100 @@ CASES = [
             "Lions are large felines that live in prides.",
         ],
     ),
+    # ── Syllogisms: Earth orbits a star ──
+    ReasoningCase(
+        name="Syllogism: does Earth orbit a star?",
+        domain="syllogisms",
+        agent_thought="Does Earth orbit a star? Show the logical reasoning.",
+        expected_chain=[
+            "All planets orbit a star.",
+            "Earth is a planet.",
+            "Therefore, Earth orbits a star.",
+        ],
+    ),
+    # ── Syllogisms: four is divisible by two ──
+    ReasoningCase(
+        name="Syllogism: is four divisible by two?",
+        domain="syllogisms",
+        agent_thought="Is the number four divisible by two? What is the deductive chain?",
+        expected_chain=[
+            "All even numbers are divisible by two.",
+            "Four is an even number.",
+            "Therefore, four is divisible by two.",
+        ],
+    ),
+    # ── Causal: deforestation -> landslides ──
+    ReasoningCase(
+        name="Causal: deforestation chain",
+        domain="causal",
+        agent_thought="How does deforestation lead to landslides?",
+        expected_chain=[
+            "Deforestation reduced the tree cover on hillsides.",
+            "Reduced tree cover caused increased soil erosion.",
+            "Increased soil erosion led to landslides during heavy rains.",
+        ],
+    ),
+    # ── Causal: industrial pollution -> illness ──
+    ReasoningCase(
+        name="Causal: industrial pollution chain",
+        domain="causal",
+        agent_thought="How does factory pollution affect public health?",
+        expected_chain=[
+            "A factory released untreated waste into the river.",
+            "Untreated waste contaminated the river water supply.",
+            "Contaminated water caused illness among downstream communities.",
+        ],
+    ),
+    # ── Medical: heart disease pathway ──
+    ReasoningCase(
+        name="Medical: heart disease pathway",
+        domain="medical",
+        agent_thought="How does an unhealthy diet lead to a heart attack?",
+        expected_chain=[
+            "Unhealthy diet high in saturated fat raises blood cholesterol levels.",
+            "Elevated cholesterol leads to plaque buildup in coronary arteries.",
+            "Arterial plaque narrows blood vessels, reducing blood flow to the heart.",
+            "Complete blockage of a coronary artery triggers a heart attack.",
+        ],
+    ),
+    # ── Medical: diabetes complications ──
+    ReasoningCase(
+        name="Medical: diabetes complications",
+        domain="medical",
+        agent_thought="How does insulin resistance lead to kidney failure and eye damage?",
+        expected_chain=[
+            "Insulin resistance prevents cells from absorbing glucose effectively.",
+            "Unabsorbed glucose accumulates in the bloodstream, raising blood sugar levels.",
+            "Chronic high blood sugar damages small blood vessels throughout the body.",
+            "Damaged blood vessels in the eyes can lead to diabetic retinopathy.",
+            "Damaged blood vessels in the kidneys can progress to kidney failure.",
+        ],
+    ),
+    # ── Medical: infectious disease ──
+    ReasoningCase(
+        name="Medical: infectious disease spread",
+        domain="medical",
+        agent_thought="How does a new pathogen spread and how is it controlled?",
+        expected_chain=[
+            "A novel pathogen jumps from an animal host to a human population.",
+            "Close human contact allows the pathogen to spread through respiratory droplets.",
+            "Exponential transmission overwhelms hospital capacity in affected regions.",
+            "Vaccine development accelerates using mRNA technology within months.",
+            "Mass vaccination campaigns reduce severe illness and mortality rates.",
+        ],
+    ),
+    # ── Medical: cancer treatment ──
+    ReasoningCase(
+        name="Medical: cancer treatment",
+        domain="medical",
+        agent_thought="How does cancer form and what treatments are used?",
+        expected_chain=[
+            "Genetic mutations cause cells to divide uncontrollably, forming a tumor.",
+            "Tumor cells may break away and spread to distant organs through metastasis.",
+            "Chemotherapy uses cytotoxic drugs to kill rapidly dividing cells.",
+            "Immunotherapy trains the patient's immune system to recognize and attack cancer cells.",
+        ],
+    ),
     # ── Cross-domain: financial crisis NOT returning biology ──
     ReasoningCase(
         name="Domain isolation: crisis query ignores biology",
@@ -209,6 +303,16 @@ CASES = [
         expected_chain=[
             "Lehman's collapse triggered a global credit freeze as interbank lending stopped.",
             "Lehman Brothers filed for bankruptcy in September 2008 after massive MBS losses.",
+        ],
+    ),
+    # ── Cross-domain: medical query NOT returning financial ──
+    ReasoningCase(
+        name="Domain isolation: heart disease ignores finance",
+        domain="medical",
+        agent_thought="What causes heart attacks from cholesterol?",
+        expected_chain=[
+            "Elevated cholesterol leads to plaque buildup in coronary arteries.",
+            "Complete blockage of a coronary artery triggers a heart attack.",
         ],
     ),
 ]
@@ -322,6 +426,27 @@ DOMAIN_TEXTS = {
         "Oak trees are flowering plants of the genus Quercus.",
         "Pine trees are conifers of the genus Pinus.",
     },
+    "medical": {
+        "Unhealthy diet high in saturated fat raises blood cholesterol levels.",
+        "Elevated cholesterol leads to plaque buildup in coronary arteries.",
+        "Arterial plaque narrows blood vessels, reducing blood flow to the heart.",
+        "Reduced blood flow causes chest pain known as angina.",
+        "Complete blockage of a coronary artery triggers a heart attack.",
+        "Insulin resistance prevents cells from absorbing glucose effectively.",
+        "Unabsorbed glucose accumulates in the bloodstream, raising blood sugar levels.",
+        "Chronic high blood sugar damages small blood vessels throughout the body.",
+        "Damaged blood vessels in the eyes can lead to diabetic retinopathy.",
+        "Damaged blood vessels in the kidneys can progress to kidney failure.",
+        "A novel pathogen jumps from an animal host to a human population.",
+        "Close human contact allows the pathogen to spread through respiratory droplets.",
+        "Exponential transmission overwhelms hospital capacity in affected regions.",
+        "Vaccine development accelerates using mRNA technology within months.",
+        "Mass vaccination campaigns reduce severe illness and mortality rates.",
+        "Genetic mutations cause cells to divide uncontrollably, forming a tumor.",
+        "Tumor cells may break away and spread to distant organs through metastasis.",
+        "Chemotherapy uses cytotoxic drugs to kill rapidly dividing cells.",
+        "Immunotherapy trains the patient's immune system to recognize and attack cancer cells.",
+    },
 }
 
 
@@ -391,7 +516,8 @@ def run_evaluation():
 
     # Detailed results
     print(f"{'=' * 80}")
-    print(f"  Mixed-Domain Reasoning Evaluation -- {n} cases, 4 domains")
+    domains = sorted(set(r["domain"] for r in results_table))
+    print(f"  Mixed-Domain Reasoning Evaluation -- {n} cases, {len(domains)} domains")
     print(f"{'=' * 80}")
     print()
 
@@ -410,7 +536,6 @@ def run_evaluation():
     print()
 
     # Per-domain averages
-    domains = sorted(set(r["domain"] for r in results_table))
     print(f"{'=' * 80}")
     print(f"  Per-Domain Averages")
     print(f"{'=' * 80}")
