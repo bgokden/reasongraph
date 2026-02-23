@@ -28,19 +28,36 @@ from reasongraph import ReasonGraph
 graph = ReasonGraph()
 graph.initialize_sync()
 
-# Add text with automatic entity + causal extraction
-graph.add_text_sync("Lehman Brothers filed for bankruptcy in September 2008.")
-graph.add_text_sync("The Federal Reserve cut interest rates to near zero.")
+# Load a built-in dataset (or add your own text with add_text_sync)
+graph.load_dataset_sync("financial")
 
 # Query with embedding search + multi-hop graph traversal
 results = graph.query_sync("What caused the 2008 financial crisis?")
-for text in results:
-    print(text)
+for i, text in enumerate(results, 1):
+    print(f"{i}. {text}")
 
 graph.close_sync()
 ```
 
-Or use the async API with a context manager:
+Output -- a connected reasoning chain, not just keyword matches:
+
+```
+1. Lehman Brothers filed for bankruptcy in September 2008 after massive MBS losses.
+2. Loose lending standards fueled a housing price bubble across the United States.
+3. Lehman's collapse triggered a global credit freeze as interbank lending stopped.
+4. Mortgage-backed securities built on subprime loans collapsed when defaults surged.
+5. The U.S. government enacted TARP, a $700 billion bailout to stabilize the financial system.
+6. Banks issued subprime mortgages to borrowers with poor credit histories.
+```
+
+Add your own text with automatic entity and causal extraction:
+
+```python
+graph.add_text_sync("Lehman Brothers filed for bankruptcy in September 2008.")
+graph.add_text_sync("The Federal Reserve cut interest rates to near zero.")
+```
+
+Or use the async API:
 
 ```python
 import asyncio
