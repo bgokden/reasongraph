@@ -2,8 +2,8 @@
 
 A graph-based reasoning library with embedding search, multi-hop traversal, and automatic entity/causal extraction.
 
-[![PyPI version](https://img.shields.io/pypi/v/reasongraph)](https://pypi.org/project/reasongraph/)
-[![Python 3.11+](https://img.shields.io/pypi/pyversions/reasongraph)](https://pypi.org/project/reasongraph/)
+[![PyPI version](https://img.shields.io/pypi/v/reasongraph?color=blue)](https://pypi.org/project/reasongraph/)
+[![Python 3.11+](https://img.shields.io/pypi/pyversions/reasongraph?color=blue)](https://pypi.org/project/reasongraph/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Installation
