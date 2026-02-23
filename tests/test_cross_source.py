@@ -6,9 +6,10 @@ that never reference each other directly. The graph bridges them through
 shared entities (organizations, locations) and causal relations extracted
 by GLiNER2.
 
-Scenario: A tech industry report and a water crisis report share entities
-(Phoenix, Apex Electronics) but neither mentions the other's topic. Queries
-that span both domains should return results from both sources.
+Scenario: A tech industry report about TSMC's semiconductor plant and an
+environmental report about Arizona's water crisis share entities (Arizona,
+Phoenix, Apple) but neither mentions the other's topic. Queries that span
+both domains should return results from both sources.
 """
 
 import pytest
@@ -16,20 +17,18 @@ import pytest
 from reasongraph import ReasonGraph
 
 SOURCE_A_TECH = [
-    "Meridian Technologies opened a semiconductor fabrication plant in Phoenix, Arizona in 2023.",
-    "Dr. Sarah Chen, chief engineer at Meridian Technologies, developed a new chip architecture requiring enormous water usage for cooling.",
-    "The Phoenix fabrication plant consumes 10 million gallons of water daily for semiconductor manufacturing.",
-    "Meridian Technologies signed a five-year supply contract with Apex Electronics to deliver next-generation processors.",
+    "TSMC announced plans to build a $40 billion semiconductor fabrication plant in Phoenix, Arizona.",
+    "The Phoenix fab requires 10 million gallons of purified water daily to cool wafers during the chip etching process.",
+    "TSMC signed a long-term supply agreement with Apple to manufacture next-generation M-series processors at the Arizona facility.",
+    "Construction delays at the Phoenix site pushed first production to late 2025, raising concerns among TSMC's major customers.",
 ]
 
 SOURCE_B_WATER = [
-    "Phoenix, Arizona declared a water emergency in 2024 due to declining Colorado River levels.",
-    "The Arizona Department of Water Resources imposed mandatory 40% water cuts on industrial users in the Phoenix metropolitan area.",
-    "Large-scale manufacturing facilities in Phoenix face production shutdowns under the new water restrictions.",
-    "Apex Electronics warned investors that supply chain disruptions from its key suppliers could delay product launches through 2026.",
+    "Arizona declared a water emergency after Lake Mead dropped to its lowest level since the 1930s, threatening water supply for millions.",
+    "The Arizona Department of Water Resources ordered mandatory water cuts for all industrial users in Maricopa County, where Phoenix is located.",
+    "Intel paused expansion of its Chandler, Arizona chip plant citing water availability concerns and rising operational costs.",
+    "Apple warned investors that component shortages from its Asian and North American suppliers could impact iPhone production timelines through 2026.",
 ]
-
-ALL_SOURCES = set(SOURCE_A_TECH + SOURCE_B_WATER)
 
 
 @pytest.fixture
@@ -52,34 +51,10 @@ def _split_by_source(results: list[str]) -> tuple[list[str], list[str]]:
 # -- Cross-source discovery tests --
 
 @pytest.mark.asyncio
-async def test_water_crisis_discovers_chip_manufacturing(graph):
-    """A water crisis query should reach chip manufacturing facts via Phoenix entity."""
-    results = await graph.query("How might the water crisis affect chip manufacturing?")
-
-    from_a, from_b = _split_by_source(results)
-    assert len(from_a) >= 1, f"Expected tech source results, got only: {results}"
-    assert len(from_b) >= 1, f"Expected water source results, got only: {results}"
-
-
-@pytest.mark.asyncio
-async def test_supplier_risk_bridges_to_manufacturing(graph):
-    """An Apex supply chain query should discover Meridian's plant via shared entity."""
-    results = await graph.query("What risks does Apex Electronics face from its suppliers?")
-
-    from_a, from_b = _split_by_source(results)
-    assert len(from_a) >= 1, f"Expected tech source results, got only: {results}"
-    assert len(from_b) >= 1, f"Expected water source results, got only: {results}"
-
-    # The supply contract should be discovered
-    assert any("supply contract" in r for r in results), \
-        f"Expected supply contract in results: {results}"
-
-
-@pytest.mark.asyncio
-async def test_river_levels_reach_tech_industry(graph):
-    """A Colorado River query should traverse to tech industry via Phoenix."""
+async def test_water_crisis_discovers_semiconductor_manufacturing(graph):
+    """A water crisis query should reach semiconductor facts via Arizona/Phoenix entities."""
     results = await graph.query(
-        "What is the impact of declining Colorado River levels on the tech industry?"
+        "How does the Arizona water crisis affect semiconductor manufacturing?"
     )
 
     from_a, from_b = _split_by_source(results)
@@ -88,9 +63,35 @@ async def test_river_levels_reach_tech_industry(graph):
 
 
 @pytest.mark.asyncio
-async def test_semiconductor_query_reaches_water_crisis(graph):
-    """A semiconductor production query should discover water restrictions."""
-    results = await graph.query("What threatens semiconductor production in Arizona?")
+async def test_apple_supply_chain_bridges_sources(graph):
+    """An Apple supply chain query should discover TSMC agreement via shared entity."""
+    results = await graph.query("What supply chain risks does Apple face?")
+
+    from_a, from_b = _split_by_source(results)
+    assert len(from_a) >= 1, f"Expected tech source results, got only: {results}"
+    assert len(from_b) >= 1, f"Expected water source results, got only: {results}"
+
+    # The supply agreement should be discovered
+    assert any("supply agreement" in r or "Apple" in r for r in from_a), \
+        f"Expected TSMC-Apple supply agreement in Source A results: {from_a}"
+
+
+@pytest.mark.asyncio
+async def test_lake_mead_reaches_chip_production(graph):
+    """A Lake Mead query should traverse to chip production via Arizona."""
+    results = await graph.query(
+        "What is the connection between Lake Mead water levels and chip production?"
+    )
+
+    from_a, from_b = _split_by_source(results)
+    assert len(from_a) >= 1, f"Expected tech source results, got only: {results}"
+    assert len(from_b) >= 1, f"Expected water source results, got only: {results}"
+
+
+@pytest.mark.asyncio
+async def test_tsmc_query_reaches_water_crisis(graph):
+    """A TSMC production query should discover water restrictions via Phoenix."""
+    results = await graph.query("What threatens TSMC production in Arizona?")
 
     from_a, from_b = _split_by_source(results)
     assert len(from_a) >= 1, f"Expected tech source results, got only: {results}"
@@ -101,29 +102,30 @@ async def test_semiconductor_query_reaches_water_crisis(graph):
 
 @pytest.mark.asyncio
 async def test_shared_entities_create_bridges(graph):
-    """Phoenix and Apex Electronics should appear as entity nodes connecting both sources."""
+    """Arizona, Phoenix, and Apple should appear as entity nodes connecting both sources."""
     nodes = await graph.get_all_nodes()
     entity_contents = {n.content for n in nodes if n.type == "entity"}
 
-    # These entities should exist and serve as bridges
-    assert "Phoenix" in entity_contents or "Phoenix, Arizona" in entity_contents, \
+    assert "Arizona" in entity_contents, \
+        f"Arizona entity not found in: {entity_contents}"
+    assert "Phoenix" in entity_contents, \
         f"Phoenix entity not found in: {entity_contents}"
-    assert "Apex Electronics" in entity_contents, \
-        f"Apex Electronics entity not found in: {entity_contents}"
+    assert "Apple" in entity_contents, \
+        f"Apple entity not found in: {entity_contents}"
 
 
 @pytest.mark.asyncio
-async def test_both_sources_connected_through_entity(graph):
+async def test_bridge_entity_connects_both_sources(graph):
     """An entity shared between sources should have neighbors from both."""
-    # Apex Electronics appears in both source A and source B
-    neighbors = await graph.backend.get_neighbors("Apex Electronics")
+    # Apple appears in both Source A (TSMC supply agreement) and Source B (investor warning)
+    neighbors = await graph.backend.get_neighbors("Apple")
     neighbor_texts = {n["content"] for n in neighbors if n["type"] == "text"}
 
     from_a = neighbor_texts & set(SOURCE_A_TECH)
     from_b = neighbor_texts & set(SOURCE_B_WATER)
 
-    assert len(from_a) >= 1, f"Apex should connect to Source A, got: {neighbor_texts}"
-    assert len(from_b) >= 1, f"Apex should connect to Source B, got: {neighbor_texts}"
+    assert len(from_a) >= 1, f"Apple should connect to Source A, got: {neighbor_texts}"
+    assert len(from_b) >= 1, f"Apple should connect to Source B, got: {neighbor_texts}"
 
 
 @pytest.mark.asyncio
@@ -132,11 +134,12 @@ async def test_causal_relations_extracted(graph):
     nodes = await graph.get_all_nodes()
     entity_contents = {n.content for n in nodes if n.type == "entity"}
 
-    # Causal entities created by GLiNER2 extraction
+    # These causal spans should exist as entity nodes
+    # "Lake Mead dropped -> water emergency" and "component shortages -> iPhone production timelines"
     causal_entities = {
-        "water restrictions", "production shutdowns",
-        "supply chain disruptions", "delay product launches",
-        "declining Colorado River levels", "water emergency",
+        "Lake Mead", "water emergency",
+        "component shortages", "iPhone production timelines",
+        "Construction delays", "first production",
     }
     found = causal_entities & entity_contents
     assert len(found) >= 3, \

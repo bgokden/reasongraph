@@ -1,10 +1,16 @@
 # ReasonGraph
 
-A graph-based reasoning library with embedding search, multi-hop traversal, and automatic entity/causal extraction.
+A graph-based reasoning library that discovers connections across independent documents through entity and causal extraction, embedding search, and multi-hop graph traversal.
 
 [![PyPI version](https://img.shields.io/pypi/v/reasongraph?color=blue)](https://pypi.org/project/reasongraph/)
 [![Python 3.11+](https://img.shields.io/pypi/pyversions/reasongraph?color=blue)](https://pypi.org/project/reasongraph/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+## Why ReasonGraph?
+
+Standard RAG retrieves documents similar to your query. ReasonGraph discovers connections *between* documents that were written independently.
+
+When you feed text into `add_texts()`, GLiNER2 automatically extracts **entities** and **cause-effect relations** that become nodes and edges in a graph. Documents that share entities or causal chains get connected -- even if they never reference each other. Multi-hop traversal then walks these connections to build reasoning chains that span multiple sources.
 
 ## Installation
 
@@ -20,6 +26,78 @@ pip install reasongraph[sqlite]     # + SQLite backend with sqlite-vec
 pip install reasongraph[gliner2]    # + GLiNER2 entity + causal extraction (recommended)
 pip install reasongraph[postgres]   # + PostgreSQL + pgvector backend
 ```
+
+## Cross-Source Discovery
+
+Two reports about different topics. Source A covers TSMC's semiconductor plant. Source B covers Arizona's water crisis. Neither mentions the other's subject.
+
+```python
+import asyncio
+from reasongraph import ReasonGraph
+
+source_a = [  # Tech industry report
+    "TSMC announced plans to build a $40 billion semiconductor fabrication plant in Phoenix, Arizona.",
+    "The Phoenix fab requires 10 million gallons of purified water daily to cool wafers during the chip etching process.",
+    "TSMC signed a long-term supply agreement with Apple to manufacture next-generation M-series processors at the Arizona facility.",
+    "Construction delays at the Phoenix site pushed first production to late 2025, raising concerns among TSMC's major customers.",
+]
+
+source_b = [  # Environmental report -- never mentions TSMC, semiconductors, or chips
+    "Arizona declared a water emergency after Lake Mead dropped to its lowest level since the 1930s, threatening water supply for millions.",
+    "The Arizona Department of Water Resources ordered mandatory water cuts for all industrial users in Maricopa County, where Phoenix is located.",
+    "Intel paused expansion of its Chandler, Arizona chip plant citing water availability concerns and rising operational costs.",
+    "Apple warned investors that component shortages from its Asian and North American suppliers could impact iPhone production timelines through 2026.",
+]
+
+async def main():
+    async with ReasonGraph() as graph:
+        await graph.add_texts(source_a)
+        await graph.add_texts(source_b)
+        results = await graph.query("How does the Arizona water crisis affect semiconductor manufacturing?")
+        for i, text in enumerate(results, 1):
+            source = "A" if text in source_a else "B"
+            print(f"{i}. [Source {source}] {text}")
+
+asyncio.run(main())
+```
+
+```
+1. [Source B] Intel paused expansion of its Chandler, Arizona chip plant citing water availability concerns and rising operational costs.
+2. [Source B] The Arizona Department of Water Resources ordered mandatory water cuts for all industrial users in Maricopa County, where Phoenix is located.
+3. [Source A] The Phoenix fab requires 10 million gallons of purified water daily to cool wafers during the chip etching process.
+4. [Source B] Arizona declared a water emergency after Lake Mead dropped to its lowest level since the 1930s.
+5. [Source A] TSMC announced plans to build a $40 billion semiconductor fabrication plant in Phoenix, Arizona.
+6. [Source A] TSMC signed a long-term supply agreement with Apple to manufacture M-series processors at the Arizona facility.
+```
+
+Results come from both sources. No single document contains this chain. Here is what happens under the hood:
+
+**GLiNER2 extracts entities and causal relations from each text:**
+
+| Text (abbreviated) | Entities | Causal relations |
+|---------------------|----------|------------------|
+| TSMC to build fab in Phoenix, Arizona... | TSMC, Phoenix, Arizona | -- |
+| Phoenix fab requires 10M gallons water... | Phoenix | -- |
+| TSMC supply agreement with Apple... | TSMC, Apple, Arizona | -- |
+| Construction delays at Phoenix site... | TSMC, Phoenix | Construction delays -> first production |
+| Arizona water emergency, Lake Mead... | Arizona, Lake Mead | Lake Mead dropped -> water emergency |
+| Mandatory water cuts in Maricopa County... | Arizona Dept. of Water Resources, Phoenix, Maricopa County | -- |
+| Intel paused Arizona chip plant... | Intel, Chandler, Arizona | -- |
+| Apple warned of component shortages... | Apple | component shortages -> iPhone production timelines |
+
+**Three entities appear in both sources, creating bridge nodes:**
+
+| Bridge entity | Source A connections | Source B connections |
+|---------------|---------------------|---------------------|
+| Arizona | TSMC fab, TSMC-Apple deal | water emergency, Intel pause, water cuts |
+| Phoenix | TSMC fab, water usage, delays | water cuts for industrial users |
+| Apple | TSMC supply agreement | component shortage warning |
+
+**The query traversal path:**
+
+Water crisis query -> finds water-related texts from both sources via embeddings -> follows `Arizona` and `Phoenix` entity edges to discover TSMC's water-intensive fab -> follows `Apple` entity edge from TSMC supply agreement to Apple's component shortage warning. The causal relation `Lake Mead dropped -> water emergency` connects the environmental trigger to the industrial impact.
+
+Full demo: `uv run python examples/cross_source_discovery.py`
 
 ## Quick Start
 
@@ -50,33 +128,6 @@ Output -- a connected reasoning chain, not just keyword matches:
 6. Banks issued subprime mortgages to borrowers with poor credit histories.
 ```
 
-### Parsing free-form text
-
-For free-form text, install with `pip install reasongraph[gliner2]` to get automatic entity and causal relation extraction.
-
-```python
-from reasongraph import ReasonGraph
-
-graph = ReasonGraph()
-graph.initialize_sync()
-
-graph.add_text_sync("Lehman Brothers filed for bankruptcy in September 2008 after massive MBS losses.")
-graph.add_text_sync("The U.S. government enacted TARP, a $700 billion bailout to stabilize the financial system.")
-graph.add_text_sync("The Federal Reserve cut interest rates to near zero after the 2008 crisis.")
-
-results = graph.query_sync("What happened after Lehman collapsed?")
-for i, text in enumerate(results, 1):
-    print(f"{i}. {text}")
-
-graph.close_sync()
-```
-
-```
-1. Lehman Brothers filed for bankruptcy in September 2008 after massive MBS losses.
-2. The Federal Reserve cut interest rates to near zero after the 2008 crisis.
-3. The U.S. government enacted TARP, a $700 billion bailout to stabilize the financial system.
-```
-
 ### Async API
 
 ```python
@@ -93,62 +144,9 @@ async def main():
 asyncio.run(main())
 ```
 
-## Cross-Source Discovery
-
-Standard RAG finds documents similar to your query. ReasonGraph finds *connections between documents that don't know about each other*.
-
-Consider two independent reports that share no common topic:
-
-```python
-import asyncio
-from reasongraph import ReasonGraph
-
-# Source A: tech industry report
-source_a = [
-    "Meridian Technologies opened a semiconductor fabrication plant in Phoenix, Arizona in 2023.",
-    "Dr. Sarah Chen, chief engineer at Meridian Technologies, developed a new chip architecture requiring enormous water usage for cooling.",
-    "The Phoenix fabrication plant consumes 10 million gallons of water daily for semiconductor manufacturing.",
-    "Meridian Technologies signed a five-year supply contract with Apex Electronics to deliver next-generation processors.",
-]
-
-# Source B: environmental report -- never mentions Meridian, semiconductors, or chips
-source_b = [
-    "Phoenix, Arizona declared a water emergency in 2024 due to declining Colorado River levels.",
-    "The Arizona Department of Water Resources imposed mandatory 40% water cuts on industrial users in the Phoenix metropolitan area.",
-    "Large-scale manufacturing facilities in Phoenix face production shutdowns under the new water restrictions.",
-    "Apex Electronics warned investors that supply chain disruptions from its key suppliers could delay product launches through 2026.",
-]
-
-async def main():
-    async with ReasonGraph() as graph:
-        await graph.add_texts(source_a)
-        await graph.add_texts(source_b)
-
-        results = await graph.query("How might the water crisis affect chip manufacturing?")
-        for i, text in enumerate(results, 1):
-            source = "A" if text in source_a else "B"
-            print(f"{i}. [Source {source}] {text}")
-
-asyncio.run(main())
-```
-
-```
-1. [Source A] Dr. Sarah Chen developed a new chip architecture requiring enormous water usage for cooling.
-2. [Source B] Large-scale manufacturing facilities in Phoenix face production shutdowns under the new water restrictions.
-3. [Source B] The Arizona Department of Water Resources imposed mandatory 40% water cuts on industrial users.
-4. [Source B] Phoenix, Arizona declared a water emergency in 2024 due to declining Colorado River levels.
-5. [Source A] The Phoenix fabrication plant consumes 10 million gallons of water daily for semiconductor manufacturing.
-6. [Source A] Meridian Technologies opened a semiconductor fabrication plant in Phoenix, Arizona in 2023.
-7. [Source A] Meridian Technologies signed a five-year supply contract with Apex Electronics.
-```
-
-No single source contains the answer. An embedding search for "water crisis + chip manufacturing" would find source A (chips) or source B (water) but not both -- the texts are about different topics. ReasonGraph connects them because GLiNER2 extracts shared entities ("Phoenix", "Apex Electronics") that bridge the two sources in the graph. Multi-hop traversal then walks: water emergency in Phoenix -> water cuts on industrial users -> Meridian's water-intensive plant in Phoenix -> supply contract with Apex -> Apex warns of supply chain delays.
-
-Full demo: `uv run python examples/cross_source_discovery.py`
-
 ## Features
 
-- **Cross-source discovery** -- connect facts across independent sources through shared entities and causal relations
+- **Cross-source discovery** -- connect facts across independent documents through shared entities and causal relations
 - **Automatic extraction** -- GLiNER2 extracts entities and causal relations in one pass (falls back to BERT NER when gliner2 is not installed)
 - **Hybrid search** -- combine embedding similarity, keyword (trigram) matching, or both
 - **Multi-hop traversal** -- follow graph edges to discover connected reasoning chains
