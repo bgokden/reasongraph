@@ -93,8 +93,54 @@ async def main():
 asyncio.run(main())
 ```
 
+## Cross-Source Discovery
+
+ReasonGraph's real power is connecting facts across independent sources. Feed in two unrelated reports and query across them -- the graph bridges shared entities and causal relations that flat embedding search cannot.
+
+```python
+import asyncio
+from reasongraph import ReasonGraph
+
+source_a = [  # Tech industry report
+    "Meridian Technologies opened a semiconductor fabrication plant in Phoenix, Arizona in 2023.",
+    "The Phoenix fabrication plant consumes 10 million gallons of water daily for semiconductor manufacturing.",
+    "Meridian Technologies signed a five-year supply contract with Apex Electronics to deliver next-generation processors.",
+]
+
+source_b = [  # Water crisis report (never mentions Meridian or semiconductors)
+    "Phoenix, Arizona declared a water emergency in 2024 due to declining Colorado River levels.",
+    "Large-scale manufacturing facilities in Phoenix face production shutdowns under the new water restrictions.",
+    "Apex Electronics warned investors that supply chain disruptions from its key suppliers could delay product launches through 2026.",
+]
+
+async def main():
+    async with ReasonGraph() as graph:
+        await graph.add_texts(source_a)
+        await graph.add_texts(source_b)
+        results = await graph.query("How might the water crisis affect chip manufacturing?")
+        for text in results:
+            print(text)
+
+asyncio.run(main())
+```
+
+```
+Dr. Sarah Chen, chief engineer at Meridian Technologies, developed a new chip architecture requiring enormous water usage for cooling.
+Large-scale manufacturing facilities in Phoenix face production shutdowns under the new water restrictions.
+The Arizona Department of Water Resources imposed mandatory 40% water cuts on industrial users in the Phoenix metropolitan area.
+Phoenix, Arizona declared a water emergency in 2024 due to declining Colorado River levels.
+The Phoenix fabrication plant consumes 10 million gallons of water daily for semiconductor manufacturing.
+Meridian Technologies opened a semiconductor fabrication plant in Phoenix, Arizona in 2023.
+Meridian Technologies signed a five-year supply contract with Apex Electronics to deliver next-generation processors.
+```
+
+Neither source mentions the other's topic. GLiNER2 extracts "Phoenix" and "Apex Electronics" as shared entities, and the graph traversal connects water restrictions -> Phoenix manufacturing -> Meridian's plant -> Apex supply chain.
+
+Full demo: `uv run python examples/cross_source_discovery.py`
+
 ## Features
 
+- **Cross-source discovery** -- connect facts across independent sources through shared entities and causal relations
 - **Automatic extraction** -- GLiNER2 extracts entities and causal relations in one pass (falls back to BERT NER when gliner2 is not installed)
 - **Hybrid search** -- combine embedding similarity, keyword (trigram) matching, or both
 - **Multi-hop traversal** -- follow graph edges to discover connected reasoning chains
