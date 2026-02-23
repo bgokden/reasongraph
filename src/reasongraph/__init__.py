@@ -1,4 +1,4 @@
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import os as _os
 
@@ -12,10 +12,12 @@ if "TQDM_DISABLE" not in _os.environ:
 from reasongraph._types import Node, Edge
 from reasongraph._extraction import NERExtractor, GLiNER2Extractor
 from reasongraph.graph import ReasonGraph
+from reasongraph.backends._memory import MemoryBackend
 from reasongraph.datasets import load_dataset
 
 __all__ = [
     "ReasonGraph", "Node", "Edge",
+    "MemoryBackend",
     "NERExtractor", "GLiNER2Extractor",
     "load_dataset",
 ]

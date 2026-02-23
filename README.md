@@ -15,7 +15,8 @@ pip install reasongraph[all]        # everything included
 Or install only what you need:
 
 ```bash
-pip install reasongraph             # core: SQLite backend, NER extraction, embeddings
+pip install reasongraph             # core: in-memory backend, NER extraction, embeddings
+pip install reasongraph[sqlite]     # + SQLite backend with sqlite-vec
 pip install reasongraph[gliner2]    # + GLiNER2 entity + causal extraction (recommended)
 pip install reasongraph[postgres]   # + PostgreSQL + pgvector backend
 ```
@@ -100,7 +101,7 @@ asyncio.run(main())
 - **Cross-encoder reranking** -- rerank results at each hop with `ms-marco-MiniLM-L-6-v2`
 - **Built-in datasets** -- load curated reasoning graphs for immediate use
 - **Async-first** -- native async API with sync convenience wrappers
-- **Pluggable backends** -- SQLite (zero-config default) or PostgreSQL with pgvector
+- **Pluggable backends** -- in-memory (zero-config default), SQLite, or PostgreSQL with pgvector
 
 ## Built-in Datasets
 
@@ -158,7 +159,32 @@ entities = graph.add_text_sync("Apple released the iPhone in 2007.", extractor=g
 entities = graph.add_text_sync("some text", extractor=lambda t: ["custom"])
 ```
 
-## PostgreSQL Backend
+## Backends
+
+By default, `ReasonGraph()` uses a pure Python in-memory backend (`MemoryBackend`). This works everywhere with zero dependencies beyond numpy. For persistence, pass a file path to save/load as JSON:
+
+```python
+from reasongraph import ReasonGraph, MemoryBackend
+
+# In-memory only (default)
+graph = ReasonGraph()
+
+# In-memory with JSON file persistence (loads on init, saves on close)
+graph = ReasonGraph(backend=MemoryBackend(file_path="graph.json"))
+```
+
+### SQLite Backend
+
+For larger graphs or concurrent access, use the SQLite backend with `sqlite-vec` for vector search. Requires `pip install reasongraph[sqlite]`.
+
+```python
+from reasongraph import ReasonGraph
+from reasongraph.backends import SqliteBackend
+
+graph = ReasonGraph(backend=SqliteBackend(db_path="graph.db"))
+```
+
+### PostgreSQL Backend
 
 ```python
 from reasongraph import ReasonGraph

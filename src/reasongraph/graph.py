@@ -8,14 +8,14 @@ from reasongraph._embeddings import EmbeddingManager
 from reasongraph._extraction import NERExtractor, GLiNER2Extractor, ExtractorFn, CausalExtractorFn
 from reasongraph._types import Node, Edge
 from reasongraph.backends._base import Backend
-from reasongraph.backends._sqlite import SqliteBackend
+from reasongraph.backends._memory import MemoryBackend
 
 
 class ReasonGraph:
     """A graph-based reasoning engine with embedding search and multi-hop traversal.
 
     Uses an async-first design with sync convenience wrappers.
-    Defaults to an in-memory SQLite backend with brute-force cosine similarity.
+    Defaults to a pure Python in-memory backend with brute-force cosine similarity.
     """
 
     def __init__(
@@ -25,7 +25,7 @@ class ReasonGraph:
         rerank_model: str | None = None,
         forget_after: int = 30,
     ) -> None:
-        self.backend = backend or SqliteBackend()
+        self.backend = backend or MemoryBackend()
         self.embeddings = EmbeddingManager(
             embed_model=embed_model, rerank_model=rerank_model
         )

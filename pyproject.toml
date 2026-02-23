@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reasongraph"
-version = "0.2.0"
+version = "0.3.0"
 description = "A graph-based reasoning library with embedding search and multi-hop traversal"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,8 +27,6 @@ classifiers = [
 ]
 dependencies = [
     "sentence-transformers>=2.2.0",
-    "aiosqlite>=0.19.0",
-    "sqlite-vec>=0.1.6",
 ]
 
 [project.urls]
@@ -37,6 +35,10 @@ Repository = "https://github.com/bgokden/reasongraph"
 Issues = "https://github.com/bgokden/reasongraph/issues"
 
 [project.optional-dependencies]
+sqlite = [
+    "aiosqlite>=0.19.0",
+    "sqlite-vec>=0.1.6",
+]
 gliner2 = [
     "gliner2>=1.2.0",
     "urllib3>=2.0.0",
@@ -48,6 +50,8 @@ postgres = [
     "pgvector>=0.2.0",
 ]
 all = [
+    "aiosqlite>=0.19.0",
+    "sqlite-vec>=0.1.6",
     "gliner2>=1.2.0",
     "urllib3>=2.0.0",
     "requests>=2.28.0",
@@ -56,6 +60,8 @@ all = [
     "pgvector>=0.2.0",
 ]
 dev = [
+    "aiosqlite>=0.19.0",
+    "sqlite-vec>=0.1.6",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
