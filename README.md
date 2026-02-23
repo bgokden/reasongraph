@@ -22,16 +22,15 @@ pip install reasongraph[postgres]   # + PostgreSQL + pgvector backend
 
 ## Quick Start
 
+### Using a built-in dataset
+
 ```python
 from reasongraph import ReasonGraph
 
 graph = ReasonGraph()
 graph.initialize_sync()
-
-# Load a built-in dataset (or add your own text with add_text_sync)
 graph.load_dataset_sync("financial")
 
-# Query with embedding search + multi-hop graph traversal
 results = graph.query_sync("What caused the 2008 financial crisis?")
 for i, text in enumerate(results, 1):
     print(f"{i}. {text}")
@@ -50,14 +49,34 @@ Output -- a connected reasoning chain, not just keyword matches:
 6. Banks issued subprime mortgages to borrowers with poor credit histories.
 ```
 
-Add your own text with automatic entity and causal extraction:
+### Parsing free-form text
+
+For free-form text, install with `pip install reasongraph[gliner2]` to get automatic entity and causal relation extraction.
 
 ```python
-graph.add_text_sync("Lehman Brothers filed for bankruptcy in September 2008.")
-graph.add_text_sync("The Federal Reserve cut interest rates to near zero.")
+from reasongraph import ReasonGraph
+
+graph = ReasonGraph()
+graph.initialize_sync()
+
+graph.add_text_sync("Lehman Brothers filed for bankruptcy in September 2008 after massive MBS losses.")
+graph.add_text_sync("The U.S. government enacted TARP, a $700 billion bailout to stabilize the financial system.")
+graph.add_text_sync("The Federal Reserve cut interest rates to near zero after the 2008 crisis.")
+
+results = graph.query_sync("What happened after Lehman collapsed?")
+for i, text in enumerate(results, 1):
+    print(f"{i}. {text}")
+
+graph.close_sync()
 ```
 
-Or use the async API:
+```
+1. Lehman Brothers filed for bankruptcy in September 2008 after massive MBS losses.
+2. The Federal Reserve cut interest rates to near zero after the 2008 crisis.
+3. The U.S. government enacted TARP, a $700 billion bailout to stabilize the financial system.
+```
+
+### Async API
 
 ```python
 import asyncio
