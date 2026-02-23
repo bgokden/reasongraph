@@ -217,7 +217,12 @@ async def test_add_texts_shared_entities(graph):
 
 @pytest.fixture(scope="module")
 def ner_extractor():
-    return NERExtractor()
+    try:
+        ext = NERExtractor()
+        ext("")  # force model download
+        return ext
+    except Exception as e:
+        pytest.skip(f"NER model not available: {e}")
 
 
 def test_ner_extractor_finds_entities(ner_extractor):
@@ -356,7 +361,13 @@ async def test_add_texts_causal_without_ner(graph):
 
 @pytest.fixture(scope="module")
 def gliner2_extractor():
-    return GLiNER2Extractor()
+    pytest.importorskip("gliner2")
+    try:
+        ext = GLiNER2Extractor()
+        ext("")  # force model download
+        return ext
+    except Exception as e:
+        pytest.skip(f"GLiNER2 model not available: {e}")
 
 
 def test_gliner2_entity_extraction(gliner2_extractor):
