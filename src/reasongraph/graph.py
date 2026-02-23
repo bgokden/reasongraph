@@ -81,13 +81,13 @@ class ReasonGraph:
         """Add text to the graph with automatic entity extraction.
 
         Creates a text node for the input, extracts entities using the provided
-        extractor (or the default HF NER model), creates entity nodes, and
-        links each entity to the text node.
+        extractor, creates entity nodes, and links each entity to the text node.
 
         Args:
             text: The text content to add.
             extractor: A callable(str) -> list[str] that extracts entity strings.
-                Defaults to the built-in HF NER extractor (dslim/bert-base-NER).
+                Defaults to GLiNER2Extractor if gliner2 is installed, otherwise
+                falls back to NERExtractor (dslim/bert-base-NER).
 
         Returns:
             List of extracted entity strings.
@@ -114,19 +114,27 @@ class ReasonGraph:
         Args:
             texts: List of text strings to add.
             extractor: A callable(str) -> list[str] for entity extraction.
-                Defaults to built-in NER (dslim/bert-base-NER).
+                Defaults to GLiNER2Extractor if gliner2 is installed, otherwise
+                falls back to NERExtractor (dslim/bert-base-NER).
             causal_extractor: A callable(list[str]) -> list[dict] for
                 cause-effect extraction. Each dict should have 'causal' (bool)
                 and 'relations' (list of {'cause': str, 'effect': str}).
-                Pass CausalExtractor() to use SocioCausaNet.
+                Auto-enabled when the default GLiNER2Extractor is used.
 
         Returns:
             List of entity lists, one per input text.
         """
         if extractor is None:
             if not hasattr(self, "_default_extractor"):
-                self._default_extractor = NERExtractor()
+                try:
+                    import gliner2 as _gliner2_check  # noqa: F811
+                    self._default_extractor = GLiNER2Extractor()
+                except ImportError:
+                    self._default_extractor = NERExtractor()
             extractor = self._default_extractor
+
+        if causal_extractor is None and hasattr(extractor, "extract_causal"):
+            causal_extractor = extractor.extract_causal
 
         all_entities = []
         all_nodes = []
