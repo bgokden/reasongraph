@@ -143,6 +143,11 @@ async def test_scopes(backend):
     kw = await backend.hybrid_search(emb, "other", 10, keyword_only=True, scopes={"user-1"})
     assert all(r["content"] != "other fact" for r in kw)
 
+    # Scoped RRF hybrid (keyword_only=False) exercises the two-scope-placeholder CTE
+    hy = await backend.hybrid_search(emb, "shared", 10, scopes={"user-1"})
+    assert all(r["content"] != "other fact" for r in hy)
+    assert "shared fact" in {r["content"] for r in hy}
+
     assert {n.content for n in await backend.get_all_nodes(scopes={"topic-econ"})} == {"shared fact"}
 
     # deleting a node cascades its node_scopes rows

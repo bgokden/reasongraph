@@ -333,3 +333,24 @@ async def test_scopes_multi_label_union_and_seed_filter(backend):
     # get_all_nodes can filter by scope too
     assert {n.content for n in await backend.get_all_nodes(scopes={"topic-econ"})} == {"shared fact"}
     assert {n.content for n in await backend.get_all_nodes(scopes={"user-2"})} == {"other fact"}
+
+
+@pytest.mark.asyncio
+async def test_insert_nodes_does_not_mutate_caller_scopes(backend):
+    a = _scoped_node("dup", {"s-a"})
+    b = _scoped_node("dup", {"s-b"})
+    await backend.insert_nodes([a, b])
+
+    # The caller's Node objects are left untouched
+    assert a.scopes == {"s-a"}
+    assert b.scopes == {"s-b"}
+    # The stored node holds the union
+    stored = {n.content: n for n in await backend.get_all_nodes()}["dup"]
+    assert stored.scopes == {"s-a", "s-b"}
+
+    # Re-inserting the same content under a new scope also must not mutate the caller
+    c = _scoped_node("dup", {"s-c"})
+    await backend.insert_nodes([c])
+    assert c.scopes == {"s-c"}
+    stored = {n.content: n for n in await backend.get_all_nodes()}["dup"]
+    assert stored.scopes == {"s-a", "s-b", "s-c"}

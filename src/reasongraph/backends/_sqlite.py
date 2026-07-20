@@ -121,14 +121,18 @@ class SqliteBackend(Backend):
             if node.embedding is None:
                 raise ValueError(f"Node '{node.content}' has no embedding")
 
-        # Deduplicate within the batch (keep first occurrence, union its scopes)
+        # Deduplicate within the batch (keep first occurrence). Scopes are
+        # accumulated in a separate dict so the caller's Node objects are never
+        # mutated.
         seen: dict[str, Node] = {}
+        merged_scopes: dict[str, set[str]] = {}
         unique_nodes: list[Node] = []
         for node in nodes:
             if node.content in seen:
-                seen[node.content].scopes |= node.scopes
+                merged_scopes[node.content] |= node.scopes
             else:
                 seen[node.content] = node
+                merged_scopes[node.content] = set(node.scopes)
                 unique_nodes.append(node)
 
         # Map existing contents to their node ids (needed to attach scopes)
@@ -147,7 +151,7 @@ class SqliteBackend(Backend):
                     "UPDATE nodes SET last_accessed = ? WHERE content = ?",
                     (now, node.content),
                 )
-                await self._insert_scopes(db, existing[node.content], node.scopes)
+                await self._insert_scopes(db, existing[node.content], merged_scopes[node.content])
             else:
                 # New node: insert into all three tables plus its scopes
                 blob = _embedding_to_blob(node.embedding)
@@ -167,7 +171,7 @@ class SqliteBackend(Backend):
                     "INSERT INTO fts_nodes (rowid, content) VALUES (?, ?)",
                     (row_id, node.content),
                 )
-                await self._insert_scopes(db, row_id, node.scopes)
+                await self._insert_scopes(db, row_id, merged_scopes[node.content])
 
         await db.commit()
 

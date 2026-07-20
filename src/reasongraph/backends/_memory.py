@@ -72,25 +72,24 @@ class MemoryBackend(Backend):
             if node.embedding is None:
                 raise ValueError(f"Node '{node.content}' has no embedding")
 
-        # Deduplicate within batch (keep first occurrence, union its scopes)
-        seen: dict[str, Node] = {}
-        unique: list[Node] = []
+        # Process in order; the first occurrence of a content stores a COPY of
+        # the caller's node (so we never mutate the caller's objects), and later
+        # occurrences (in-batch or already stored) union their scopes into it.
         for node in nodes:
-            if node.content in seen:
-                seen[node.content].scopes |= node.scopes
-            else:
-                seen[node.content] = node
-                unique.append(node)
-
-        for node in unique:
-            if node.content in self._nodes:
-                # Update last_accessed and union scopes for existing nodes
-                existing = self._nodes[node.content]
+            content = node.content
+            if content in self._nodes:
+                existing = self._nodes[content]
                 existing.last_accessed = now
                 existing.scopes |= node.scopes
             else:
-                node.last_accessed = now
-                self._nodes[node.content] = node
+                self._nodes[content] = Node(
+                    content=content,
+                    type=node.type,
+                    embedding=node.embedding,
+                    created_at=node.created_at,
+                    last_accessed=now,
+                    scopes=set(node.scopes),
+                )
 
     def _candidates(self, scopes: set[str] | None) -> list[Node]:
         """Nodes eligible as search seeds, filtered by scope when given."""
