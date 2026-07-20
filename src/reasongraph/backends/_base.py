@@ -39,6 +39,10 @@ class Backend(ABC):
         """Delete nodes not accessed within the given number of days. Return count deleted."""
 
     @abstractmethod
+    async def delete_nodes(self, contents: list[str]) -> int:
+        """Delete the given nodes and their incident edges. Return count deleted."""
+
+    @abstractmethod
     async def get_all_nodes(self) -> list[Node]:
         """Return every node in the graph."""
 

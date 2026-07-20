@@ -204,6 +204,18 @@ class PostgresBackend(Backend):
                 )
                 return cur.rowcount
 
+    async def delete_nodes(self, contents: list[str]) -> int:
+        if not contents:
+            return 0
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                # CASCADE on the edges foreign key removes incident edges
+                await cur.execute(
+                    "DELETE FROM nodes WHERE content = ANY(%s)", (contents,)
+                )
+                return cur.rowcount
+
     async def get_all_nodes(self) -> list[Node]:
         pool = await self._get_pool()
         async with pool.connection() as conn:

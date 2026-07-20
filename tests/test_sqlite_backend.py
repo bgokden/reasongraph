@@ -184,3 +184,65 @@ def test_escape_fts5_basic():
 
 def test_escape_fts5_quotes():
     assert _escape_fts5('say "hi"') == '"say ""hi"""'
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes(backend):
+    await backend.insert_nodes([_make_node("keep"), _make_node("remove")])
+
+    deleted = await backend.delete_nodes(["remove"])
+    assert deleted == 1
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"keep"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_purges_vec_and_fts(backend):
+    """Deleted nodes must vanish from the vec_nodes and fts_nodes shadow tables."""
+    keep = _make_node("keep this around")
+    remove = _make_node("remove this now")
+    await backend.insert_nodes([keep, remove])
+
+    await backend.delete_nodes(["remove this now"])
+
+    # Vector search must not surface the deleted node, even queried with its own embedding
+    knn = await backend.knn_search(remove.embedding, top_k=5)
+    assert all(r["content"] != "remove this now" for r in knn)
+
+    # Trigram keyword search must not surface it either
+    kw = await backend.hybrid_search(
+        remove.embedding, "remove this now", top_k=5, keyword_only=True
+    )
+    assert all(r["content"] != "remove this now" for r in kw)
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_removes_incident_edges(backend):
+    await backend.insert_nodes([
+        _make_node("the fact", "text"),
+        _make_node("Amsterdam", "entity"),
+    ])
+    await backend.insert_edges([Edge(from_content="Amsterdam", to_content="the fact")])
+
+    await backend.delete_nodes(["the fact"])
+    assert await backend.get_all_edges() == []
+    # The shared entity node survives; only its edge to the deleted text is gone
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"Amsterdam"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_missing_content_is_noop(backend):
+    await backend.insert_nodes([_make_node("present")])
+
+    deleted = await backend.delete_nodes(["absent"])
+    assert deleted == 0
+    assert len(await backend.get_all_nodes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_empty_list(backend):
+    await backend.insert_nodes([_make_node("present")])
+
+    assert await backend.delete_nodes([]) == 0
+    assert len(await backend.get_all_nodes()) == 1

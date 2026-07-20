@@ -242,3 +242,55 @@ async def test_batch_dedup_within_insert(backend):
 
     all_nodes = await backend.get_all_nodes()
     assert len(all_nodes) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes(backend):
+    await backend.insert_nodes([_make_node("keep"), _make_node("remove")])
+
+    deleted = await backend.delete_nodes(["remove"])
+    assert deleted == 1
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"keep"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_removes_incident_edges(backend):
+    await backend.insert_nodes([
+        _make_node("the fact", "text"),
+        _make_node("Amsterdam", "entity"),
+    ])
+    await backend.insert_edges([Edge(from_content="Amsterdam", to_content="the fact")])
+
+    await backend.delete_nodes(["the fact"])
+    assert await backend.get_all_edges() == []
+    # The shared entity node survives; only its edge to the deleted text is gone
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"Amsterdam"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_missing_content_is_noop(backend):
+    await backend.insert_nodes([_make_node("present")])
+
+    deleted = await backend.delete_nodes(["absent"])
+    assert deleted == 0
+    assert len(await backend.get_all_nodes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_batch(backend):
+    await backend.insert_nodes([_make_node("a"), _make_node("b"), _make_node("c")])
+
+    deleted = await backend.delete_nodes(["a", "c", "missing"])
+    assert deleted == 2
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"b"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_empty_list(backend):
+    await backend.insert_nodes([_make_node("present")])
+
+    assert await backend.delete_nodes([]) == 0
+    assert len(await backend.get_all_nodes()) == 1

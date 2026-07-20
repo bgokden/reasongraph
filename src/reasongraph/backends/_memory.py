@@ -235,6 +235,20 @@ class MemoryBackend(Backend):
         }
         return len(stale)
 
+    async def delete_nodes(self, contents: list[str]) -> int:
+        deleted = 0
+        for content in contents:
+            if content in self._nodes:
+                del self._nodes[content]
+                deleted += 1
+        if deleted:
+            # Remove edges referencing deleted nodes
+            self._edges = {
+                (f, t) for f, t in self._edges
+                if f in self._nodes and t in self._nodes
+            }
+        return deleted
+
     async def get_all_nodes(self) -> list[Node]:
         return list(self._nodes.values())
 

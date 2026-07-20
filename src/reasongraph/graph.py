@@ -299,6 +299,45 @@ class ReasonGraph:
         """Delete nodes not accessed within forget_after days."""
         return await self.backend.delete_stale_nodes(self.forget_after)
 
+    async def delete(self, content: str) -> bool:
+        """Delete a single node and its incident edges by exact content.
+
+        Returns True if a node was deleted, False if no node matched. Shared
+        entity nodes are not touched; only the named node and the edges
+        incident to it are removed.
+        """
+        return await self.backend.delete_nodes([content]) > 0
+
+    async def supersede(
+        self,
+        old_content: str,
+        new_text: str,
+        extractor: ExtractorFn | None = None,
+    ) -> list[str]:
+        """Replace a stale fact with a corrected one.
+
+        Adds ``new_text`` (with entity extraction) and then deletes the node
+        ``old_content``, so the superseded fact can no longer surface in
+        queries. The new text is added before the old node is removed, so any
+        entity shared between them survives and keeps bridging the graph.
+
+        When ``old_content`` equals ``new_text`` the call is a no-op
+        replacement: the fact is (re)added and kept, never deleted.
+
+        Args:
+            old_content: Exact content of the node to remove.
+            new_text: The corrected text to add in its place.
+            extractor: Optional entity extractor for the new text (defaults to
+                the same extractor ``add_text`` uses).
+
+        Returns:
+            The entities extracted from ``new_text``.
+        """
+        entities = await self.add_text(new_text, extractor=extractor)
+        if old_content != new_text:
+            await self.delete(old_content)
+        return entities
+
     async def get_all_nodes(self) -> list[Node]:
         """Return all nodes in the graph."""
         return await self.backend.get_all_nodes()
@@ -364,3 +403,14 @@ class ReasonGraph:
 
     def delete_stale_sync(self) -> int:
         return self._run(self.delete_stale())
+
+    def delete_sync(self, content: str) -> bool:
+        return self._run(self.delete(content))
+
+    def supersede_sync(
+        self,
+        old_content: str,
+        new_text: str,
+        extractor: ExtractorFn | None = None,
+    ) -> list[str]:
+        return self._run(self.supersede(old_content, new_text, extractor))

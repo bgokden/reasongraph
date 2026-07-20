@@ -5,6 +5,7 @@ import pytest
 from reasongraph._extraction import NERExtractor, GLiNER2Extractor
 from reasongraph.graph import ReasonGraph
 from reasongraph.backends._sqlite import SqliteBackend
+from reasongraph.backends._memory import MemoryBackend
 
 
 def _fake_encode(text):
@@ -437,3 +438,108 @@ async def test_add_texts_with_real_gliner2(graph, gliner2_extractor):
     # Source text should be present
     contents = {n.content for n in nodes}
     assert texts[0] in contents
+
+
+# -- delete and supersede --
+
+def _home_extractor(text: str) -> list[str]:
+    """Fake extractor: both facts share the 'home' entity, differ on the city."""
+    entities = {
+        "I live in Amsterdam.": ["Amsterdam", "home"],
+        "I live in Rotterdam.": ["Rotterdam", "home"],
+    }
+    return entities.get(text, [])
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_node_and_incident_edges(graph):
+    await graph.add_text(
+        "Socrates was a philosopher in Athens.", extractor=_fake_extractor
+    )
+
+    deleted = await graph.delete("Socrates was a philosopher in Athens.")
+    assert deleted is True
+
+    contents = {n.content for n in await graph.get_all_nodes()}
+    assert "Socrates was a philosopher in Athens." not in contents
+    # Entity nodes survive as benign orphans; only the text node is removed
+    assert "Socrates" in contents and "Athens" in contents
+    # Edges incident to the deleted text are gone
+    assert await graph.get_all_edges() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_missing_returns_false(graph):
+    assert await graph.delete("nothing was ever added") is False
+
+
+@pytest.mark.asyncio
+async def test_supersede_replaces_stale_fact(graph):
+    await graph.add_text("I live in Amsterdam.", extractor=_home_extractor)
+
+    entities = await graph.supersede(
+        "I live in Amsterdam.", "I live in Rotterdam.", extractor=_home_extractor
+    )
+    assert entities == ["Rotterdam", "home"]
+
+    contents = {n.content for n in await graph.get_all_nodes()}
+    assert "I live in Amsterdam." not in contents
+    assert "I live in Rotterdam." in contents
+
+    # The superseded fact can no longer resurface in a query
+    results = await graph.query("Where do I live?", top_k=5, hops=2)
+    assert "I live in Amsterdam." not in results
+
+
+@pytest.mark.asyncio
+async def test_supersede_preserves_shared_entity(graph):
+    await graph.add_text("I live in Amsterdam.", extractor=_home_extractor)
+    await graph.supersede(
+        "I live in Amsterdam.", "I live in Rotterdam.", extractor=_home_extractor
+    )
+
+    # The shared 'home' entity survives and now bridges only to the new text
+    neighbor_contents = {
+        n["content"] for n in await graph.backend.get_neighbors("home")
+    }
+    assert "I live in Rotterdam." in neighbor_contents
+    assert "I live in Amsterdam." not in neighbor_contents
+
+
+@pytest.mark.asyncio
+async def test_supersede_same_content_keeps_node(graph):
+    """A no-op supersede (old == new) must (re)add and keep the fact, not delete it."""
+    await graph.add_text("I live in Amsterdam.", extractor=_home_extractor)
+
+    entities = await graph.supersede(
+        "I live in Amsterdam.", "I live in Amsterdam.", extractor=_home_extractor
+    )
+    assert entities == ["Amsterdam", "home"]
+
+    contents = {n.content for n in await graph.get_all_nodes()}
+    assert "I live in Amsterdam." in contents
+
+
+def test_delete_and_supersede_sync():
+    """The delete_sync / supersede_sync wrappers work outside an event loop.
+
+    Uses MemoryBackend so repeated asyncio.run() calls (one per _sync call)
+    don't hit loop-bound resources.
+    """
+    g = ReasonGraph(backend=MemoryBackend())
+    g.embeddings.encode = _fake_encode
+    g.embeddings.encode_batch = _fake_encode_batch
+    g.embeddings.rerank = _fake_rerank
+    g.initialize_sync()
+    try:
+        g.add_text_sync("I live in Amsterdam.", extractor=_home_extractor)
+
+        entities = g.supersede_sync(
+            "I live in Amsterdam.", "I live in Rotterdam.", extractor=_home_extractor
+        )
+        assert entities == ["Rotterdam", "home"]
+
+        assert g.delete_sync("I live in Rotterdam.") is True
+        assert g.delete_sync("never added") is False
+    finally:
+        g.close_sync()

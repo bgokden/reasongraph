@@ -321,6 +321,38 @@ class SqliteBackend(Backend):
         await db.commit()
         return cursor.rowcount
 
+    async def delete_nodes(self, contents: list[str]) -> int:
+        if not contents:
+            return 0
+        db = await self._conn()
+
+        # Look up ids first, needed for vec_nodes/fts_nodes cleanup
+        placeholders = ",".join("?" for _ in contents)
+        cursor = await db.execute(
+            f"SELECT id FROM nodes WHERE content IN ({placeholders})", contents
+        )
+        ids = [row[0] for row in await cursor.fetchall()]
+
+        if not ids:
+            return 0
+
+        id_placeholders = ",".join("?" for _ in ids)
+
+        # Delete from virtual tables first
+        await db.execute(
+            f"DELETE FROM vec_nodes WHERE node_id IN ({id_placeholders})", ids
+        )
+        await db.execute(
+            f"DELETE FROM fts_nodes WHERE rowid IN ({id_placeholders})", ids
+        )
+
+        # Delete from main table (CASCADE handles edges)
+        cursor = await db.execute(
+            f"DELETE FROM nodes WHERE id IN ({id_placeholders})", ids
+        )
+        await db.commit()
+        return cursor.rowcount
+
     async def get_all_nodes(self) -> list[Node]:
         db = await self._conn()
         cursor = await db.execute(
