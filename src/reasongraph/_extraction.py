@@ -150,6 +150,32 @@ class GLiNER2Extractor:
         return results
 
 
+class ChatExtractor(GLiNER2Extractor):
+    """GLiNER2 extractor tuned for conversational / companion memory.
+
+    Extends the default entity set with conversational concepts -- ``preference``,
+    ``plan``, ``topic`` -- alongside the usual person/organization/location/event.
+    This lets things like "likes hard techno" or "planning a trip to Berlin"
+    become entity nodes, so they can bridge separate conversations through the
+    graph instead of being reachable only by weak embedding similarity.
+
+    Entity and causal relation extraction are otherwise identical to
+    ``GLiNER2Extractor``. Pass it explicitly:
+
+        graph.add_texts(history, extractor=ChatExtractor())
+    """
+
+    DEFAULT_ENTITY_TYPES = [
+        "person",
+        "organization",
+        "location",
+        "event",
+        "preference",
+        "plan",
+        "topic",
+    ]
+
+
 # Type alias for any entity extractor callable: text -> list of entity strings
 ExtractorFn = Callable[[str], list[str]]
 

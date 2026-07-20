@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from reasongraph._extraction import NERExtractor, GLiNER2Extractor
+from reasongraph._extraction import NERExtractor, GLiNER2Extractor, ChatExtractor
 from reasongraph.graph import ReasonGraph
 from reasongraph.backends._sqlite import SqliteBackend
 from reasongraph.backends._memory import MemoryBackend
@@ -370,6 +370,35 @@ def gliner2_extractor():
         return ext
     except Exception as e:
         pytest.skip(f"GLiNER2 model not available: {e}")
+
+
+def test_chat_extractor_config():
+    """ChatExtractor adds conversational entity types on top of the defaults."""
+    ext = ChatExtractor()
+    assert isinstance(ext, GLiNER2Extractor)
+    for t in ("preference", "plan", "topic"):
+        assert t in ext.entity_types
+    for t in ("person", "location", "event"):
+        assert t in ext.entity_types
+    assert hasattr(ext, "extract_causal")  # inherits causal extraction
+
+
+@pytest.fixture(scope="module")
+def chat_extractor():
+    pytest.importorskip("gliner2")
+    try:
+        ext = ChatExtractor()
+        ext("")  # force model download
+        return ext
+    except Exception as e:
+        pytest.skip(f"GLiNER2 model not available: {e}")
+
+
+def test_chat_extractor_runs_on_conversational_text(chat_extractor):
+    result = chat_extractor("I love hard techno and I plan to visit Berlin with Sarah.")
+    assert isinstance(result, list)
+    assert all(isinstance(e, str) for e in result)
+    assert len(result) >= 1
 
 
 def test_gliner2_entity_extraction(gliner2_extractor):

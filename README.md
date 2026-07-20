@@ -207,6 +207,13 @@ entities = graph.add_text_sync("Apple released the iPhone in 2007.", extractor=N
 gliner = GLiNER2Extractor(entity_types=["company", "product", "date"])
 entities = graph.add_text_sync("Apple released the iPhone in 2007.", extractor=gliner)
 
+# Conversational memory: ChatExtractor also captures preference/plan/topic,
+# so "hard techno" or "visit" become bridgeable nodes -- not just people/places
+from reasongraph import ChatExtractor
+entities = graph.add_text_sync(
+    "I love hard techno and plan to visit Berlin.", extractor=ChatExtractor()
+)  # ['Berlin', 'hard techno', 'visit']
+
 # Any callable works
 entities = graph.add_text_sync("some text", extractor=lambda t: ["custom"])
 ```
