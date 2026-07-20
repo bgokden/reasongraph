@@ -543,3 +543,21 @@ def test_delete_and_supersede_sync():
         assert g.delete_sync("never added") is False
     finally:
         g.close_sync()
+
+
+@pytest.mark.asyncio
+async def test_pluggable_embedder_via_constructor():
+    """ReasonGraph accepts a caller-supplied encoder (no second model stack)."""
+    def embed(x):
+        return [_fake_encode(t) for t in x] if isinstance(x, list) else _fake_encode(x)
+
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=embed)
+    async with g:
+        await g.add_text(
+            "Socrates was a philosopher in Athens.", extractor=_fake_extractor
+        )
+        nodes = await g.get_all_nodes()
+        contents = {n.content for n in nodes}
+        assert "Socrates was a philosopher in Athens." in contents
+        # Embeddings came from the pluggable encoder, normalized to plain lists
+        assert all(isinstance(n.embedding, list) for n in nodes)

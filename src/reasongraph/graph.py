@@ -4,7 +4,7 @@ import asyncio
 import json
 from importlib import resources
 
-from reasongraph._embeddings import EmbeddingManager
+from reasongraph._embeddings import EmbeddingManager, EmbedderLike
 from reasongraph._extraction import NERExtractor, GLiNER2Extractor, ExtractorFn, CausalExtractorFn
 from reasongraph._types import Node, Edge
 from reasongraph.backends._base import Backend
@@ -21,7 +21,7 @@ class ReasonGraph:
     def __init__(
         self,
         backend: Backend | None = None,
-        embed_model: str | None = None,
+        embed_model: EmbedderLike = None,
         rerank_model: str | None = None,
         forget_after: int = 30,
     ) -> None:

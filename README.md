@@ -298,6 +298,20 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 
 All methods are async. Sync variants are available with a `_sync` suffix (e.g. `query_sync`).
 
+`embed_model` accepts a model name (`str`), a `SentenceTransformer`, or any
+object/callable that encodes text. The encoder must take a `str` (returning one
+vector) or a `list[str]` (returning one vector per text); numpy, torch, or list
+outputs are all accepted. This lets a host reuse an embedder it already runs
+instead of loading a second stack:
+
+```python
+def encode(text_or_texts):
+    # reuse your own embedding library; return list[float] or list[list[float]]
+    ...
+
+graph = ReasonGraph(embed_model=encode)
+```
+
 ## License
 
 MIT
