@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -561,3 +562,64 @@ async def test_pluggable_embedder_via_constructor():
         assert "Socrates was a philosopher in Athens." in contents
         # Embeddings came from the pluggable encoder, normalized to plain lists
         assert all(isinstance(n.embedding, list) for n in nodes)
+
+
+# -- auto-forget hook (maybe_forget) --
+
+def _noop_embed(x):
+    """Trivial embedder so ReasonGraph construction loads no real model."""
+    return [[0.0] for _ in x] if isinstance(x, list) else [0.0]
+
+
+@pytest.mark.asyncio
+async def test_maybe_forget_disabled_by_default():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_noop_embed, forget_after=30)
+    async with g:
+        await g.add_nodes([("old fact", "text")])
+        g.backend._nodes["old fact"].last_accessed = datetime.now() - timedelta(days=60)
+
+        # forget_every is None -> disabled: no sweep even though the node is stale
+        assert await g.maybe_forget() == 0
+        assert len(await g.get_all_nodes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_maybe_forget_throttles_by_interval():
+    g = ReasonGraph(
+        backend=MemoryBackend(), embed_model=_noop_embed,
+        forget_after=30, forget_every=3600,
+    )
+    async with g:
+        await g.add_nodes([("old fact", "text")])
+        g.backend._nodes["old fact"].last_accessed = datetime.now() - timedelta(days=60)
+
+        # First call runs the sweep and removes the stale node
+        assert await g.maybe_forget() == 1
+        assert len(await g.get_all_nodes()) == 0
+
+        # A fresh stale node, but an immediate second call is throttled
+        await g.add_nodes([("another old", "text")])
+        g.backend._nodes["another old"].last_accessed = datetime.now() - timedelta(days=60)
+        assert await g.maybe_forget() == 0
+        assert len(await g.get_all_nodes()) == 1
+
+        # Once the interval has elapsed, the sweep runs again
+        g._last_forget = datetime.now() - timedelta(seconds=4000)
+        assert await g.maybe_forget() == 1
+        assert len(await g.get_all_nodes()) == 0
+
+
+def test_maybe_forget_sync():
+    g = ReasonGraph(
+        backend=MemoryBackend(), embed_model=_noop_embed,
+        forget_after=30, forget_every=3600,
+    )
+    g.initialize_sync()
+    try:
+        g.add_nodes_sync([("old", "text")])
+        g.backend._nodes["old"].last_accessed = datetime.now() - timedelta(days=60)
+
+        assert g.maybe_forget_sync() == 1
+        assert len(g.backend._nodes) == 0
+    finally:
+        g.close_sync()

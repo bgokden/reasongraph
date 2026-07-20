@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from importlib import resources
 
 from reasongraph._embeddings import EmbeddingManager, EmbedderLike
@@ -24,12 +25,15 @@ class ReasonGraph:
         embed_model: EmbedderLike = None,
         rerank_model: str | None = None,
         forget_after: int = 30,
+        forget_every: float | None = None,
     ) -> None:
         self.backend = backend or MemoryBackend()
         self.embeddings = EmbeddingManager(
             embed_model=embed_model, rerank_model=rerank_model
         )
         self.forget_after = forget_after
+        self.forget_every = forget_every
+        self._last_forget: datetime | None = None
 
     # -- Lifecycle --
 
@@ -299,6 +303,26 @@ class ReasonGraph:
         """Delete nodes not accessed within forget_after days."""
         return await self.backend.delete_stale_nodes(self.forget_after)
 
+    async def maybe_forget(self) -> int:
+        """Run ``delete_stale()`` at most once per ``forget_every`` seconds.
+
+        Designed to be called liberally (e.g. after each write or at the end of
+        a session), so regular-interval cleanup works without wiring an external
+        scheduler. Actual sweeps are throttled by wall-clock time.
+
+        Returns the number of nodes deleted on this call: 0 when ``forget_every``
+        is ``None`` (feature disabled), when the throttle interval has not yet
+        elapsed, or when nothing was stale.
+        """
+        if self.forget_every is None:
+            return 0
+        now = datetime.now()
+        if self._last_forget is not None:
+            if (now - self._last_forget).total_seconds() < self.forget_every:
+                return 0
+        self._last_forget = now
+        return await self.delete_stale()
+
     async def delete(self, content: str) -> bool:
         """Delete a single node and its incident edges by exact content.
 
@@ -403,6 +427,9 @@ class ReasonGraph:
 
     def delete_stale_sync(self) -> int:
         return self._run(self.delete_stale())
+
+    def maybe_forget_sync(self) -> int:
+        return self._run(self.maybe_forget())
 
     def delete_sync(self, content: str) -> bool:
         return self._run(self.delete(content))

@@ -281,7 +281,7 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 
 ## API Reference
 
-### `ReasonGraph(backend=None, embed_model=None, rerank_model=None, forget_after=30)`
+### `ReasonGraph(backend=None, embed_model=None, rerank_model=None, forget_after=30, forget_every=None)`
 
 | Method | Description |
 |--------|-------------|
@@ -292,6 +292,7 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 | `query(query, top_k=5, hops=4, rerank_top_k=4, search_mode="embedding", rrf_k=60)` | Search and traverse the graph |
 | `load_dataset(name)` | Load a built-in dataset |
 | `delete_stale()` | Remove nodes not accessed within `forget_after` days |
+| `maybe_forget()` | Throttled `delete_stale()`: sweeps at most once per `forget_every` seconds (no-op when `forget_every` is `None`) |
 | `delete(content)` | Remove a single node and its incident edges by exact content |
 | `supersede(old_content, new_text, extractor=None)` | Replace a stale fact: add `new_text`, then delete `old_content` |
 | `get_all_nodes()` / `get_all_edges()` | Inspect graph contents |
