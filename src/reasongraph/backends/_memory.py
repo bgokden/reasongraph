@@ -249,6 +249,13 @@ class MemoryBackend(Backend):
             }
         return deleted
 
+    async def get_created_at(self, contents: list[str]) -> dict[str, str]:
+        return {
+            c: self._nodes[c].created_at.isoformat()
+            for c in contents
+            if c in self._nodes
+        }
+
     async def get_all_nodes(self) -> list[Node]:
         return list(self._nodes.values())
 

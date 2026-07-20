@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import numpy as np
 import pytest
 
@@ -65,3 +67,35 @@ def test_callable_satisfies_embedder_protocol_object():
             return _fake_vec(x)
 
     assert isinstance(Enc(), Embedder)
+
+
+def test_apply_recency_boosts_newer_when_relevance_tied():
+    """With equal relevance, the newer item scores higher."""
+    scores = [0.0, 0.0]
+    items = [
+        {"content": "old", "created_at": datetime(2020, 1, 1).isoformat()},
+        {"content": "new", "created_at": datetime(2026, 1, 1).isoformat()},
+    ]
+    blended = EmbeddingManager._apply_recency(scores, items, weight=1.0)
+    assert blended[1] > blended[0]
+
+
+def test_apply_recency_partial_weight_blends():
+    """A strongly relevant old item can still beat a weakly relevant new one."""
+    scores = [5.0, 0.0]  # old is far more relevant
+    items = [
+        {"content": "old", "created_at": datetime(2020, 1, 1).isoformat()},
+        {"content": "new", "created_at": datetime(2026, 1, 1).isoformat()},
+    ]
+    blended = EmbeddingManager._apply_recency(scores, items, weight=0.3)
+    assert blended[0] > blended[1]
+
+
+def test_apply_recency_missing_created_at_treated_as_oldest():
+    scores = [0.0, 0.0]
+    items = [
+        {"content": "no-date"},
+        {"content": "dated", "created_at": datetime(2026, 1, 1).isoformat()},
+    ]
+    blended = EmbeddingManager._apply_recency(scores, items, weight=1.0)
+    assert blended[1] > blended[0]

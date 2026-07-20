@@ -246,3 +246,15 @@ async def test_delete_nodes_empty_list(backend):
 
     assert await backend.delete_nodes([]) == 0
     assert len(await backend.get_all_nodes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_created_at(backend):
+    from datetime import datetime
+
+    await backend.insert_nodes([_make_node("a"), _make_node("b")])
+
+    got = await backend.get_created_at(["a", "b", "missing"])
+    assert set(got.keys()) == {"a", "b"}  # missing content omitted
+    datetime.fromisoformat(got["a"])  # values are parseable ISO strings
+    assert await backend.get_created_at([]) == {}

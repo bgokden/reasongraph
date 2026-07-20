@@ -353,6 +353,17 @@ class SqliteBackend(Backend):
         await db.commit()
         return cursor.rowcount
 
+    async def get_created_at(self, contents: list[str]) -> dict[str, str]:
+        if not contents:
+            return {}
+        db = await self._conn()
+        placeholders = ",".join("?" for _ in contents)
+        cursor = await db.execute(
+            f"SELECT content, created_at FROM nodes WHERE content IN ({placeholders})",
+            contents,
+        )
+        return {row[0]: row[1] for row in await cursor.fetchall()}
+
     async def get_all_nodes(self) -> list[Node]:
         db = await self._conn()
         cursor = await db.execute(

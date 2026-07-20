@@ -289,7 +289,7 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 | `add_edges(edges)` | Add `(from, to)` content edges |
 | `add_text(text, extractor=None)` | Add text with automatic entity extraction |
 | `add_texts(texts, extractor=None, causal_extractor=None)` | Batch add with entity + causal extraction (auto-enabled with GLiNER2) |
-| `query(query, top_k=5, hops=4, rerank_top_k=4, search_mode="embedding", rrf_k=60)` | Search and traverse the graph |
+| `query(query, top_k=5, hops=4, rerank_top_k=4, search_mode="embedding", rrf_k=60, recency_weight=0.0)` | Search and traverse the graph; `recency_weight` in [0,1] blends recency into ranking so newer facts outrank older contradictions |
 | `load_dataset(name)` | Load a built-in dataset |
 | `delete_stale()` | Remove nodes not accessed within `forget_after` days |
 | `maybe_forget()` | Throttled `delete_stale()`: sweeps at most once per `forget_every` seconds (no-op when `forget_every` is `None`) |

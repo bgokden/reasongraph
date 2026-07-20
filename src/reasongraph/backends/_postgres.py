@@ -216,6 +216,20 @@ class PostgresBackend(Backend):
                 )
                 return cur.rowcount
 
+    async def get_created_at(self, contents: list[str]) -> dict[str, str]:
+        if not contents:
+            return {}
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT content, created_at FROM nodes WHERE content = ANY(%s)",
+                    (contents,),
+                )
+                return {
+                    row[0]: row[1].isoformat() for row in await cur.fetchall()
+                }
+
     async def get_all_nodes(self) -> list[Node]:
         pool = await self._get_pool()
         async with pool.connection() as conn:

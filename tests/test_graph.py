@@ -19,7 +19,7 @@ def _fake_encode_batch(texts):
     return [_fake_encode(t) for t in texts]
 
 
-def _fake_rerank(query, results, top_k):
+def _fake_rerank(query, results, top_k, recency_weight=0.0):
     return results[:top_k]
 
 
@@ -623,3 +623,35 @@ def test_maybe_forget_sync():
         assert len(g.backend._nodes) == 0
     finally:
         g.close_sync()
+
+
+# -- recency-weighted ranking --
+
+@pytest.mark.asyncio
+async def test_query_recency_weight_prefers_newer():
+    """With relevance tied, recency_weight=1 orders newer facts first."""
+    def same_vec(x):
+        v = [1.0, 0.0, 0.0, 0.0]
+        return [v for _ in x] if isinstance(x, list) else v
+
+    class FlatReranker:
+        def predict(self, pairs):
+            return [0.0] * len(pairs)
+
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=same_vec)
+    async with g:
+        await g.add_nodes([("old truth", "text"), ("new truth", "text")])
+        g.backend._nodes["old truth"].created_at = datetime(2020, 1, 1)
+        g.backend._nodes["new truth"].created_at = datetime(2026, 1, 1)
+        g.embeddings._rerank = FlatReranker()  # avoid loading a real cross-encoder
+
+        results = await g.query("truth", top_k=5, hops=1, recency_weight=1.0)
+        assert results[:2] == ["new truth", "old truth"]
+
+
+@pytest.mark.asyncio
+async def test_query_invalid_recency_weight_raises():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_noop_embed)
+    async with g:
+        with pytest.raises(ValueError):
+            await g.query("x", recency_weight=1.5)

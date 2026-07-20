@@ -189,6 +189,7 @@ class ReasonGraph:
         rerank_top_k: int = 4,
         search_mode: str = "embedding",
         rrf_k: int = 60,
+        recency_weight: float = 0.0,
     ) -> list[str]:
         """Query the graph with vector similarity and multi-hop traversal.
 
@@ -199,12 +200,17 @@ class ReasonGraph:
             rerank_top_k: Number of results to keep after reranking at each hop.
             search_mode: 'embedding', 'keyword', or 'hybrid'.
             rrf_k: RRF smoothing constant for hybrid mode (default 60).
+            recency_weight: In [0, 1]. When > 0, blends recency (by created_at)
+                into reranking so newer facts outrank older contradicting ones.
+                0 (default) leaves ranking unchanged.
 
         Returns:
             List of text-type node contents in relevance order.
         """
         if search_mode not in ("embedding", "keyword", "hybrid"):
             raise ValueError(f"search_mode must be 'embedding', 'keyword', or 'hybrid', got '{search_mode}'")
+        if not 0.0 <= recency_weight <= 1.0:
+            raise ValueError(f"recency_weight must be in [0, 1], got {recency_weight}")
 
         embedding = self.embeddings.encode(query)
 
@@ -229,6 +235,15 @@ class ReasonGraph:
             text_seeds = [s for s in seeds if s.get("type") == "text"]
             entity_seeds = [s for s in seeds if s.get("type") != "text"]
 
+            # For recency-weighted ranking, attach created_at to the text seeds
+            # before reranking (fetched only when the feature is enabled).
+            if recency_weight > 0 and text_seeds:
+                created = await self.backend.get_created_at(
+                    [s["content"] for s in text_seeds]
+                )
+                for s in text_seeds:
+                    s.setdefault("created_at", created.get(s["content"]))
+
             # Split text seeds by provenance: chain continuations (from
             # text->text edges) get priority access to the rerank budget,
             # bridge discoveries (from entity->text edges) fill remaining
@@ -238,10 +253,10 @@ class ReasonGraph:
             chain_pool = [s for s in text_seeds if s.get("_source", "chain") == "chain"]
             bridge_pool = [s for s in text_seeds if s.get("_source") == "bridge"]
 
-            ranked_chain = self.embeddings.rerank(query, chain_pool, rerank_top_k)
+            ranked_chain = self.embeddings.rerank(query, chain_pool, rerank_top_k, recency_weight)
             remaining_budget = max(0, rerank_top_k - len(ranked_chain))
             if remaining_budget > 0 and bridge_pool:
-                ranked_bridge = self.embeddings.rerank(query, bridge_pool, remaining_budget)
+                ranked_bridge = self.embeddings.rerank(query, bridge_pool, remaining_budget, recency_weight)
             else:
                 ranked_bridge = []
             ranked = ranked_chain + ranked_bridge
@@ -417,9 +432,10 @@ class ReasonGraph:
         rerank_top_k: int = 4,
         search_mode: str = "embedding",
         rrf_k: int = 60,
+        recency_weight: float = 0.0,
     ) -> list[str]:
         return self._run(self.query(
-            query, top_k, hops, rerank_top_k, search_mode, rrf_k,
+            query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight,
         ))
 
     def load_dataset_sync(self, name: str) -> None:

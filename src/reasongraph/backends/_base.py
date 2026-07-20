@@ -43,6 +43,13 @@ class Backend(ABC):
         """Delete the given nodes and their incident edges. Return count deleted."""
 
     @abstractmethod
+    async def get_created_at(self, contents: list[str]) -> dict[str, str]:
+        """Return {content: created_at ISO string} for the given contents.
+
+        Missing contents are omitted. Used for recency-weighted ranking.
+        """
+
+    @abstractmethod
     async def get_all_nodes(self) -> list[Node]:
         """Return every node in the graph."""
 

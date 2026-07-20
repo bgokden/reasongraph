@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Callable, Protocol, Union, runtime_checkable
 
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -82,8 +83,17 @@ class EmbeddingManager:
         query: str,
         results: list[dict[str, str]],
         top_k: int,
+        recency_weight: float = 0.0,
     ) -> list[dict[str, str]]:
-        """Rerank results using a cross-encoder. Lazy-loads the model on first call."""
+        """Rerank results using a cross-encoder. Lazy-loads the model on first call.
+
+        When ``recency_weight`` > 0, the cross-encoder relevance score is blended
+        with a recency score derived from each result's ``created_at`` (when
+        present), so newer facts outrank older contradicting ones. The blend is
+        ``(1 - recency_weight) * relevance + recency_weight * recency``, both
+        normalized to [0, 1] within the candidate set. ``recency_weight`` = 0
+        (the default) leaves ranking behavior unchanged.
+        """
         if not results:
             return []
 
@@ -110,5 +120,46 @@ class EmbeddingManager:
 
         pairs = [(query, r["content"]) for r in unique]
         scores = self._rerank.predict(pairs)
-        ranked = [r for _, r in sorted(zip(scores, unique), reverse=True)]
+
+        if recency_weight > 0:
+            blended = self._apply_recency(list(scores), unique, recency_weight)
+            order = sorted(range(len(unique)), key=lambda i: blended[i], reverse=True)
+            ranked = [unique[i] for i in order]
+        else:
+            ranked = [r for _, r in sorted(zip(scores, unique), reverse=True)]
         return ranked[:top_k]
+
+    @staticmethod
+    def _apply_recency(
+        scores: list[float], items: list[dict[str, str]], weight: float
+    ) -> list[float]:
+        """Blend relevance scores with recency, both min-max normalized to [0, 1]."""
+        smin, smax = min(scores), max(scores)
+        srange = smax - smin
+        relevance = [(s - smin) / srange if srange else 0.5 for s in scores]
+
+        times: list[float | None] = []
+        for it in items:
+            raw = it.get("created_at")
+            try:
+                times.append(datetime.fromisoformat(raw).timestamp() if raw else None)
+            except (TypeError, ValueError):
+                times.append(None)
+
+        valid = [t for t in times if t is not None]
+        tmin, tmax = (min(valid), max(valid)) if valid else (0.0, 0.0)
+        trange = tmax - tmin
+
+        recency = []
+        for t in times:
+            if t is None:
+                recency.append(0.0)  # unknown age -> treat as oldest
+            elif trange:
+                recency.append((t - tmin) / trange)
+            else:
+                recency.append(0.5)  # all same time -> neutral
+
+        return [
+            (1 - weight) * rel + weight * rec
+            for rel, rec in zip(relevance, recency)
+        ]
