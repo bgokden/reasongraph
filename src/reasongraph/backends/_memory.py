@@ -42,6 +42,7 @@ class MemoryBackend(Backend):
                 embedding=n["embedding"],
                 created_at=datetime.fromisoformat(n["created_at"]),
                 last_accessed=datetime.fromisoformat(n["last_accessed"]),
+                scopes=set(n.get("scopes", [])),
             )
         for e in data.get("edges", []):
             self._edges.add((e["from_content"], e["to_content"]))
@@ -57,6 +58,7 @@ class MemoryBackend(Backend):
                 "embedding": node.embedding,
                 "created_at": node.created_at.isoformat(),
                 "last_accessed": node.last_accessed.isoformat(),
+                "scopes": sorted(node.scopes),
             })
         edges = []
         for from_c, to_c in self._edges:
@@ -70,36 +72,48 @@ class MemoryBackend(Backend):
             if node.embedding is None:
                 raise ValueError(f"Node '{node.content}' has no embedding")
 
-        # Deduplicate within batch (keep first occurrence)
+        # Deduplicate within batch (keep first occurrence, union its scopes)
         seen: dict[str, Node] = {}
         unique: list[Node] = []
         for node in nodes:
-            if node.content not in seen:
+            if node.content in seen:
+                seen[node.content].scopes |= node.scopes
+            else:
                 seen[node.content] = node
                 unique.append(node)
 
         for node in unique:
             if node.content in self._nodes:
-                # Update last_accessed for existing nodes
-                self._nodes[node.content].last_accessed = now
+                # Update last_accessed and union scopes for existing nodes
+                existing = self._nodes[node.content]
+                existing.last_accessed = now
+                existing.scopes |= node.scopes
             else:
                 node.last_accessed = now
                 self._nodes[node.content] = node
+
+    def _candidates(self, scopes: set[str] | None) -> list[Node]:
+        """Nodes eligible as search seeds, filtered by scope when given."""
+        if scopes:
+            return [n for n in self._nodes.values() if n.scopes & scopes]
+        return list(self._nodes.values())
 
     async def insert_edges(self, edges: list[Edge]) -> None:
         for edge in edges:
             self._edges.add((edge.from_content, edge.to_content))
 
     async def knn_search(
-        self, embedding: list[float], top_k: int
+        self, embedding: list[float], top_k: int,
+        scopes: set[str] | None = None,
     ) -> list[dict[str, str]]:
-        if not self._nodes:
+        candidates = self._candidates(scopes)
+        if not candidates:
             return []
 
         contents = []
         types = []
         embeddings = []
-        for node in self._nodes.values():
+        for node in candidates:
             contents.append(node.content)
             types.append(node.type)
             embeddings.append(node.embedding)
@@ -133,14 +147,16 @@ class MemoryBackend(Backend):
     async def hybrid_search(
         self, embedding: list[float], query_text: str, top_k: int,
         rrf_k: int = 60, keyword_only: bool = False,
+        scopes: set[str] | None = None,
     ) -> list[dict[str, str]]:
-        if not self._nodes:
+        candidates = self._candidates(scopes)
+        if not candidates:
             return []
 
         contents = []
         types = []
         embeddings = []
-        for node in self._nodes.values():
+        for node in candidates:
             contents.append(node.content)
             types.append(node.type)
             embeddings.append(node.embedding)
@@ -256,8 +272,8 @@ class MemoryBackend(Backend):
             if c in self._nodes
         }
 
-    async def get_all_nodes(self) -> list[Node]:
-        return list(self._nodes.values())
+    async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
+        return self._candidates(scopes)
 
     async def get_all_edges(self) -> list[Edge]:
         return [

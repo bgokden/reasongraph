@@ -684,3 +684,29 @@ async def test_query_invalid_recency_weight_raises():
     async with g:
         with pytest.raises(ValueError):
             await g.query("x", recency_weight=1.5)
+
+
+# -- multi-label scopes (shared graph) --
+
+@pytest.mark.asyncio
+async def test_scopes_filter_seeds_but_reasoning_crosses(graph):
+    # Two facts under different scopes, bridged by a shared 'Zeus' entity
+    await graph.add_text("Fact A about Zeus.", extractor=lambda t: ["Zeus"], scopes=["user-1"])
+    await graph.add_text("Fact B about Zeus.", extractor=lambda t: ["Zeus"], scopes=["topic-myth"])
+
+    # Seeds are drawn only from user-1, but traversal follows the shared entity
+    # across scopes, so the topic-myth fact is still reached.
+    results = await graph.query("Zeus", top_k=5, hops=3, scopes=["user-1"])
+    assert "Fact A about Zeus." in results
+    assert "Fact B about Zeus." in results
+
+
+@pytest.mark.asyncio
+async def test_scopes_isolate_seeds_without_a_bridge(graph):
+    # No shared entity => no bridge, so a scoped query cannot reach the other scope
+    await graph.add_text("Private A fact.", extractor=lambda t: [], scopes=["user-1"])
+    await graph.add_text("Private B fact.", extractor=lambda t: [], scopes=["user-2"])
+
+    results = await graph.query("fact", top_k=5, hops=3, scopes=["user-1"])
+    assert "Private A fact." in results
+    assert "Private B fact." not in results

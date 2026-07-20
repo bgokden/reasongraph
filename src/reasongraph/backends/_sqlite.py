@@ -93,6 +93,19 @@ class SqliteBackend(Backend):
             USING fts5(content, tokenize='trigram')
         """)
 
+        # Free-text scope tags (many-to-many). Not partitions: used only to
+        # narrow query seeds; the graph and traversal stay shared.
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS node_scopes (
+                node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+                scope TEXT NOT NULL,
+                PRIMARY KEY (node_id, scope)
+            )
+        """)
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS node_scopes_scope_idx ON node_scopes (scope)"
+        )
+
         await self._db.commit()
 
     async def close(self) -> None:
@@ -108,34 +121,35 @@ class SqliteBackend(Backend):
             if node.embedding is None:
                 raise ValueError(f"Node '{node.content}' has no embedding")
 
-        # Deduplicate within the batch (keep first occurrence)
+        # Deduplicate within the batch (keep first occurrence, union its scopes)
         seen: dict[str, Node] = {}
         unique_nodes: list[Node] = []
         for node in nodes:
-            if node.content not in seen:
+            if node.content in seen:
+                seen[node.content].scopes |= node.scopes
+            else:
                 seen[node.content] = node
                 unique_nodes.append(node)
 
-        # Check which contents already exist in the database
+        # Map existing contents to their node ids (needed to attach scopes)
         contents = [node.content for node in unique_nodes]
         placeholders = ",".join("?" for _ in contents)
         cursor = await db.execute(
-            f"SELECT content FROM nodes WHERE content IN ({placeholders})",
+            f"SELECT content, id FROM nodes WHERE content IN ({placeholders})",
             contents,
         )
-        existing = {row[0] for row in await cursor.fetchall()}
+        existing = {row[0]: row[1] for row in await cursor.fetchall()}
 
-        # Update last_accessed for existing nodes
         for node in unique_nodes:
             if node.content in existing:
+                # Existing node: bump last_accessed and union in any new scopes
                 await db.execute(
                     "UPDATE nodes SET last_accessed = ? WHERE content = ?",
                     (now, node.content),
                 )
-
-        # Insert new nodes into all three tables
-        for node in unique_nodes:
-            if node.content not in existing:
+                await self._insert_scopes(db, existing[node.content], node.scopes)
+            else:
+                # New node: insert into all three tables plus its scopes
                 blob = _embedding_to_blob(node.embedding)
                 cursor = await db.execute(
                     """
@@ -153,8 +167,18 @@ class SqliteBackend(Backend):
                     "INSERT INTO fts_nodes (rowid, content) VALUES (?, ?)",
                     (row_id, node.content),
                 )
+                await self._insert_scopes(db, row_id, node.scopes)
 
         await db.commit()
+
+    @staticmethod
+    async def _insert_scopes(db, node_id: int, scopes: set[str]) -> None:
+        if not scopes:
+            return
+        await db.executemany(
+            "INSERT OR IGNORE INTO node_scopes (node_id, scope) VALUES (?, ?)",
+            [(node_id, scope) for scope in scopes],
+        )
 
     async def insert_edges(self, edges: list[Edge]) -> None:
         db = await self._conn()
@@ -171,21 +195,37 @@ class SqliteBackend(Backend):
         await db.commit()
 
     async def knn_search(
-        self, embedding: list[float], top_k: int
+        self, embedding: list[float], top_k: int,
+        scopes: set[str] | None = None,
     ) -> list[dict[str, str]]:
         db = await self._conn()
         query_blob = _embedding_to_blob(embedding)
 
-        cursor = await db.execute(
-            """
-            SELECT n.content, n.type
-            FROM vec_nodes v
-            JOIN nodes n ON n.id = v.node_id
-            WHERE v.embedding MATCH ? AND k = ?
-            ORDER BY v.distance
-            """,
-            (query_blob, top_k),
-        )
+        if scopes:
+            # Exact KNN restricted to the scope subset via the vec_distance_cosine
+            # scalar (the vec0 index can't be filtered by a many-to-many tag).
+            scope_ph = ",".join("?" for _ in scopes)
+            cursor = await db.execute(
+                f"""
+                SELECT n.content, n.type
+                FROM nodes n
+                WHERE n.id IN (SELECT node_id FROM node_scopes WHERE scope IN ({scope_ph}))
+                ORDER BY vec_distance_cosine(n.embedding, ?)
+                LIMIT ?
+                """,
+                [*scopes, query_blob, top_k],
+            )
+        else:
+            cursor = await db.execute(
+                """
+                SELECT n.content, n.type
+                FROM vec_nodes v
+                JOIN nodes n ON n.id = v.node_id
+                WHERE v.embedding MATCH ? AND k = ?
+                ORDER BY v.distance
+                """,
+                (query_blob, top_k),
+            )
         rows = await cursor.fetchall()
 
         now = datetime.now().isoformat()
@@ -202,67 +242,106 @@ class SqliteBackend(Backend):
     async def hybrid_search(
         self, embedding: list[float], query_text: str, top_k: int,
         rrf_k: int = 60, keyword_only: bool = False,
+        scopes: set[str] | None = None,
     ) -> list[dict[str, str]]:
         db = await self._conn()
         short_query = len(query_text) < 3
+        # Optional "restrict to nodes in these scopes" clause + its parameters.
+        scope_ph = ",".join("?" for _ in scopes) if scopes else ""
+        scope_ids_sql = (
+            f"n.id IN (SELECT node_id FROM node_scopes WHERE scope IN ({scope_ph}))"
+            if scopes else "1=1"
+        )
+        scope_params = list(scopes) if scopes else []
 
         if keyword_only:
             if short_query:
                 # FTS5 trigram needs >= 3 chars; fall back to LIKE
                 cursor = await db.execute(
-                    """
-                    SELECT content, type FROM nodes
-                    WHERE content LIKE ?
+                    f"""
+                    SELECT n.content, n.type FROM nodes n
+                    WHERE n.content LIKE ? AND {scope_ids_sql}
                     LIMIT ?
                     """,
-                    (f"%{query_text}%", top_k),
+                    [f"%{query_text}%", *scope_params, top_k],
                 )
             else:
                 escaped = _escape_fts5(query_text)
                 cursor = await db.execute(
-                    """
+                    f"""
                     SELECT n.content, n.type
                     FROM fts_nodes f
                     JOIN nodes n ON n.id = f.rowid
-                    WHERE fts_nodes MATCH ?
+                    WHERE fts_nodes MATCH ? AND {scope_ids_sql}
                     ORDER BY f.rank
                     LIMIT ?
                     """,
-                    (escaped, top_k),
+                    [escaped, *scope_params, top_k],
                 )
         else:
             if short_query:
                 # Can't use FTS5; fall back to embedding-only
-                return await self.knn_search(embedding, top_k)
+                return await self.knn_search(embedding, top_k, scopes)
 
             query_blob = _embedding_to_blob(embedding)
             escaped = _escape_fts5(query_text)
-            fetch_k = top_k * 3
 
-            cursor = await db.execute(
-                """
-                WITH emb_ranked AS (
-                    SELECT node_id,
-                        ROW_NUMBER() OVER (ORDER BY distance) AS rank
-                    FROM vec_nodes
-                    WHERE embedding MATCH ? AND k = ?
-                ),
-                kw_ranked AS (
-                    SELECT rowid AS node_id,
-                        ROW_NUMBER() OVER (ORDER BY rank) AS kw_rank
-                    FROM fts_nodes
-                    WHERE fts_nodes MATCH ?
+            if scopes:
+                # Scoped RRF: rank the scope subset with the vec_distance_cosine
+                # scalar (exact) and scope-filtered FTS matches.
+                cursor = await db.execute(
+                    f"""
+                    WITH scoped AS (
+                        SELECT DISTINCT node_id FROM node_scopes WHERE scope IN ({scope_ph})
+                    ),
+                    emb_ranked AS (
+                        SELECT n.id AS node_id,
+                            ROW_NUMBER() OVER (ORDER BY vec_distance_cosine(n.embedding, ?)) AS rank
+                        FROM nodes n
+                        WHERE n.id IN (SELECT node_id FROM scoped)
+                    ),
+                    kw_ranked AS (
+                        SELECT f.rowid AS node_id,
+                            ROW_NUMBER() OVER (ORDER BY f.rank) AS kw_rank
+                        FROM fts_nodes f
+                        WHERE fts_nodes MATCH ? AND f.rowid IN (SELECT node_id FROM scoped)
+                    )
+                    SELECT n.content, n.type
+                    FROM nodes n
+                    LEFT JOIN emb_ranked e ON e.node_id = n.id
+                    LEFT JOIN kw_ranked k ON k.node_id = n.id
+                    WHERE e.node_id IS NOT NULL OR k.node_id IS NOT NULL
+                    ORDER BY COALESCE(1.0 / (? + e.rank), 0) + COALESCE(1.0 / (? + k.kw_rank), 0) DESC
+                    LIMIT ?
+                    """,
+                    [*scope_params, query_blob, escaped, rrf_k, rrf_k, top_k],
                 )
-                SELECT n.content, n.type
-                FROM nodes n
-                LEFT JOIN emb_ranked e ON e.node_id = n.id
-                LEFT JOIN kw_ranked k ON k.node_id = n.id
-                WHERE e.node_id IS NOT NULL OR k.node_id IS NOT NULL
-                ORDER BY COALESCE(1.0 / (? + e.rank), 0) + COALESCE(1.0 / (? + k.kw_rank), 0) DESC
-                LIMIT ?
-                """,
-                (query_blob, fetch_k, escaped, rrf_k, rrf_k, top_k),
-            )
+            else:
+                fetch_k = top_k * 3
+                cursor = await db.execute(
+                    """
+                    WITH emb_ranked AS (
+                        SELECT node_id,
+                            ROW_NUMBER() OVER (ORDER BY distance) AS rank
+                        FROM vec_nodes
+                        WHERE embedding MATCH ? AND k = ?
+                    ),
+                    kw_ranked AS (
+                        SELECT rowid AS node_id,
+                            ROW_NUMBER() OVER (ORDER BY rank) AS kw_rank
+                        FROM fts_nodes
+                        WHERE fts_nodes MATCH ?
+                    )
+                    SELECT n.content, n.type
+                    FROM nodes n
+                    LEFT JOIN emb_ranked e ON e.node_id = n.id
+                    LEFT JOIN kw_ranked k ON k.node_id = n.id
+                    WHERE e.node_id IS NOT NULL OR k.node_id IS NOT NULL
+                    ORDER BY COALESCE(1.0 / (? + e.rank), 0) + COALESCE(1.0 / (? + k.kw_rank), 0) DESC
+                    LIMIT ?
+                    """,
+                    (query_blob, fetch_k, escaped, rrf_k, rrf_k, top_k),
+                )
 
         rows = await cursor.fetchall()
         now = datetime.now().isoformat()
@@ -364,19 +443,39 @@ class SqliteBackend(Backend):
         )
         return {row[0]: row[1] for row in await cursor.fetchall()}
 
-    async def get_all_nodes(self) -> list[Node]:
+    async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         db = await self._conn()
-        cursor = await db.execute(
-            "SELECT content, type, embedding, created_at, last_accessed FROM nodes"
-        )
+        if scopes:
+            scope_ph = ",".join("?" for _ in scopes)
+            cursor = await db.execute(
+                f"""
+                SELECT n.id, n.content, n.type, n.embedding, n.created_at, n.last_accessed
+                FROM nodes n
+                WHERE n.id IN (SELECT node_id FROM node_scopes WHERE scope IN ({scope_ph}))
+                """,
+                list(scopes),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT id, content, type, embedding, created_at, last_accessed FROM nodes"
+            )
+        rows = await cursor.fetchall()
+
+        # Fetch scope tags for the returned nodes
+        scope_map: dict[int, set[str]] = {}
+        cursor = await db.execute("SELECT node_id, scope FROM node_scopes")
+        for node_id, scope in await cursor.fetchall():
+            scope_map.setdefault(node_id, set()).add(scope)
+
         nodes = []
-        for content, node_type, blob, created_at, last_accessed in await cursor.fetchall():
+        for node_id, content, node_type, blob, created_at, last_accessed in rows:
             nodes.append(Node(
                 content=content,
                 type=node_type,
                 embedding=_blob_to_list(blob),
                 created_at=datetime.fromisoformat(created_at),
                 last_accessed=datetime.fromisoformat(last_accessed),
+                scopes=scope_map.get(node_id, set()),
             ))
         return nodes
 

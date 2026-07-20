@@ -68,6 +68,19 @@ class PostgresBackend(Backend):
                 "CREATE INDEX IF NOT EXISTS edges_to_idx ON edges (to_content)"
             )
 
+            # Free-text scope tags (many-to-many). Not partitions: used only to
+            # narrow query seeds; the graph and traversal stay shared.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS node_scopes (
+                    node_content TEXT NOT NULL REFERENCES nodes(content) ON DELETE CASCADE,
+                    scope TEXT NOT NULL,
+                    PRIMARY KEY (node_content, scope)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS node_scopes_scope_idx ON node_scopes (scope)"
+            )
+
     async def close(self) -> None:
         if self._pool is not None:
             await self._pool.close()
@@ -90,6 +103,18 @@ class PostgresBackend(Backend):
                     """,
                     data,
                 )
+                scope_rows = [
+                    (node.content, scope) for node in nodes for scope in node.scopes
+                ]
+                if scope_rows:
+                    await cur.executemany(
+                        """
+                        INSERT INTO node_scopes (node_content, scope)
+                        VALUES (%s, %s)
+                        ON CONFLICT (node_content, scope) DO NOTHING
+                        """,
+                        scope_rows,
+                    )
 
     async def insert_edges(self, edges: list[Edge]) -> None:
         pool = await self._get_pool()
@@ -106,41 +131,64 @@ class PostgresBackend(Backend):
                 )
 
     async def knn_search(
-        self, embedding: list[float], top_k: int
+        self, embedding: list[float], top_k: int,
+        scopes: set[str] | None = None,
     ) -> list[dict[str, str]]:
         pool = await self._get_pool()
         vec_str = f"[{', '.join(map(str, embedding))}]"
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(
-                    f"""
-                    SELECT content, type
-                    FROM nodes
-                    ORDER BY embedding <=> '{vec_str}'
-                    LIMIT {top_k}
-                    """
-                )
+                if scopes:
+                    await cur.execute(
+                        f"""
+                        SELECT content, type
+                        FROM nodes
+                        WHERE content IN (
+                            SELECT node_content FROM node_scopes WHERE scope = ANY(%s)
+                        )
+                        ORDER BY embedding <=> '{vec_str}'
+                        LIMIT {top_k}
+                        """,
+                        (list(scopes),),
+                    )
+                else:
+                    await cur.execute(
+                        f"""
+                        SELECT content, type
+                        FROM nodes
+                        ORDER BY embedding <=> '{vec_str}'
+                        LIMIT {top_k}
+                        """
+                    )
                 rows = await cur.fetchall()
                 return [{"content": row[0], "type": row[1]} for row in rows]
 
     async def hybrid_search(
         self, embedding: list[float], query_text: str, top_k: int,
         rrf_k: int = 60, keyword_only: bool = False,
+        scopes: set[str] | None = None,
     ) -> list[dict[str, str]]:
         pool = await self._get_pool()
         vec_str = f"[{', '.join(map(str, embedding))}]"
+        # Optional "restrict to nodes in these scopes" clause + its parameter.
+        scope_sql = (
+            "WHERE content IN (SELECT node_content FROM node_scopes WHERE scope = ANY(%s))"
+            if scopes else ""
+        )
+        scope_param = [list(scopes)] if scopes else []
         async with pool.connection() as conn:
             await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
             async with conn.cursor() as cur:
                 if keyword_only:
                     await cur.execute(
-                        """
+                        f"""
                         SELECT content, type
                         FROM nodes
+                        {scope_sql}
                         ORDER BY similarity(content, %s) DESC
                         LIMIT %s
                         """,
-                        (query_text, top_k),
+                        (*scope_param, query_text, top_k),
                     )
                     return [
                         {"content": row[0], "type": row[1]}
@@ -156,6 +204,7 @@ class PostgresBackend(Backend):
                                 ORDER BY embedding <=> '{vec_str}'
                             ) AS rank
                         FROM nodes
+                        {scope_sql}
                     ),
                     kw_ranked AS (
                         SELECT content,
@@ -163,6 +212,7 @@ class PostgresBackend(Backend):
                                 ORDER BY similarity(content, %s) DESC
                             ) AS rank
                         FROM nodes
+                        {scope_sql}
                     )
                     SELECT e.content, e.type
                     FROM emb_ranked e
@@ -170,7 +220,9 @@ class PostgresBackend(Backend):
                     ORDER BY 1.0 / (%s + e.rank) + 1.0 / (%s + k.rank) DESC
                     LIMIT %s
                     """,
-                    (query_text, rrf_k, rrf_k, top_k),
+                    # Placeholder order: emb-CTE scope, kw similarity, kw-CTE
+                    # scope, then the two rrf_k and the limit.
+                    (*scope_param, query_text, *scope_param, rrf_k, rrf_k, top_k),
                 )
                 return [
                     {"content": row[0], "type": row[1]}
@@ -230,21 +282,41 @@ class PostgresBackend(Backend):
                     row[0]: row[1].isoformat() for row in await cur.fetchall()
                 }
 
-    async def get_all_nodes(self) -> list[Node]:
+    async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         pool = await self._get_pool()
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT content, type, embedding, created_at, last_accessed FROM nodes"
-                )
+                if scopes:
+                    await cur.execute(
+                        """
+                        SELECT content, type, embedding, created_at, last_accessed
+                        FROM nodes
+                        WHERE content IN (
+                            SELECT node_content FROM node_scopes WHERE scope = ANY(%s)
+                        )
+                        """,
+                        (list(scopes),),
+                    )
+                else:
+                    await cur.execute(
+                        "SELECT content, type, embedding, created_at, last_accessed FROM nodes"
+                    )
+                rows = await cur.fetchall()
+
+                await cur.execute("SELECT node_content, scope FROM node_scopes")
+                scope_map: dict[str, set[str]] = {}
+                for node_content, scope in await cur.fetchall():
+                    scope_map.setdefault(node_content, set()).add(scope)
+
                 nodes = []
-                for content, node_type, emb, created_at, last_accessed in await cur.fetchall():
+                for content, node_type, emb, created_at, last_accessed in rows:
                     nodes.append(Node(
                         content=content,
                         type=node_type,
-                        embedding=list(emb) if emb else None,
+                        embedding=list(emb) if emb is not None else None,
                         created_at=created_at,
                         last_accessed=last_accessed,
+                        scopes=scope_map.get(content, set()),
                     ))
                 return nodes
 

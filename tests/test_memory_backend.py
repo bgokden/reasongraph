@@ -306,3 +306,30 @@ async def test_get_created_at(backend):
     assert set(got.keys()) == {"a", "b"}  # missing content omitted
     datetime.fromisoformat(got["a"])  # values are parseable ISO strings
     assert await backend.get_created_at([]) == {}
+
+
+def _scoped_node(content: str, scopes: set[str], node_type: str = "text") -> Node:
+    node = _make_node(content, node_type)
+    node.scopes = set(scopes)
+    return node
+
+
+@pytest.mark.asyncio
+async def test_scopes_multi_label_union_and_seed_filter(backend):
+    await backend.insert_nodes([_scoped_node("shared fact", {"user-1", "topic-econ"})])
+    # Re-adding the same content under a new scope unions the tags
+    await backend.insert_nodes([_scoped_node("shared fact", {"session-9"})])
+    await backend.insert_nodes([_scoped_node("other fact", {"user-2"})])
+
+    by_content = {n.content: n for n in await backend.get_all_nodes()}
+    assert by_content["shared fact"].scopes == {"user-1", "topic-econ", "session-9"}
+
+    # A scoped KNN only seeds from nodes carrying that scope
+    emb = _make_node("other fact").embedding
+    res = await backend.knn_search(emb, top_k=10, scopes={"user-1"})
+    assert all(r["content"] != "other fact" for r in res)
+    assert "shared fact" in {r["content"] for r in res}
+
+    # get_all_nodes can filter by scope too
+    assert {n.content for n in await backend.get_all_nodes(scopes={"topic-econ"})} == {"shared fact"}
+    assert {n.content for n in await backend.get_all_nodes(scopes={"user-2"})} == {"other fact"}

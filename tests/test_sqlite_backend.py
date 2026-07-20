@@ -258,3 +258,39 @@ async def test_get_created_at(backend):
     assert set(got.keys()) == {"a", "b"}  # missing content omitted
     datetime.fromisoformat(got["a"])  # values are parseable ISO strings
     assert await backend.get_created_at([]) == {}
+
+
+def _scoped_node(content: str, scopes: set[str], node_type: str = "text") -> Node:
+    node = _make_node(content, node_type)
+    node.scopes = set(scopes)
+    return node
+
+
+@pytest.mark.asyncio
+async def test_scopes_multi_label_union_and_seed_filter(backend):
+    await backend.insert_nodes([_scoped_node("shared fact", {"user-1", "topic-econ"})])
+    # Re-adding the same content under a new scope unions the tags
+    await backend.insert_nodes([_scoped_node("shared fact", {"session-9"})])
+    await backend.insert_nodes([_scoped_node("other fact", {"user-2"})])
+
+    by_content = {n.content: n for n in await backend.get_all_nodes()}
+    assert by_content["shared fact"].scopes == {"user-1", "topic-econ", "session-9"}
+
+    # Scoped KNN (vec_distance_cosine path) only seeds from that scope
+    emb = _make_node("other fact").embedding
+    res = await backend.knn_search(emb, top_k=10, scopes={"user-1"})
+    assert all(r["content"] != "other fact" for r in res)
+    assert "shared fact" in {r["content"] for r in res}
+
+    # Scoped keyword and hybrid search also stay within the scope
+    kw = await backend.hybrid_search(emb, "other fact", 10, keyword_only=True, scopes={"user-1"})
+    assert all(r["content"] != "other fact" for r in kw)
+    hy = await backend.hybrid_search(emb, "shared", 10, scopes={"user-1"})
+    assert all(r["content"] != "other fact" for r in hy)
+
+    # Scoped get_all_nodes
+    assert {n.content for n in await backend.get_all_nodes(scopes={"topic-econ"})} == {"shared fact"}
+
+    # Deleting a node cascades its scope rows
+    await backend.delete_nodes(["shared fact"])
+    assert await backend.get_all_nodes(scopes={"user-1"}) == []

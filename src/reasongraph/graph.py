@@ -54,16 +54,24 @@ class ReasonGraph:
 
     # -- Core operations --
 
-    async def add_nodes(self, nodes: list[tuple[str, str]]) -> None:
+    async def add_nodes(
+        self,
+        nodes: list[tuple[str, str]],
+        scopes: set[str] | list[str] | None = None,
+    ) -> None:
         """Add nodes to the graph.
 
         Args:
             nodes: List of (content, type) tuples. Type is 'text' or 'entity'.
+            scopes: Optional free-text scope tags to attach to every node.
+                Existing nodes accumulate scopes (union), never lose them.
         """
+        scope_set = set(scopes) if scopes else set()
         texts = [content for content, _ in nodes]
         embeddings = self.embeddings.encode_batch(texts)
         node_objs = [
-            Node(content=content, type=node_type, embedding=emb)
+            # Each node gets its own set copy; the backend may merge into it.
+            Node(content=content, type=node_type, embedding=emb, scopes=set(scope_set))
             for (content, node_type), emb in zip(nodes, embeddings)
         ]
         await self.backend.insert_nodes(node_objs)
@@ -81,6 +89,7 @@ class ReasonGraph:
         self,
         text: str,
         extractor: ExtractorFn | None = None,
+        scopes: set[str] | list[str] | None = None,
     ) -> list[str]:
         """Add text to the graph with automatic entity extraction.
 
@@ -92,11 +101,12 @@ class ReasonGraph:
             extractor: A callable(str) -> list[str] that extracts entity strings.
                 Defaults to GLiNER2Extractor if gliner2 is installed, otherwise
                 falls back to NERExtractor (dslim/bert-base-NER).
+            scopes: Optional free-text scope tags for the text and its entities.
 
         Returns:
             List of extracted entity strings.
         """
-        result = await self.add_texts([text], extractor=extractor)
+        result = await self.add_texts([text], extractor=extractor, scopes=scopes)
         return result[0]
 
     async def add_texts(
@@ -104,6 +114,7 @@ class ReasonGraph:
         texts: list[str],
         extractor: ExtractorFn | None = None,
         causal_extractor: CausalExtractorFn | None = None,
+        scopes: set[str] | list[str] | None = None,
     ) -> list[list[str]]:
         """Add multiple texts with automatic entity and causal extraction.
 
@@ -175,7 +186,7 @@ class ReasonGraph:
                     all_edges.append((effect, text))
 
         if all_nodes:
-            await self.add_nodes(all_nodes)
+            await self.add_nodes(all_nodes, scopes=scopes)
         if all_edges:
             await self.add_edges(all_edges)
 
@@ -190,6 +201,7 @@ class ReasonGraph:
         search_mode: str = "embedding",
         rrf_k: int = 60,
         recency_weight: float = 0.0,
+        scopes: set[str] | list[str] | None = None,
     ) -> list[str]:
         """Query the graph with vector similarity and multi-hop traversal.
 
@@ -203,6 +215,10 @@ class ReasonGraph:
             recency_weight: In [0, 1]. When > 0, blends recency (by created_at)
                 into reranking so newer facts outrank older contradicting ones.
                 0 (default) leaves ranking unchanged.
+            scopes: Optional free-text scope tags. When given, the initial
+                seeds are drawn only from nodes carrying at least one of these
+                scopes; traversal then follows edges across all scopes, so
+                reasoning still connects facts beyond the seed scope.
 
         Returns:
             List of text-type node contents in relevance order.
@@ -212,17 +228,18 @@ class ReasonGraph:
         if not 0.0 <= recency_weight <= 1.0:
             raise ValueError(f"recency_weight must be in [0, 1], got {recency_weight}")
 
+        scope_set = set(scopes) if scopes else None
         embedding = self.embeddings.encode(query)
 
         if search_mode == "embedding":
-            seeds = await self.backend.knn_search(embedding, top_k)
+            seeds = await self.backend.knn_search(embedding, top_k, scopes=scope_set)
         elif search_mode == "keyword":
             seeds = await self.backend.hybrid_search(
-                embedding, query, top_k, keyword_only=True,
+                embedding, query, top_k, keyword_only=True, scopes=scope_set,
             )
         else:
             seeds = await self.backend.hybrid_search(
-                embedding, query, top_k, rrf_k=rrf_k,
+                embedding, query, top_k, rrf_k=rrf_k, scopes=scope_set,
             )
 
         visited: set[str] = set()
@@ -377,9 +394,11 @@ class ReasonGraph:
             await self.delete(old_content)
         return entities
 
-    async def get_all_nodes(self) -> list[Node]:
-        """Return all nodes in the graph."""
-        return await self.backend.get_all_nodes()
+    async def get_all_nodes(
+        self, scopes: set[str] | list[str] | None = None
+    ) -> list[Node]:
+        """Return all nodes in the graph, or only those in the given scopes."""
+        return await self.backend.get_all_nodes(scopes=set(scopes) if scopes else None)
 
     async def get_all_edges(self) -> list[Edge]:
         """Return all edges in the graph."""
@@ -407,22 +426,29 @@ class ReasonGraph:
     def close_sync(self) -> None:
         self._run(self.close())
 
-    def add_nodes_sync(self, nodes: list[tuple[str, str]]) -> None:
-        self._run(self.add_nodes(nodes))
+    def add_nodes_sync(
+        self, nodes: list[tuple[str, str]],
+        scopes: set[str] | list[str] | None = None,
+    ) -> None:
+        self._run(self.add_nodes(nodes, scopes=scopes))
 
     def add_edges_sync(self, edges: list[tuple[str, str]]) -> None:
         self._run(self.add_edges(edges))
 
-    def add_text_sync(self, text: str, extractor: ExtractorFn | None = None) -> list[str]:
-        return self._run(self.add_text(text, extractor))
+    def add_text_sync(
+        self, text: str, extractor: ExtractorFn | None = None,
+        scopes: set[str] | list[str] | None = None,
+    ) -> list[str]:
+        return self._run(self.add_text(text, extractor, scopes))
 
     def add_texts_sync(
         self,
         texts: list[str],
         extractor: ExtractorFn | None = None,
         causal_extractor: CausalExtractorFn | None = None,
+        scopes: set[str] | list[str] | None = None,
     ) -> list[list[str]]:
-        return self._run(self.add_texts(texts, extractor, causal_extractor))
+        return self._run(self.add_texts(texts, extractor, causal_extractor, scopes))
 
     def query_sync(
         self,
@@ -433,9 +459,10 @@ class ReasonGraph:
         search_mode: str = "embedding",
         rrf_k: int = 60,
         recency_weight: float = 0.0,
+        scopes: set[str] | list[str] | None = None,
     ) -> list[str]:
         return self._run(self.query(
-            query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight,
+            query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight, scopes,
         ))
 
     def load_dataset_sync(self, name: str) -> None:

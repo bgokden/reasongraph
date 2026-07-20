@@ -218,6 +218,27 @@ entities = graph.add_text_sync(
 entities = graph.add_text_sync("some text", extractor=lambda t: ["custom"])
 ```
 
+## Scopes
+
+Scopes are free-text tags on facts (`"user-alice"`, `"topic-economy"`, `"session-42"`)
+-- **not partitions**. The graph stays shared: a fact can carry several scopes at
+once, and multi-hop reasoning follows shared entities across every scope. A scope
+on `query()` only narrows where the search *seeds*; traversal still reaches
+connected facts in other scopes.
+
+```python
+await graph.add_texts(alice_facts, scopes=["user-alice"])
+await graph.add_texts(economy_facts, scopes=["topic-economy"])
+# One fact can belong to several scopes at once
+await graph.add_texts(shared, scopes=["user-alice", "topic-economy"])
+
+# Seeds come from user-alice; reasoning still bridges into topic-economy facts
+results = await graph.query("Will it get harder to afford a home?", scopes=["user-alice"])
+```
+
+Adding the same content under a new scope unions the tags (never drops the old
+ones). Full demo: `uv run python examples/scoped_reasoning.py`
+
 ## Backends
 
 By default, `ReasonGraph()` uses a pure Python in-memory backend (`MemoryBackend`). This works everywhere with zero dependencies beyond numpy. For persistence, pass a file path to save/load as JSON:
@@ -294,15 +315,15 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 |--------|-------------|
 | `add_nodes(nodes)` | Add `(content, type)` tuples to the graph |
 | `add_edges(edges)` | Add `(from, to)` content edges |
-| `add_text(text, extractor=None)` | Add text with automatic entity extraction |
-| `add_texts(texts, extractor=None, causal_extractor=None)` | Batch add with entity + causal extraction (auto-enabled with GLiNER2) |
-| `query(query, top_k=5, hops=4, rerank_top_k=4, search_mode="embedding", rrf_k=60, recency_weight=0.0)` | Search and traverse the graph; `recency_weight` in [0,1] blends recency into ranking so newer facts outrank older contradictions |
+| `add_text(text, extractor=None, scopes=None)` | Add text with automatic entity extraction, tagged with optional `scopes` |
+| `add_texts(texts, extractor=None, causal_extractor=None, scopes=None)` | Batch add with entity + causal extraction (auto-enabled with GLiNER2) |
+| `query(query, top_k=5, hops=4, rerank_top_k=4, search_mode="embedding", rrf_k=60, recency_weight=0.0, scopes=None)` | Search and traverse the graph; `recency_weight` in [0,1] blends recency into ranking; `scopes` narrows the seeds (traversal still crosses scopes) |
 | `load_dataset(name)` | Load a built-in dataset |
 | `delete_stale()` | Remove nodes not accessed within `forget_after` days |
 | `maybe_forget()` | Throttled `delete_stale()`: sweeps at most once per `forget_every` seconds (no-op when `forget_every` is `None`) |
 | `delete(content)` | Remove a single node and its incident edges by exact content |
 | `supersede(old_content, new_text, extractor=None)` | Replace a stale fact: add `new_text`, then delete `old_content` |
-| `get_all_nodes()` / `get_all_edges()` | Inspect graph contents |
+| `get_all_nodes(scopes=None)` / `get_all_edges()` | Inspect graph contents (nodes optionally filtered by scope) |
 
 All methods are async. Sync variants are available with a `_sync` suffix (e.g. `query_sync`).
 
