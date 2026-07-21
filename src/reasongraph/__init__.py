@@ -18,6 +18,11 @@ from reasongraph._extraction import (
     GlinerExtractor,
 )
 from reasongraph._fastembed import FastEmbedEmbedder, FastEmbedReranker
+from reasongraph._synthesizers import (
+    TemplateSynthesizer,
+    PromptSynthesizer,
+    TransformersSynthesizer,
+)
 from reasongraph.graph import ReasonGraph
 from reasongraph.backends._memory import MemoryBackend
 from reasongraph.datasets import load_dataset
@@ -28,5 +33,6 @@ __all__ = [
     "NERExtractor", "GLiNER2Extractor", "ChatExtractor",
     "OnnxTokenClassifierExtractor", "GlinerExtractor",
     "FastEmbedEmbedder", "FastEmbedReranker",
+    "TemplateSynthesizer", "PromptSynthesizer", "TransformersSynthesizer",
     "load_dataset",
 ]
