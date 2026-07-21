@@ -40,7 +40,8 @@ def _peak_ram_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
-def bench(embed_model: str | None, rerank_model: str | None, label: str) -> dict:
+def bench(embed_model, rerank_model, label: str,
+          embed_desc: str | None = None, rerank_desc: str | None = None) -> dict:
     # Cold start: constructing the graph loads the embedder eagerly.
     t0 = time.perf_counter()
     graph = ReasonGraph(embed_model=embed_model, rerank_model=rerank_model)
@@ -83,8 +84,8 @@ def bench(embed_model: str | None, rerank_model: str | None, label: str) -> dict
     n = len(CASES)
     return {
         "label": label,
-        "embed_model": embed_model or "all-MiniLM-L12-v2 (default)",
-        "rerank_model": rerank_model or "ms-marco-MiniLM-L-6-v2 (default)",
+        "embed_model": embed_desc or (embed_model if isinstance(embed_model, str) else None) or "all-MiniLM-L12-v2 (default)",
+        "rerank_model": rerank_desc or (rerank_model if isinstance(rerank_model, str) else None) or "ms-marco-MiniLM-L-6-v2 (default)",
         "embed_load_s": round(embed_load_s, 2),
         "first_query_s": round(first_query_s, 2),
         "warm_query_ms": round(statistics.median(warm_ms), 1),
@@ -100,11 +101,27 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--embed", default=None, help="embedder model name (default: current)")
     ap.add_argument("--rerank", default=None, help="reranker model name (default: current)")
+    ap.add_argument("--embed-fastembed", default=None, help="fastembed embedder model name")
+    ap.add_argument("--rerank-fastembed", default=None, help="fastembed reranker model name")
     ap.add_argument("--label", default="baseline")
     ap.add_argument("--json", action="store_true", help="print one JSON row only")
     args = ap.parse_args()
 
-    row = bench(args.embed, args.rerank, args.label)
+    embed_model = args.embed
+    embed_desc = None
+    if args.embed_fastembed:
+        from reasongraph._fastembed import FastEmbedEmbedder
+        embed_model = FastEmbedEmbedder(args.embed_fastembed)
+        embed_desc = f"fastembed:{args.embed_fastembed}"
+
+    rerank_model = args.rerank
+    rerank_desc = None
+    if args.rerank_fastembed:
+        from reasongraph._fastembed import FastEmbedReranker
+        rerank_model = FastEmbedReranker(args.rerank_fastembed)
+        rerank_desc = f"fastembed:{args.rerank_fastembed}"
+
+    row = bench(embed_model, rerank_model, args.label, embed_desc, rerank_desc)
 
     if args.json:
         print(json.dumps(row))
