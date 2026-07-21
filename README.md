@@ -267,9 +267,23 @@ recall):
   checkpoint matters a lot: the older `urchade/gliner_multi-v2.1` scores ~12%,
   so pin the model and benchmark with `tests/bench_ner_multilingual.py`.
 
-Rough guide: **GLiNER2** for highest precision + causal relations (English/European,
-if you can afford the RAM); **`gliner_small-v2.5`** for the best multilingual
-recall/speed/RAM balance; **place ONNX** for the fastest location-heavy path.
+Size sweep (same WikiANN benchmark) -- bigger is not uniformly better:
+
+| model | infer | RAM | recall | prec | F1 |
+|---|---|---|---|---|---|
+| `gliner_small-v2.5` | 67 ms | 2.2 GB | 86% | 73% | 79% |
+| `gliner_medium-v2.5` | 73 ms | 2.7 GB | 84% | 75% | 79% |
+| `gliner_large-v2.5` | 142 ms | 4.8 GB | 86% | 84% | 85% |
+| GLiNER2 (default) | 250 ms | 4.8 GB | 74% | 84% | 79% |
+
+Small ties large on recall; large's extra size buys precision (best F1). Medium is
+dominated -- skip it. `large-v2.5` beats GLiNER2 outright (same precision, higher
+recall, faster, far stronger on Arabic/Korean).
+
+Rough guide: **`gliner_small-v2.5`** for the best speed/RAM at high recall;
+**`gliner_large-v2.5`** for the best overall quality and a strict upgrade over
+GLiNER2 on multilingual; **GLiNER2** only when you need its causal-relation
+extraction; **place ONNX** for the fastest location-heavy path.
 
 ## Scopes
 
