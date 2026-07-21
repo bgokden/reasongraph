@@ -271,6 +271,13 @@ class MemoryBackend(Backend):
             if c in self._nodes
         }
 
+    async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
+        return {
+            c: set(self._nodes[c].scopes)
+            for c in contents
+            if c in self._nodes
+        }
+
     async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         return self._candidates(scopes)
 

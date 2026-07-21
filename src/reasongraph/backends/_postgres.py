@@ -282,6 +282,21 @@ class PostgresBackend(Backend):
                     row[0]: row[1].isoformat() for row in await cur.fetchall()
                 }
 
+    async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
+        if not contents:
+            return {}
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT node_content, scope FROM node_scopes WHERE node_content = ANY(%s)",
+                    (contents,),
+                )
+                result: dict[str, set[str]] = {}
+                for node_content, scope in await cur.fetchall():
+                    result.setdefault(node_content, set()).add(scope)
+                return result
+
     async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         pool = await self._get_pool()
         async with pool.connection() as conn:

@@ -447,6 +447,25 @@ class SqliteBackend(Backend):
         )
         return {row[0]: row[1] for row in await cursor.fetchall()}
 
+    async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
+        if not contents:
+            return {}
+        db = await self._conn()
+        placeholders = ",".join("?" for _ in contents)
+        cursor = await db.execute(
+            f"""
+            SELECT n.content, s.scope
+            FROM nodes n
+            JOIN node_scopes s ON s.node_id = n.id
+            WHERE n.content IN ({placeholders})
+            """,
+            contents,
+        )
+        result: dict[str, set[str]] = {}
+        for content, scope in await cursor.fetchall():
+            result.setdefault(content, set()).add(scope)
+        return result
+
     async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         db = await self._conn()
         if scopes:

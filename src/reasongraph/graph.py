@@ -368,6 +368,7 @@ class ReasonGraph:
         rrf_k: int = 60,
         scopes: set[str] | list[str] | None = None,
         max_results: int = 10,
+        max_visited: int = 1000,
     ) -> list[dict]:
         """Discover connection paths from a query into the graph.
 
@@ -378,7 +379,14 @@ class ReasonGraph:
         its scopes. A fact whose scopes do not overlap the query scope is a
         cross-session discovery (``cross_session=True``).
 
-        Returns a list of dicts ordered by discovery distance (nearest first)::
+        Scales to large graphs: the breadth-first walk stops after
+        ``max_visited`` nodes (bounding hub-entity blowup), scopes are fetched
+        only for the discovered facts (not the whole graph), and when more
+        facts are discovered than ``max_results`` they are reranked by relevance
+        to the query so the most relevant connections are kept; smaller result
+        sets stay in discovery-distance order (nearest first).
+
+        Returns a list of dicts::
 
             {"content": str, "scopes": [str], "cross_session": bool,
              "path": [{"content": str, "scopes": [str]} | {"entity": str}, ...]}
@@ -422,11 +430,13 @@ class ReasonGraph:
             if s.get("type") == "text":
                 order.append(c)
 
-        while frontier:
+        while frontier and len(visited) < max_visited:
             content, ntype, depth = frontier.popleft()
             if depth >= hops:
                 continue
             for n in await self.backend.get_neighbors(content):
+                if len(visited) >= max_visited:
+                    break
                 nc, nt = n["content"], n["type"]
                 if nc in visited:
                     continue
@@ -450,8 +460,9 @@ class ReasonGraph:
                     if nt == "text":
                         order.append(nc)
 
-        # Scope lookup for the discovered facts (one pass; fine at MVP scale).
-        scope_map = {node.content: node.scopes for node in await self.backend.get_all_nodes()}
+        # Scope lookup for the discovered facts only -- a bounded fetch keyed by
+        # the reached contents, so it scales with the result set, not the graph.
+        scope_map = await self.backend.get_scopes(order)
 
         def reconstruct(content: str) -> list[dict]:
             steps: list[dict] = []
@@ -466,16 +477,22 @@ class ReasonGraph:
                 cur = prior_fact
             return list(reversed(steps))
 
-        out: list[dict] = []
-        for content in order[:max_results]:
+        candidates: list[dict] = []
+        for content in order:
             node_scopes = scope_map.get(content, set())
-            out.append({
+            candidates.append({
                 "content": content,
                 "scopes": sorted(node_scopes),
                 "cross_session": bool(scope_set) and not (node_scopes & scope_set),
                 "path": reconstruct(content),
             })
-        return out
+
+        # When more facts were discovered than we return, rerank by relevance to
+        # the query and keep the most relevant; otherwise the discovery-distance
+        # order (nearest first) already fits and needs no cross-encoder.
+        if len(candidates) > max_results:
+            return self.embeddings.rerank(query, candidates, max_results)
+        return candidates
 
     async def answer(
         self,
@@ -675,9 +692,10 @@ class ReasonGraph:
         rrf_k: int = 60,
         scopes: set[str] | list[str] | None = None,
         max_results: int = 10,
+        max_visited: int = 1000,
     ) -> list[dict]:
         return self._run(self.discover(
-            query, top_k, hops, search_mode, rrf_k, scopes, max_results,
+            query, top_k, hops, search_mode, rrf_k, scopes, max_results, max_visited,
         ))
 
     def answer_sync(

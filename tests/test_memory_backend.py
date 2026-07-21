@@ -336,6 +336,23 @@ async def test_scopes_multi_label_union_and_seed_filter(backend):
 
 
 @pytest.mark.asyncio
+async def test_get_scopes_bounded_lookup(backend):
+    await backend.insert_nodes([
+        _scoped_node("fact one", {"user-1", "topic-econ"}),
+        _scoped_node("fact two", {"user-2"}),
+        _make_node("unscoped fact"),  # no scopes
+    ])
+
+    got = await backend.get_scopes(["fact one", "fact two", "unscoped fact", "missing"])
+    assert got["fact one"] == {"user-1", "topic-econ"}
+    assert got["fact two"] == {"user-2"}
+    # Unscoped nodes map to an empty set; missing contents are omitted entirely.
+    assert got.get("unscoped fact", set()) == set()
+    assert "missing" not in got
+    assert await backend.get_scopes([]) == {}
+
+
+@pytest.mark.asyncio
 async def test_insert_nodes_does_not_mutate_caller_scopes(backend):
     a = _scoped_node("dup", {"s-a"})
     b = _scoped_node("dup", {"s-b"})

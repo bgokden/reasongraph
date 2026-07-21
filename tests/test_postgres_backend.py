@@ -150,6 +150,13 @@ async def test_scopes(backend):
 
     assert {n.content for n in await backend.get_all_nodes(scopes={"topic-econ"})} == {"shared fact"}
 
+    # Bounded scope lookup for a known set of contents
+    got = await backend.get_scopes(["shared fact", "other fact", "missing"])
+    assert got["shared fact"] == {"user-1", "topic-econ", "session-9"}
+    assert got["other fact"] == {"user-2"}
+    assert "missing" not in got
+    assert await backend.get_scopes([]) == {}
+
     # deleting a node cascades its node_scopes rows
     await backend.delete_nodes(["shared fact"])
     assert await backend.get_all_nodes(scopes={"user-1"}) == []

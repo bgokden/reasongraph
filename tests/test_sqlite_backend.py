@@ -267,6 +267,23 @@ def _scoped_node(content: str, scopes: set[str], node_type: str = "text") -> Nod
 
 
 @pytest.mark.asyncio
+async def test_get_scopes_bounded_lookup(backend):
+    await backend.insert_nodes([
+        _scoped_node("fact one", {"user-1", "topic-econ"}),
+        _scoped_node("fact two", {"user-2"}),
+        _make_node("unscoped fact"),  # no scopes
+    ])
+
+    got = await backend.get_scopes(["fact one", "fact two", "unscoped fact", "missing"])
+    assert got["fact one"] == {"user-1", "topic-econ"}
+    assert got["fact two"] == {"user-2"}
+    # Unscoped and missing contents produce no row; callers treat them as empty.
+    assert "unscoped fact" not in got
+    assert "missing" not in got
+    assert await backend.get_scopes([]) == {}
+
+
+@pytest.mark.asyncio
 async def test_scopes_multi_label_union_and_seed_filter(backend):
     await backend.insert_nodes([_scoped_node("shared fact", {"user-1", "topic-econ"})])
     # Re-adding the same content under a new scope unions the tags

@@ -726,6 +726,30 @@ async def test_discover_returns_cross_session_paths(graph):
 
 
 @pytest.mark.asyncio
+async def test_discover_caps_results_and_bounds_traversal(graph):
+    # Many facts all sharing one hub entity, so a single seed reaches them all.
+    def hub(_text):
+        return ["Hub"]
+
+    for i in range(20):
+        await graph.add_text(f"Fact number {i} about the hub.", extractor=hub, scopes=["s1"])
+
+    # max_results caps the returned connections even though 20 facts are reachable
+    # (the fake reranker keeps insertion order, so this also exercises the
+    # rerank-when-more-than-max_results branch).
+    found = await graph.discover("hub", top_k=5, hops=3, scopes=["s1"], max_results=4)
+    assert len(found) == 4
+    assert all(f["content"].startswith("Fact number") and f["path"] for f in found)
+
+    # A tiny visited budget bounds the walk: far fewer facts come back even with
+    # a large max_results, proving hub-entity blowup is capped.
+    tiny = await graph.discover(
+        "hub", top_k=1, hops=3, scopes=["s1"], max_results=50, max_visited=3
+    )
+    assert 0 < len(tiny) < 20
+
+
+@pytest.mark.asyncio
 async def test_answer_uses_pluggable_synthesizer():
     # A fake synthesizer that rephrases retrieved facts into one line.
     def synth(query, context):

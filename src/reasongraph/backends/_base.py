@@ -65,6 +65,17 @@ class Backend(ABC):
         """
 
     @abstractmethod
+    async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
+        """Return {content: scope set} for the given contents.
+
+        Contents with no scopes (or not present) are omitted -- callers treat a
+        missing key as the empty set. This is the bounded alternative to
+        ``get_all_nodes`` when only the scopes of a known set of nodes are
+        needed (e.g. tagging discovered facts), so it scales independently of
+        the total graph size.
+        """
+
+    @abstractmethod
     async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         """Return every node in the graph, or only those in the given scopes."""
 
