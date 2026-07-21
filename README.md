@@ -218,6 +218,51 @@ entities = graph.add_text_sync(
 entities = graph.add_text_sync("some text", extractor=lambda t: ["custom"])
 ```
 
+## Fast inference (pure ONNX)
+
+Every model slot is pluggable, so you can trade the PyTorch defaults for
+CPU-optimized ONNX models. Measured on the 32-case mixed-domain eval:
+
+```python
+from reasongraph import ReasonGraph, FastEmbedEmbedder, FastEmbedReranker
+
+graph = ReasonGraph(
+    embed_model=FastEmbedEmbedder("sentence-transformers/all-MiniLM-L6-v2"),
+    rerank_model=FastEmbedReranker("Xenova/ms-marco-MiniLM-L-6-v2"),
+)
+```
+
+- **Reranker → `Xenova/ms-marco-MiniLM-L-6-v2`**: the ONNX build of the default
+  reranker, so scores (and eval quality) are identical, but cold start drops
+  from ~2.4s to ~0.03s.
+- **Embedder → `all-MiniLM-L6-v2` (ONNX)**: ~2.3x faster load, equal-or-better
+  eval quality.
+- **Full ONNX pipeline**: ~3x faster cold start and ~23% less RAM at
+  equal-or-better quality; per-query latency rises (~12ms to ~100ms), a good
+  trade when cold start and memory matter more than warm latency.
+- Multilingual embedder (`paraphrase-multilingual-MiniLM-L12-v2`) is available
+  as an option; it costs a few points of English quality.
+
+Requires `pip install reasongraph[fastembed]`. Benchmark any configuration with
+`tests/bench_pipeline.py`.
+
+### Choosing an extractor
+
+`add_text` / `add_texts` accept any extractor, so the entity model is a
+measured choice (compare with `tests/bench_extractors.py` on bridge-entity
+recall):
+
+- **`GLiNER2Extractor`** (default) -- most flexible (zero-shot types + causal
+  relations) and highest entity recall, but the heaviest (loads slowly, ~4.6 GB).
+- **`OnnxTokenClassifierExtractor`** -- runs any BIO token-classification model
+  exported to ONNX, decoding entities from the model's own `id2label`. Fast
+  (~30 ms/call) and multilingual with a suitable model; the label scheme is the
+  model's, so a specialized place model or a custom general NER both drop in
+  with no code change.
+- **`GlinerExtractor`** -- GLiNER v1 zero-shot with convert-and-cache ONNX
+  inference (fast, flexible entity types; no causal). Quality depends heavily on
+  the checkpoint and label wording -- benchmark before adopting.
+
 ## Scopes
 
 Scopes are free-text tags on facts (`"user-alice"`, `"topic-economy"`, `"session-42"`)
