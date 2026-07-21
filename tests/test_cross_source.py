@@ -128,10 +128,34 @@ async def test_bridge_entity_connects_both_sources(graph):
     assert len(from_b) >= 1, f"Apple should connect to Source B, got: {neighbor_texts}"
 
 
+@pytest.fixture
+async def causal_graph():
+    """Graph built with GLiNER2, whose causal extraction adds cause/effect spans.
+
+    The default extractor (GlinerExtractor) bridges sources by named entities but
+    extracts no causal relations, so the causal test needs GLiNER2 explicitly.
+    Passing a GLiNER2 extractor auto-enables causal extraction in add_texts.
+    """
+    pytest.importorskip("gliner2")
+    from reasongraph._extraction import GLiNER2Extractor
+    try:
+        extractor = GLiNER2Extractor()
+        extractor("")  # force model download/load
+    except Exception as e:
+        pytest.skip(f"GLiNER2 model not available: {e}")
+
+    g = ReasonGraph()
+    await g.initialize()
+    await g.add_texts(SOURCE_A_TECH, extractor=extractor)
+    await g.add_texts(SOURCE_B_WATER, extractor=extractor)
+    yield g
+    await g.close()
+
+
 @pytest.mark.asyncio
-async def test_causal_relations_extracted(graph):
+async def test_causal_relations_extracted(causal_graph):
     """GLiNER2 should extract causal relations that enrich the graph."""
-    nodes = await graph.get_all_nodes()
+    nodes = await causal_graph.get_all_nodes()
     entity_contents = {n.content for n in nodes if n.type == "entity"}
 
     # These causal spans should exist as entity nodes
