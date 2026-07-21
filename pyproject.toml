@@ -52,6 +52,12 @@ gliner = [
 fastembed = [
     "fastembed>=0.8.0",
 ]
+# Agent-memory service (HTTP + MCP transports over MemoryService).
+service = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "mcp>=1.0.0",
+]
 # GLiNER v1 zero-shot extractor with ONNX inference (GlinerExtractor); `onnx`
 # is needed to convert the model to ONNX on first use.
 gliner-onnx = [
@@ -85,6 +91,8 @@ dev = [
     "sqlite-vec>=0.1.6",
     "fastembed>=0.8.0",
     "onnxruntime>=1.17.0",
+    "fastapi>=0.110.0",
+    "httpx>=0.27.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
