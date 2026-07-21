@@ -75,3 +75,113 @@ async def test_supersede_removes_old(svc):
     facts = await svc.query("Zeus", session="agent-1")
     assert "Zeus is mortal." not in facts
     assert "Zeus is immortal." in facts
+
+
+# -- Multi-domain, multi-session discovery at scale --
+
+# A small economy/supply-chain/energy/health/policy world. Facts interlock only
+# through the named entities they share; discovery walks those bridges.
+_MULTIDOMAIN = {
+    "markets-bot": [
+        "Nvidia market cap crossed three trillion dollars on AI chip demand.",
+        "TSMC reported record revenue from AI accelerators.",
+    ],
+    "supply-bot": [
+        "TSMC manufactures the advanced chips that Nvidia designs.",
+        "TSMC is building a new fabrication plant in Arizona.",
+        "ASML supplies EUV lithography machines to TSMC.",
+    ],
+    "energy-bot": [
+        "Arizona declared a water emergency amid a record drought.",
+        "Taiwan expanded desalination to protect its chip fabs.",
+    ],
+    "health-bot": [
+        "Drought in Arizona worsened dust storms and respiratory illness.",
+    ],
+    "policy-bot": [
+        "Export controls restricted Nvidia AI chips from China.",
+    ],
+}
+
+_MULTIDOMAIN_ENTITIES = ["TSMC", "Nvidia", "Apple", "Arizona", "Taiwan", "ASML", "China"]
+
+
+def _multidomain_extractor(text):
+    return [e for e in _MULTIDOMAIN_ENTITIES if e in text]
+
+
+@pytest.fixture
+async def world():
+    s = MemoryService(
+        backend=MemoryBackend(),
+        embed_model=_fake_embed,
+        extractor=_multidomain_extractor,
+        synthesizer=_fake_synth,
+    )
+    await s.initialize()
+    for session, facts in _MULTIDOMAIN.items():
+        for fact in facts:
+            await s.push(session, fact)
+    yield s
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_multidomain_stats(world):
+    st = await world.stats()
+    assert st["sessions"] == 5
+    assert st["facts"] == 9  # only text facts, entities excluded
+    assert set(await world.list_sessions()) == {
+        "markets-bot", "supply-bot", "energy-bot", "health-bot", "policy-bot",
+    }
+
+
+@pytest.mark.asyncio
+async def test_markets_query_reaches_supply_and_policy(world):
+    # A markets query about Nvidia crosses into supply and policy sessions via
+    # the shared Nvidia entity, and two hops out to Arizona via TSMC.
+    found = await world.discover("Nvidia AI chips", session="markets-bot", hops=5)
+    by_content = {f["content"]: f for f in found}
+
+    supply = by_content["TSMC manufactures the advanced chips that Nvidia designs."]
+    assert supply["cross_session"] is True
+    assert supply["scopes"] == ["supply-bot"]
+    assert any(step.get("entity") == "Nvidia" for step in supply["path"])
+
+    policy = by_content["Export controls restricted Nvidia AI chips from China."]
+    assert policy["cross_session"] is True
+    assert any(step.get("entity") == "Nvidia" for step in policy["path"])
+
+    # Two-hop reach: Nvidia -> (TSMC makes chips) -> TSMC -> Arizona fab.
+    fab = by_content["TSMC is building a new fabrication plant in Arizona."]
+    assert fab["cross_session"] is True
+    entities_on_path = [step["entity"] for step in fab["path"] if "entity" in step]
+    assert "TSMC" in entities_on_path
+
+
+@pytest.mark.asyncio
+async def test_energy_query_reaches_supply_and_health(world):
+    # An energy query about Arizona reaches the fab a supply bot tracks and the
+    # health impact a health bot recorded -- both via the shared Arizona entity.
+    found = await world.discover("Arizona drought water", session="energy-bot", hops=4)
+    by_content = {f["content"]: f for f in found}
+
+    fab = by_content["TSMC is building a new fabrication plant in Arizona."]
+    assert fab["cross_session"] is True
+    assert any(step.get("entity") == "Arizona" for step in fab["path"])
+
+    health = by_content["Drought in Arizona worsened dust storms and respiratory illness."]
+    assert health["cross_session"] is True
+    assert health["scopes"] == ["health-bot"]
+
+    # The energy bot's own fact is not a cross-session discovery.
+    own = by_content["Arizona declared a water emergency amid a record drought."]
+    assert own["cross_session"] is False
+
+
+@pytest.mark.asyncio
+async def test_answer_folds_in_cross_session_facts(world):
+    text = await world.answer("Nvidia AI chips", session="markets-bot", hops=5)
+    # The synthesized answer names facts pulled from other sessions.
+    assert "TSMC manufactures the advanced chips that Nvidia designs." in text
+    assert "Export controls restricted Nvidia AI chips from China." in text
