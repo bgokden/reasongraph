@@ -280,10 +280,14 @@ Small ties large on recall; large's extra size buys precision (best F1). Medium 
 dominated -- skip it. `large-v2.5` beats GLiNER2 outright (same precision, higher
 recall, faster, far stronger on Arabic/Korean).
 
-Rough guide: **`gliner_small-v2.5`** for the best speed/RAM at high recall;
-**`gliner_large-v2.5`** for the best overall quality and a strict upgrade over
-GLiNER2 on multilingual; **GLiNER2** only when you need its causal-relation
-extraction; **place ONNX** for the fastest location-heavy path.
+Running `gliner_small-v2.5` through ONNX (`GlinerExtractor(onnx=True)`) cuts
+inference from ~67 ms to **~12 ms/call** with recall preserved -- the fastest
+high-recall multilingual option (the conversion is cached on first use).
+
+Rough guide: **`gliner_small-v2.5`** for the best speed/RAM at high recall (add
+`onnx=True` for ~12 ms/call); **`gliner_large-v2.5`** for the best overall quality
+and a strict upgrade over GLiNER2 on multilingual; **GLiNER2** only when you need
+its causal-relation extraction; **place ONNX** for the fastest location-heavy path.
 
 ## Scopes
 

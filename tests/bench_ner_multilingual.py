@@ -44,7 +44,7 @@ NAMED = {
 }
 
 
-def build(which: str, threshold: float):
+def build(which: str, threshold: float, onnx: bool = False):
     if which == "gliner2":
         from reasongraph._extraction import GLiNER2Extractor
         return GLiNER2Extractor(entity_types=LABELS)
@@ -56,7 +56,7 @@ def build(which: str, threshold: float):
     from reasongraph._extraction import GlinerExtractor
     model = NAMED.get(which) or (which.split(":", 1)[1] if which.startswith("gliner:") else None)
     if model:
-        return GlinerExtractor(model, labels=LABELS, threshold=threshold)
+        return GlinerExtractor(model, labels=LABELS, threshold=threshold, onnx=onnx)
     raise SystemExit(f"unknown extractor: {which}")
 
 
@@ -87,13 +87,14 @@ def main() -> None:
     ap.add_argument("--langs", default=",".join(LANGS))
     ap.add_argument("--n", type=int, default=40, help="sentences per language")
     ap.add_argument("--threshold", type=float, default=0.3, help="GLiNER score threshold")
+    ap.add_argument("--onnx", action="store_true", help="run GLiNER via ONNX (convert+cache)")
     args = ap.parse_args()
     langs = args.langs.split(",")
 
     from datasets import load_dataset
 
     t0 = time.perf_counter()
-    ext = build(args.which, args.threshold)
+    ext = build(args.which, args.threshold, args.onnx)
     ext("warmup text")
     load_s = time.perf_counter() - t0
 
