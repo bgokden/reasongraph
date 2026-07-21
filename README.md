@@ -389,6 +389,8 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 | `add_text(text, extractor=None, scopes=None)` | Add text with automatic entity extraction, tagged with optional `scopes` |
 | `add_texts(texts, extractor=None, causal_extractor=None, scopes=None)` | Batch add with entity + causal extraction (auto-enabled with GLiNER2) |
 | `query(query, top_k=5, hops=4, rerank_top_k=4, search_mode="embedding", rrf_k=60, recency_weight=0.0, scopes=None)` | Search and traverse the graph; `recency_weight` in [0,1] blends recency into ranking; `scopes` narrows the seeds (traversal still crosses scopes) |
+| `discover(query, top_k=5, hops=4, scopes=None, max_results=10)` | Like `query`, but returns *connection paths* -- how each fact links back to a seed via bridging entities, tagged with scopes and flagging cross-session links |
+| `answer(query, use_discover=True, scopes=None, ...)` | Rephrase the retrieved facts/paths into logical free text via the pluggable `synthesizer` (bring your own small model) |
 | `load_dataset(name)` | Load a built-in dataset |
 | `delete_stale()` | Remove nodes not accessed within `forget_after` days |
 | `maybe_forget()` | Throttled `delete_stale()`: sweeps at most once per `forget_every` seconds (no-op when `forget_every` is `None`) |
@@ -411,6 +413,34 @@ def encode(text_or_texts):
 
 graph = ReasonGraph(embed_model=encode)
 ```
+
+## Agent memory service
+
+A ready service turns reasongraph into shared, discoverable memory for many
+agents. **Knowledge sessions are scopes**: an agent pushes memory into its
+session, and a query seeds from that session but traversal crosses all sessions
+-- so agents **discover connections into each other's memory** through shared
+entities. `pip install reasongraph[service]`.
+
+```python
+from reasongraph.service import MemoryService
+from reasongraph.backends import PostgresBackend
+
+service = MemoryService(backend=PostgresBackend("postgresql:///memory"),
+                        synthesizer=my_small_llm)   # synthesizer is optional
+
+await service.push("research-bot", "TSMC is building a chip fab in Arizona.")
+await service.push("news-bot", "Arizona declared a water emergency.")
+
+# research-bot discovers news-bot's fact via the shared 'Arizona' entity
+paths = await service.discover("Arizona", session="research-bot")
+answer = await service.answer("Arizona", session="research-bot")   # logical free text
+```
+
+Expose it over **HTTP** (`reasongraph.service.http.create_app`) or **MCP**
+(`reasongraph.service.mcp_server.create_mcp`) -- the HTTP `query`/`discover`
+endpoints take a `synthesize` flag that adds the free-text `answer`. Full demo:
+`uv run python examples/agent_memory_service.py`.
 
 ## License
 
