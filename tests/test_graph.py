@@ -702,6 +702,57 @@ async def test_scopes_filter_seeds_but_reasoning_crosses(graph):
 
 
 @pytest.mark.asyncio
+async def test_discover_returns_cross_session_paths(graph):
+    # Two sessions, bridged only by the shared 'Zeus' entity.
+    await graph.add_text("Fact A about Zeus.", extractor=lambda t: ["Zeus"], scopes=["session-1"])
+    await graph.add_text("Fact B about Zeus.", extractor=lambda t: ["Zeus"], scopes=["session-2"])
+
+    found = await graph.discover("Zeus", top_k=5, hops=3, scopes=["session-1"])
+    by_content = {f["content"]: f for f in found}
+    assert "Fact A about Zeus." in by_content
+    assert "Fact B about Zeus." in by_content
+
+    # The session-2 fact is a cross-session discovery reached via the Zeus entity.
+    b = by_content["Fact B about Zeus."]
+    assert b["cross_session"] is True
+    assert b["scopes"] == ["session-2"]
+    assert any(step.get("entity") == "Zeus" for step in b["path"])
+    # The path ends at the discovered fact and includes the seed fact.
+    assert b["path"][-1]["content"] == "Fact B about Zeus."
+    assert any(step.get("content") == "Fact A about Zeus." for step in b["path"])
+
+    # A seed-scope fact is not a cross-session discovery.
+    assert by_content["Fact A about Zeus."]["cross_session"] is False
+
+
+@pytest.mark.asyncio
+async def test_answer_uses_pluggable_synthesizer():
+    # A fake synthesizer that rephrases retrieved facts into one line.
+    def synth(query, context):
+        facts = [step["content"] for item in context for step in item["path"] if "content" in step]
+        uniq = list(dict.fromkeys(facts))
+        return f"Q:{query} | facts:{len(uniq)} | " + " + ".join(uniq)
+
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_noop_embed, synthesizer=synth)
+    async with g:
+        await g.add_text("Fact A about Zeus.", extractor=lambda t: ["Zeus"], scopes=["s1"])
+        await g.add_text("Fact B about Zeus.", extractor=lambda t: ["Zeus"], scopes=["s2"])
+
+        text = await g.answer("Zeus", scopes=["s1"], hops=3)
+        assert isinstance(text, str)
+        assert "Fact A about Zeus." in text
+        assert "Fact B about Zeus." in text  # cross-session fact folded into the answer
+
+
+@pytest.mark.asyncio
+async def test_answer_without_synthesizer_raises():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_noop_embed)
+    async with g:
+        with pytest.raises(RuntimeError, match="synthesizer"):
+            await g.answer("anything")
+
+
+@pytest.mark.asyncio
 async def test_scopes_isolate_seeds_without_a_bridge(graph):
     # No shared entity => no bridge, so a scoped query cannot reach the other scope
     await graph.add_text("Private A fact.", extractor=lambda t: [], scopes=["user-1"])

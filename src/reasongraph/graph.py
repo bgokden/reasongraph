@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from datetime import datetime
 from importlib import resources
 
@@ -32,6 +33,7 @@ class ReasonGraph:
         rerank_model: str | None = None,
         forget_after: int = 30,
         forget_every: float | None = None,
+        synthesizer=None,
     ) -> None:
         self.backend = backend or MemoryBackend()
         self.embeddings = EmbeddingManager(
@@ -40,6 +42,23 @@ class ReasonGraph:
         self.forget_after = forget_after
         self.forget_every = forget_every
         self._last_forget: datetime | None = None
+        # Optional pluggable synthesizer: a callable(query, context) -> str, or an
+        # object with a synthesize(query, context) method. Keeps LLMs out of the
+        # library core -- bring your own small model.
+        self._synthesizer = self._normalize_synthesizer(synthesizer)
+
+    @staticmethod
+    def _normalize_synthesizer(synthesizer):
+        if synthesizer is None:
+            return None
+        if hasattr(synthesizer, "synthesize"):
+            return synthesizer.synthesize
+        if callable(synthesizer):
+            return synthesizer
+        raise TypeError(
+            "synthesizer must be None, a callable(query, context) -> str, or an "
+            "object with a synthesize(query, context) method"
+        )
 
     # -- Lifecycle --
 
@@ -340,6 +359,162 @@ class ReasonGraph:
 
         return [node["content"] for node in results if node["type"] == "text"]
 
+    async def discover(
+        self,
+        query: str,
+        top_k: int = 5,
+        hops: int = 4,
+        search_mode: str = "embedding",
+        rrf_k: int = 60,
+        scopes: set[str] | list[str] | None = None,
+        max_results: int = 10,
+    ) -> list[dict]:
+        """Discover connection paths from a query into the graph.
+
+        Like :meth:`query`, seeds are drawn from ``scopes`` (a knowledge
+        session) and traversal crosses all scopes. Unlike ``query``, this
+        returns *how* each reached fact connects back to a seed: an alternating
+        chain of facts and the entities that bridge them, each fact tagged with
+        its scopes. A fact whose scopes do not overlap the query scope is a
+        cross-session discovery (``cross_session=True``).
+
+        Returns a list of dicts ordered by discovery distance (nearest first)::
+
+            {"content": str, "scopes": [str], "cross_session": bool,
+             "path": [{"content": str, "scopes": [str]} | {"entity": str}, ...]}
+        """
+        scope_set = set(scopes) if scopes else None
+        embedding = self.embeddings.encode(query)
+        if search_mode == "embedding":
+            seeds = await self.backend.knn_search(embedding, top_k, scopes=scope_set)
+        elif search_mode == "keyword":
+            seeds = await self.backend.hybrid_search(
+                embedding, query, top_k, keyword_only=True, scopes=scope_set,
+            )
+        elif search_mode == "hybrid":
+            seeds = await self.backend.hybrid_search(
+                embedding, query, top_k, rrf_k=rrf_k, scopes=scope_set,
+            )
+        else:
+            raise ValueError(
+                f"search_mode must be 'embedding', 'keyword', or 'hybrid', got '{search_mode}'"
+            )
+
+        # Seed only from text facts so every connection path is rooted at a fact
+        # (entities bridge during traversal, they are not path roots).
+        seeds = [s for s in seeds if s.get("type") == "text"]
+
+        # Breadth-first traversal tracking, for every node, the fact and entity
+        # it was reached through. parent[c] = (prior_fact, bridging_entity, depth);
+        # seeds have (None, None, 0). get_neighbors is unscoped, so the walk
+        # crosses knowledge sessions.
+        visited: set[str] = set()
+        parent: dict[str, tuple] = {}
+        order: list[str] = []  # discovered text facts, in BFS order
+        frontier: deque = deque()
+        for s in seeds:
+            c = s["content"]
+            if c in visited:
+                continue
+            visited.add(c)
+            parent[c] = (None, None, 0)
+            frontier.append((c, s.get("type", "text"), 0))
+            if s.get("type") == "text":
+                order.append(c)
+
+        while frontier:
+            content, ntype, depth = frontier.popleft()
+            if depth >= hops:
+                continue
+            for n in await self.backend.get_neighbors(content):
+                nc, nt = n["content"], n["type"]
+                if nc in visited:
+                    continue
+                visited.add(nc)
+                if ntype == "text" and nt == "entity":
+                    # An entity bridge leaving this fact.
+                    parent[nc] = (content, None, depth + 1)
+                    frontier.append((nc, "entity", depth + 1))
+                elif ntype == "entity" and nt == "text":
+                    # A fact reached through this entity; bridge back to the fact
+                    # that led into the entity.
+                    prior_fact = parent[content][0]
+                    parent[nc] = (prior_fact, content, depth + 1)
+                    frontier.append((nc, "text", depth + 1))
+                    order.append(nc)
+                else:
+                    # text->text (direct) or entity->entity (causal) edge.
+                    prior = content if nt == "text" else parent.get(content, (None,))[0]
+                    parent[nc] = (prior, None, depth + 1)
+                    frontier.append((nc, nt, depth + 1))
+                    if nt == "text":
+                        order.append(nc)
+
+        # Scope lookup for the discovered facts (one pass; fine at MVP scale).
+        scope_map = {node.content: node.scopes for node in await self.backend.get_all_nodes()}
+
+        def reconstruct(content: str) -> list[dict]:
+            steps: list[dict] = []
+            cur = content
+            guard = 0
+            while cur is not None and guard < 128:
+                guard += 1
+                prior_fact, bridging_entity, _ = parent.get(cur, (None, None, 0))
+                steps.append({"content": cur, "scopes": sorted(scope_map.get(cur, set()))})
+                if bridging_entity:
+                    steps.append({"entity": bridging_entity})
+                cur = prior_fact
+            return list(reversed(steps))
+
+        out: list[dict] = []
+        for content in order[:max_results]:
+            node_scopes = scope_map.get(content, set())
+            out.append({
+                "content": content,
+                "scopes": sorted(node_scopes),
+                "cross_session": bool(scope_set) and not (node_scopes & scope_set),
+                "path": reconstruct(content),
+            })
+        return out
+
+    async def answer(
+        self,
+        query: str,
+        *,
+        use_discover: bool = True,
+        top_k: int = 5,
+        hops: int = 4,
+        search_mode: str = "embedding",
+        scopes: set[str] | list[str] | None = None,
+        max_results: int = 10,
+    ) -> str:
+        """Answer a query in logical free text via the configured synthesizer.
+
+        Retrieves supporting facts -- with their connection paths when
+        ``use_discover`` is True -- then rephrases them into a natural-language
+        answer using the pluggable ``synthesizer`` (bring your own small model).
+        Raises if no synthesizer was configured on the graph.
+        """
+        if self._synthesizer is None:
+            raise RuntimeError(
+                "No synthesizer configured. Pass synthesizer=<callable> to ReasonGraph()."
+            )
+        if use_discover:
+            context = await self.discover(
+                query, top_k=top_k, hops=hops, search_mode=search_mode,
+                scopes=scopes, max_results=max_results,
+            )
+        else:
+            facts = await self.query(
+                query, top_k=top_k, hops=hops, search_mode=search_mode, scopes=scopes,
+            )
+            context = [{"content": f, "path": [{"content": f}]} for f in facts]
+
+        result = self._synthesizer(query, context)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result
+
     async def load_dataset(self, name: str) -> None:
         """Load a built-in dataset into the graph.
 
@@ -489,6 +664,36 @@ class ReasonGraph:
     ) -> list[str]:
         return self._run(self.query(
             query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight, scopes,
+        ))
+
+    def discover_sync(
+        self,
+        query: str,
+        top_k: int = 5,
+        hops: int = 4,
+        search_mode: str = "embedding",
+        rrf_k: int = 60,
+        scopes: set[str] | list[str] | None = None,
+        max_results: int = 10,
+    ) -> list[dict]:
+        return self._run(self.discover(
+            query, top_k, hops, search_mode, rrf_k, scopes, max_results,
+        ))
+
+    def answer_sync(
+        self,
+        query: str,
+        *,
+        use_discover: bool = True,
+        top_k: int = 5,
+        hops: int = 4,
+        search_mode: str = "embedding",
+        scopes: set[str] | list[str] | None = None,
+        max_results: int = 10,
+    ) -> str:
+        return self._run(self.answer(
+            query, use_discover=use_discover, top_k=top_k, hops=hops,
+            search_mode=search_mode, scopes=scopes, max_results=max_results,
         ))
 
     def load_dataset_sync(self, name: str) -> None:
