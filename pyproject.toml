@@ -34,6 +34,9 @@ Homepage = "https://github.com/bgokden/reasongraph"
 Repository = "https://github.com/bgokden/reasongraph"
 Issues = "https://github.com/bgokden/reasongraph/issues"
 
+[project.scripts]
+reasongraph-serve = "reasongraph.service.app:main"
+
 [project.optional-dependencies]
 sqlite = [
     "aiosqlite>=0.19.0",

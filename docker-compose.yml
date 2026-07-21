@@ -1,0 +1,38 @@
+# Postgres-backed reasongraph memory service.
+#   docker compose up --build
+#   curl localhost:8000/stats
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: reasongraph
+      POSTGRES_PASSWORD: reasongraph
+      POSTGRES_DB: memory
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reasongraph -d memory"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  service:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      REASONGRAPH_BACKEND: postgres
+      REASONGRAPH_DATABASE_URL: postgresql://reasongraph:reasongraph@db:5432/memory
+      # 384-dim multilingual embedder via pure-ONNX fastembed (matches the
+      # VECTOR(384) column the Postgres backend creates).
+      REASONGRAPH_EMBED_MODEL: fastembed:sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+      REASONGRAPH_SYNTHESIZER: template
+    ports:
+      - "8000:8000"
+    volumes:
+      - models:/models  # cache HF models across restarts
+
+volumes:
+  pgdata:
+  models:
