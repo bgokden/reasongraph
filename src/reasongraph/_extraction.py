@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Callable
 
 
@@ -174,6 +176,129 @@ class ChatExtractor(GLiNER2Extractor):
         "plan",
         "topic",
     ]
+
+
+class OnnxTokenClassifierExtractor:
+    """Generic BIO token-classification entity extractor backed by ONNX Runtime.
+
+    Runs any HuggingFace token-classification model exported to ONNX (inputs
+    ``input_ids`` + ``attention_mask``, output = per-token logits) and decodes
+    BIO / typed-BIO tags into entity strings. The label scheme is read from the
+    model's ``config.json`` ``id2label``, so the same class serves the
+    place-entity model today and any future custom NER with no code change --
+    only the model directory differs.
+
+    Much lighter than GLiNER2: a single encoder forward pass (no zero-shot
+    prompt) run through ONNX Runtime on CPU. Requires ``onnxruntime`` (an
+    optional dependency, imported lazily on first use).
+
+    Args:
+        model_dir: Directory holding ``config.json`` and the tokenizer files.
+        onnx_path: Path to the ``.onnx`` file. Defaults to
+            ``<model_dir>/onnx/model.onnx``.
+        keep_types: Optional iterable of entity type names to keep (e.g.
+            ``{"CITY", "COUNTRY"}``). By default every non-``O`` type is kept.
+        max_len: Tokenizer truncation length.
+        providers: onnxruntime execution providers (default CPU).
+    """
+
+    def __init__(
+        self,
+        model_dir: str,
+        onnx_path: str | None = None,
+        keep_types: set[str] | None = None,
+        max_len: int = 512,
+        providers: list[str] | None = None,
+    ) -> None:
+        self.model_dir = model_dir
+        self.onnx_path = onnx_path or os.path.join(model_dir, "onnx", "model.onnx")
+        self.keep_types = set(keep_types) if keep_types else None
+        self.max_len = max_len
+        self.providers = providers or ["CPUExecutionProvider"]
+        self._session = None
+        self._tok = None
+        self._id2label: dict[int, str] | None = None
+
+    def _load(self):
+        if self._session is not None:
+            return
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            raise ImportError(
+                "onnxruntime not installed. Install with: pip install onnxruntime"
+            )
+        from transformers import AutoTokenizer
+
+        with open(os.path.join(self.model_dir, "config.json")) as f:
+            cfg = json.load(f)
+        self._id2label = {int(k): v for k, v in cfg["id2label"].items()}
+        self._tok = AutoTokenizer.from_pretrained(self.model_dir)
+        self._session = ort.InferenceSession(self.onnx_path, providers=self.providers)
+
+    def __call__(self, text: str) -> list[str]:
+        """Extract entities from text. Returns deduplicated entity strings."""
+        self._load()
+        import numpy as np
+
+        enc = self._tok(
+            text,
+            return_offsets_mapping=True,
+            truncation=True,
+            max_length=self.max_len,
+            return_tensors="np",
+        )
+        offsets = enc["offset_mapping"][0]
+        feeds = {
+            "input_ids": enc["input_ids"].astype(np.int64),
+            "attention_mask": enc["attention_mask"].astype(np.int64),
+        }
+        logits = self._session.run(None, feeds)[0][0]  # [seq_len, num_labels]
+        tag_ids = logits.argmax(-1)
+        return self._decode_bio(text, offsets, tag_ids, self._id2label, self.keep_types)
+
+    @staticmethod
+    def _decode_bio(text, offsets, tag_ids, id2label, keep_types) -> list[str]:
+        """Decode per-token BIO(-typed) tags into deduplicated entity strings.
+
+        Pure and model-independent: groups consecutive B-/I- tags of the same
+        type into character spans (via the token offsets) and slices the source
+        text. A ``B-`` tag or a type change always starts a new span, so
+        adjacent entities of different types are not merged.
+        """
+        spans: list[list] = []
+        cur: list | None = None
+        for (start, end), tid in zip(offsets, tag_ids):
+            if start == end:  # special token (CLS/SEP/PAD) -> zero-width offset
+                continue
+            label = id2label[int(tid)]
+            if label == "O":
+                if cur is not None:
+                    spans.append(cur)
+                    cur = None
+                continue
+            prefix, _, typ = label.partition("-")
+            typ = typ or "ENT"  # untyped BIO (bare 'B'/'I') -> generic type
+            if prefix == "B" or cur is None or cur[0] != typ:
+                if cur is not None:
+                    spans.append(cur)
+                cur = [typ, int(start), int(end)]
+            else:  # I- continuing the same type
+                cur[2] = int(end)
+        if cur is not None:
+            spans.append(cur)
+
+        keep = set(keep_types) if keep_types else None
+        seen: set[str] = set()
+        entities: list[str] = []
+        for typ, start, end in spans:
+            if keep is not None and typ not in keep:
+                continue
+            fragment = text[start:end].strip()
+            if fragment and fragment not in seen:
+                seen.add(fragment)
+                entities.append(fragment)
+        return entities
 
 
 # Type alias for any entity extractor callable: text -> list of entity strings

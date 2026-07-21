@@ -10,7 +10,12 @@ if "TQDM_DISABLE" not in _os.environ:
     _os.environ["TQDM_DISABLE"] = "1"
 
 from reasongraph._types import Node, Edge
-from reasongraph._extraction import NERExtractor, GLiNER2Extractor, ChatExtractor
+from reasongraph._extraction import (
+    NERExtractor,
+    GLiNER2Extractor,
+    ChatExtractor,
+    OnnxTokenClassifierExtractor,
+)
 from reasongraph.graph import ReasonGraph
 from reasongraph.backends._memory import MemoryBackend
 from reasongraph.datasets import load_dataset
@@ -19,5 +24,6 @@ __all__ = [
     "ReasonGraph", "Node", "Edge",
     "MemoryBackend",
     "NERExtractor", "GLiNER2Extractor", "ChatExtractor",
+    "OnnxTokenClassifierExtractor",
     "load_dataset",
 ]
