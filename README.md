@@ -188,7 +188,7 @@ results = graph.query_sync("credit freeze", search_mode="hybrid", rrf_k=30)
 
 ## Entity and Causal Extraction
 
-When `gliner2` is installed, `add_text()` / `add_texts()` automatically use GLiNER2 for both entity extraction and causal relation detection. Without `gliner2`, it falls back to BERT NER (entities only).
+By default `add_text()` / `add_texts()` use **`gliner_small-v2.5`** (fast, multilingual, highest entity recall) when `gliner` is installed, falling back to **GLiNER2** (adds causal-relation detection) then BERT NER. Override per call with the `extractor` argument -- e.g. `gliner_large-v2.5` for higher precision, or `GLiNER2Extractor()` when you want causal edges.
 
 ```python
 from reasongraph import ReasonGraph, NERExtractor, GLiNER2Extractor

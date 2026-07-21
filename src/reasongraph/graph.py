@@ -6,7 +6,13 @@ from datetime import datetime
 from importlib import resources
 
 from reasongraph._embeddings import EmbeddingManager, EmbedderLike
-from reasongraph._extraction import NERExtractor, GLiNER2Extractor, ExtractorFn, CausalExtractorFn
+from reasongraph._extraction import (
+    NERExtractor,
+    GLiNER2Extractor,
+    GlinerExtractor,
+    ExtractorFn,
+    CausalExtractorFn,
+)
 from reasongraph._types import Node, Edge
 from reasongraph.backends._base import Backend
 from reasongraph.backends._memory import MemoryBackend
@@ -85,6 +91,28 @@ class ReasonGraph:
         edge_objs = [Edge(from_content=f, to_content=t) for f, t in edges]
         await self.backend.insert_edges(edge_objs)
 
+    @staticmethod
+    def _build_default_extractor():
+        """Pick the default entity extractor by what is installed.
+
+        Prefers ``GlinerExtractor`` (gliner_small-v2.5): fast, multilingual, and
+        the highest entity recall in the benchmark. Falls back to
+        ``GLiNER2Extractor`` (adds causal relations, English/European) and then
+        ``NERExtractor`` (BERT NER). Pass an explicit ``extractor`` to override --
+        e.g. ``GlinerExtractor("gliner-community/gliner_large-v2.5")`` for higher
+        precision, or ``GLiNER2Extractor()`` when you want causal-relation edges.
+        """
+        try:
+            import gliner as _gliner_check  # noqa: F401
+            return GlinerExtractor()
+        except ImportError:
+            pass
+        try:
+            import gliner2 as _gliner2_check  # noqa: F401
+            return GLiNER2Extractor()
+        except ImportError:
+            return NERExtractor()
+
     async def add_text(
         self,
         text: str,
@@ -99,8 +127,9 @@ class ReasonGraph:
         Args:
             text: The text content to add.
             extractor: A callable(str) -> list[str] that extracts entity strings.
-                Defaults to GLiNER2Extractor if gliner2 is installed, otherwise
-                falls back to NERExtractor (dslim/bert-base-NER).
+                Defaults to GlinerExtractor (gliner_small-v2.5) when `gliner` is
+                installed, else GLiNER2Extractor (adds causal relations), else
+                NERExtractor. Pass gliner_large-v2.5 for higher precision.
             scopes: Optional free-text scope tags for the text and its entities.
 
         Returns:
@@ -129,8 +158,9 @@ class ReasonGraph:
         Args:
             texts: List of text strings to add.
             extractor: A callable(str) -> list[str] for entity extraction.
-                Defaults to GLiNER2Extractor if gliner2 is installed, otherwise
-                falls back to NERExtractor (dslim/bert-base-NER).
+                Defaults to GlinerExtractor (gliner_small-v2.5) when `gliner` is
+                installed, else GLiNER2Extractor (adds causal relations), else
+                NERExtractor. Pass gliner_large-v2.5 for higher precision.
             causal_extractor: A callable(list[str]) -> list[dict] for
                 cause-effect extraction. Each dict should have 'causal' (bool)
                 and 'relations' (list of {'cause': str, 'effect': str}).
@@ -141,11 +171,7 @@ class ReasonGraph:
         """
         if extractor is None:
             if not hasattr(self, "_default_extractor"):
-                try:
-                    import gliner2 as _gliner2_check  # noqa: F811
-                    self._default_extractor = GLiNER2Extractor()
-                except ImportError:
-                    self._default_extractor = NERExtractor()
+                self._default_extractor = self._build_default_extractor()
             extractor = self._default_extractor
 
         if causal_extractor is None and hasattr(extractor, "extract_causal"):
