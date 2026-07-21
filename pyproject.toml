@@ -44,6 +44,21 @@ gliner2 = [
     "urllib3>=2.0.0",
     "requests>=2.28.0",
 ]
+# Fast pure-ONNX embedder + reranker (FastEmbedEmbedder / FastEmbedReranker).
+fastembed = [
+    "fastembed>=0.8.0",
+]
+# GLiNER v1 zero-shot extractor with ONNX inference (GlinerExtractor); `onnx`
+# is needed to convert the model to ONNX on first use.
+gliner-onnx = [
+    "gliner>=0.2.20",
+    "onnx>=1.16.0",
+    "onnxruntime>=1.17.0",
+]
+# Generic ONNX token-classification extractor (OnnxTokenClassifierExtractor).
+onnx = [
+    "onnxruntime>=1.17.0",
+]
 postgres = [
     "psycopg[binary]>=3.1.0",
     "psycopg-pool>=3.1.0",
@@ -55,6 +70,8 @@ all = [
     "gliner2>=1.2.0",
     "urllib3>=2.0.0",
     "requests>=2.28.0",
+    "fastembed>=0.8.0",
+    "onnxruntime>=1.17.0",
     "psycopg[binary]>=3.1.0",
     "psycopg-pool>=3.1.0",
     "pgvector>=0.2.0",
@@ -62,6 +79,8 @@ all = [
 dev = [
     "aiosqlite>=0.19.0",
     "sqlite-vec>=0.1.6",
+    "fastembed>=0.8.0",
+    "onnxruntime>=1.17.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",

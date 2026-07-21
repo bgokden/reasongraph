@@ -301,6 +301,85 @@ class OnnxTokenClassifierExtractor:
         return entities
 
 
+class GlinerExtractor:
+    """GLiNER v1 (urchade) zero-shot entity extractor, optionally via ONNX.
+
+    Zero-shot flexible NER over a chosen label set, with first-class ONNX
+    Runtime inference (converted and cached on first use) for a much lighter,
+    faster CPU footprint than GLiNER2 while keeping open entity types.
+    Multilingual when a multilingual checkpoint (e.g. ``urchade/gliner_multi-v2.1``)
+    is used. Unlike GLiNER2 it does not extract causal relations -- it is the
+    fast, flexible entity path.
+
+    Args:
+        model_id: HF model id or local dir (default ``urchade/gliner_multi-v2.1``).
+        labels: Entity types to extract (GLiNER is zero-shot, so any labels work).
+        onnx: Run through ONNX Runtime. On first use the model is converted and
+            cached under ``cache_dir``; later runs load the cached ONNX directly.
+        onnx_file: Which ONNX file to load. Use ``"model_quantized.onnx"`` for the
+            int8 build (smallest / fastest on CPU).
+        cache_dir: Directory for the converted ONNX model (defaults under
+            ``~/.cache/reasongraph``).
+        threshold: Minimum entity score to keep.
+    """
+
+    DEFAULT_MODEL = "urchade/gliner_multi-v2.1"
+    DEFAULT_LABELS = ["person", "organization", "location", "event"]
+
+    def __init__(
+        self,
+        model_id: str | None = None,
+        labels: list[str] | None = None,
+        onnx: bool = False,
+        onnx_file: str = "model.onnx",
+        cache_dir: str | None = None,
+        threshold: float = 0.5,
+    ) -> None:
+        self.model_id = model_id or self.DEFAULT_MODEL
+        self.labels = labels or list(self.DEFAULT_LABELS)
+        self.onnx = onnx
+        self.onnx_file = onnx_file
+        self.cache_dir = cache_dir
+        self.threshold = threshold
+        self._model = None
+
+    def _load(self):
+        if self._model is not None:
+            return
+        from gliner import GLiNER
+
+        if not self.onnx:
+            self._model = GLiNER.from_pretrained(self.model_id)
+            return
+
+        cache = self.cache_dir or os.path.join(
+            os.path.expanduser("~/.cache/reasongraph/gliner_onnx"),
+            self.model_id.replace("/", "__"),
+        )
+        onnx_path = os.path.join(cache, self.onnx_file)
+        if not os.path.exists(onnx_path):
+            # One-time conversion: load torch, persist config+tokenizer, export ONNX.
+            torch_model = GLiNER.from_pretrained(self.model_id)
+            torch_model.save_pretrained(cache)
+            torch_model.export_to_onnx(cache, quantize=("quantized" in self.onnx_file))
+        self._model = GLiNER.from_pretrained(
+            cache, load_onnx_model=True, onnx_model_file=self.onnx_file
+        )
+
+    def __call__(self, text: str) -> list[str]:
+        """Extract entities from text. Returns deduplicated entity strings."""
+        self._load()
+        preds = self._model.predict_entities(text, self.labels, threshold=self.threshold)
+        seen: set[str] = set()
+        entities: list[str] = []
+        for p in preds:
+            frag = str(p.get("text", "")).strip()
+            if frag and frag not in seen:
+                seen.add(frag)
+                entities.append(frag)
+        return entities
+
+
 # Type alias for any entity extractor callable: text -> list of entity strings
 ExtractorFn = Callable[[str], list[str]]
 

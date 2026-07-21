@@ -25,6 +25,24 @@ class Embedder(Protocol):
 EmbedderLike = Union[str, Embedder, Callable[[Any], Any], None]
 
 
+@runtime_checkable
+class Reranker(Protocol):
+    """Anything that scores query-document pairs.
+
+    ``predict`` takes a list of ``(query, document)`` tuples (all sharing the
+    query) and returns one relevance score per pair. This matches
+    ``sentence_transformers.CrossEncoder.predict``, so a CrossEncoder works, as
+    does a small ONNX adapter exposing the same method.
+    """
+
+    def predict(self, pairs: Any) -> Any: ...
+
+
+# What EmbeddingManager accepts for the reranker: a model name, an object with a
+# predict() method (CrossEncoder or adapter), or None (default model).
+RerankerLike = Union[str, Reranker, None]
+
+
 class EmbeddingManager:
     """Manages embedding generation and cross-encoder reranking."""
 
@@ -34,7 +52,7 @@ class EmbeddingManager:
     def __init__(
         self,
         embed_model: EmbedderLike = None,
-        rerank_model: str | CrossEncoder | None = None,
+        rerank_model: RerankerLike = None,
     ) -> None:
         # str is checked before the encode() duck-check because str itself has
         # an encode() method (text -> bytes), which is not what we want.
@@ -108,15 +126,12 @@ class EmbeddingManager:
             return unique[:top_k]
 
         if self._rerank is None:
-            model_name = (
-                self._rerank_name
-                if isinstance(self._rerank_name, str)
-                else self.DEFAULT_RERANK_MODEL
-            )
-            if isinstance(self._rerank_name, CrossEncoder):
+            if self._rerank_name is not None and not isinstance(self._rerank_name, str):
+                # Any object exposing predict(pairs) -> scores (CrossEncoder,
+                # a fastembed adapter, etc.).
                 self._rerank = self._rerank_name
             else:
-                self._rerank = CrossEncoder(model_name)
+                self._rerank = CrossEncoder(self._rerank_name or self.DEFAULT_RERANK_MODEL)
 
         pairs = [(query, r["content"]) for r in unique]
         scores = self._rerank.predict(pairs)
