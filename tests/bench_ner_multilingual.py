@@ -41,6 +41,9 @@ NAMED = {
     "gliner-multi-v2.1": "urchade/gliner_multi-v2.1",
     "gliner-small-v2.5": "gliner-community/gliner_small-v2.5",
     "gliner-large-v2.5": "gliner-community/gliner_large-v2.5",
+    # 20+ langs, but needs `pip install stanza langdetect` (stanza fetches a
+    # per-language model at runtime). WikiANN: 87% recall / 79% prec / 83% F1.
+    "gliner-x-base": "knowledgator/gliner-x-base",
 }
 
 

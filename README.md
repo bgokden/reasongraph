@@ -274,11 +274,16 @@ Size sweep (same WikiANN benchmark) -- bigger is not uniformly better:
 | `gliner_small-v2.5` | 67 ms | 2.2 GB | 86% | 73% | 79% |
 | `gliner_medium-v2.5` | 73 ms | 2.7 GB | 84% | 75% | 79% |
 | `gliner_large-v2.5` | 142 ms | 4.8 GB | 86% | 84% | 85% |
+| `knowledgator/gliner-x-base` | 151 ms | 4.2 GB | 87% | 79% | 83% |
 | GLiNER2 (default) | 250 ms | 4.8 GB | 74% | 84% | 79% |
 
 Small ties large on recall; large's extra size buys precision (best F1). Medium is
 dominated -- skip it. `large-v2.5` beats GLiNER2 outright (same precision, higher
-recall, faster, far stronger on Arabic/Korean).
+recall, faster, far stronger on Arabic/Korean). `knowledgator/gliner-x-base`
+(20+ languages) edges recall/precision above `small-v2.5` but needs `stanza` +
+`langdetect` (with per-language models fetched at runtime), runs ~7x slower, and
+is no better on the WikiANN Chinese reconstruction -- so `small-v2.5` stays the
+default; reach for `x-base` only when precision matters more than latency.
 
 Running `gliner_small-v2.5` through ONNX (`GlinerExtractor(onnx=True)`) cuts
 inference from ~67 ms to **~12 ms/call** with recall preserved -- the fastest
@@ -389,7 +394,7 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 | `add_text(text, extractor=None, scopes=None)` | Add text with automatic entity extraction, tagged with optional `scopes` |
 | `add_texts(texts, extractor=None, causal_extractor=None, scopes=None)` | Batch add with entity + causal extraction (auto-enabled with GLiNER2) |
 | `query(query, top_k=5, hops=4, rerank_top_k=4, search_mode="embedding", rrf_k=60, recency_weight=0.0, scopes=None)` | Search and traverse the graph; `recency_weight` in [0,1] blends recency into ranking; `scopes` narrows the seeds (traversal still crosses scopes) |
-| `discover(query, top_k=5, hops=4, scopes=None, max_results=10)` | Like `query`, but returns *connection paths* -- how each fact links back to a seed via bridging entities, tagged with scopes and flagging cross-session links |
+| `discover(query, top_k=5, hops=4, scopes=None, max_results=10, max_visited=1000)` | Like `query`, but returns *connection paths* -- how each fact links back to a seed via bridging entities, tagged with scopes and flagging cross-session links. Scales to large graphs: the walk stops after `max_visited` nodes, scopes are fetched only for reached facts, and results beyond `max_results` are reranked by relevance |
 | `answer(query, use_discover=True, scopes=None, ...)` | Rephrase the retrieved facts/paths into logical free text via the pluggable `synthesizer` (bring your own small model) |
 | `load_dataset(name)` | Load a built-in dataset |
 | `delete_stale()` | Remove nodes not accessed within `forget_after` days |
@@ -439,8 +444,59 @@ answer = await service.answer("Arizona", session="research-bot")   # logical fre
 
 Expose it over **HTTP** (`reasongraph.service.http.create_app`) or **MCP**
 (`reasongraph.service.mcp_server.create_mcp`) -- the HTTP `query`/`discover`
-endpoints take a `synthesize` flag that adds the free-text `answer`. Full demo:
-`uv run python examples/agent_memory_service.py`.
+endpoints take a `synthesize` flag that adds the free-text `answer`. The demo
+`uv run python examples/agent_memory_service.py` pushes an economy / supply-chain
+/ energy / health / policy world across five agent sessions and shows a markets
+query reaching a Taiwan drought and a chip fab recorded by other agents.
+
+### Synthesizers
+
+`answer()` and the `synthesize` flag rephrase retrieved facts and their
+connection paths into logical free text. The core stays model-free -- pass any
+`callable(query, context) -> str`, or one of the shipped adapters:
+
+```python
+from reasongraph import TemplateSynthesizer, PromptSynthesizer, TransformersSynthesizer
+
+ReasonGraph(synthesizer=TemplateSynthesizer())            # deterministic, no model
+ReasonGraph(synthesizer=PromptSynthesizer(my_generate))   # bring any LLM: generate(prompt) -> str
+ReasonGraph(synthesizer=TransformersSynthesizer())        # local small LLM (Qwen2.5-0.5B-Instruct)
+```
+
+`PromptSynthesizer` builds the prompt (question + facts + cross-session bridges)
+and calls your `generate` (sync or async); `TransformersSynthesizer` runs a small
+instruct model locally on the torch/transformers stack already pulled in by
+`sentence-transformers`.
+
+### Deploy
+
+An env-driven entrypoint wires the backend, embedder, and synthesizer from
+environment variables. Run the Postgres-backed stack with Docker:
+
+```bash
+docker compose up --build          # Postgres (pgvector) + the service on :8000
+curl localhost:8000/stats
+```
+
+Or serve directly (`pip install reasongraph[service]` adds the `reasongraph-serve`
+console script and the ASGI factory):
+
+```bash
+REASONGRAPH_BACKEND=postgres \
+REASONGRAPH_DATABASE_URL=postgresql:///memory \
+REASONGRAPH_SYNTHESIZER=template \
+reasongraph-serve            # or: uvicorn reasongraph.service.app:create_app_from_env --factory
+```
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `REASONGRAPH_BACKEND` | `memory` | `memory` \| `sqlite` \| `postgres` |
+| `REASONGRAPH_DATABASE_URL` | -- | Postgres URL, sqlite path, or memory JSON path |
+| `REASONGRAPH_EMBED_MODEL` | built-in | Model name; prefix `fastembed:` for pure-ONNX |
+| `REASONGRAPH_SYNTHESIZER` | `template` | `none` \| `template` \| `transformers` |
+| `REASONGRAPH_FORGET_AFTER` / `REASONGRAPH_FORGET_EVERY` | `30` / off | Auto-forget window (days) and sweep interval (seconds) |
+
+Use a persistent backend (PostgresBackend) for real multi-agent concurrency.
 
 ## License
 
