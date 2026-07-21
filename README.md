@@ -260,8 +260,16 @@ recall):
   model's, so a specialized place model or a custom general NER both drop in
   with no code change.
 - **`GlinerExtractor`** -- GLiNER v1 zero-shot with convert-and-cache ONNX
-  inference (fast, flexible entity types; no causal). Quality depends heavily on
-  the checkpoint and label wording -- benchmark before adopting.
+  inference (fast, flexible entity types; no causal). Defaults to
+  `gliner-community/gliner_small-v2.5`, which on a 10-language WikiANN benchmark
+  led on entity recall (**86%**, vs GLiNER2's 74%) at **~67 ms/call and ~2.2 GB**
+  -- and unlike GLiNER2 it holds up on Korean/Arabic/Turkish/Russian. The
+  checkpoint matters a lot: the older `urchade/gliner_multi-v2.1` scores ~12%,
+  so pin the model and benchmark with `tests/bench_ner_multilingual.py`.
+
+Rough guide: **GLiNER2** for highest precision + causal relations (English/European,
+if you can afford the RAM); **`gliner_small-v2.5`** for the best multilingual
+recall/speed/RAM balance; **place ONNX** for the fastest location-heavy path.
 
 ## Scopes
 

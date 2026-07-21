@@ -311,8 +311,14 @@ class GlinerExtractor:
     is used. Unlike GLiNER2 it does not extract causal relations -- it is the
     fast, flexible entity path.
 
+    The default checkpoint is ``gliner-community/gliner_small-v2.5``: on a 10-language
+    WikiANN benchmark it reached 86% entity recall (the best of the tested
+    extractors) at ~67 ms/call and ~2.2 GB RAM, and unlike GLiNER2 it stays strong
+    on Korean/Arabic/Turkish/Russian. The older ``urchade/gliner_multi-v2.1`` scored
+    only ~12% recall -- do not use it.
+
     Args:
-        model_id: HF model id or local dir (default ``urchade/gliner_multi-v2.1``).
+        model_id: HF model id or local dir (default ``gliner-community/gliner_small-v2.5``).
         labels: Entity types to extract (GLiNER is zero-shot, so any labels work).
         onnx: Run through ONNX Runtime. On first use the model is converted and
             cached under ``cache_dir``; later runs load the cached ONNX directly.
@@ -320,10 +326,10 @@ class GlinerExtractor:
             int8 build (smallest / fastest on CPU).
         cache_dir: Directory for the converted ONNX model (defaults under
             ``~/.cache/reasongraph``).
-        threshold: Minimum entity score to keep.
+        threshold: Minimum entity score to keep (0.3 suits the default v2.5 model).
     """
 
-    DEFAULT_MODEL = "urchade/gliner_multi-v2.1"
+    DEFAULT_MODEL = "gliner-community/gliner_small-v2.5"
     DEFAULT_LABELS = ["person", "organization", "location", "event"]
 
     def __init__(
@@ -333,7 +339,7 @@ class GlinerExtractor:
         onnx: bool = False,
         onnx_file: str = "model.onnx",
         cache_dir: str | None = None,
-        threshold: float = 0.5,
+        threshold: float = 0.3,
     ) -> None:
         self.model_id = model_id or self.DEFAULT_MODEL
         self.labels = labels or list(self.DEFAULT_LABELS)
