@@ -160,3 +160,32 @@ async def test_scopes(backend):
     # deleting a node cascades its node_scopes rows
     await backend.delete_nodes(["shared fact"])
     assert await backend.get_all_nodes(scopes={"user-1"}) == []
+
+
+@pytest.mark.asyncio
+async def test_causal_edges_and_relations(backend):
+    await backend.insert_nodes([
+        _make_node("Heavy rainfall caused flooding.", "text"),
+        _make_node("heavy rainfall", "entity"),
+        _make_node("flooding", "entity"),
+    ])
+    await backend.insert_edges([
+        Edge(from_content="heavy rainfall", to_content="flooding", label="causes"),
+        Edge(from_content="heavy rainfall", to_content="Heavy rainfall caused flooding."),
+        Edge(from_content="flooding", to_content="Heavy rainfall caused flooding."),
+    ])
+
+    # Edge.label round-trips
+    labels = {(e.from_content, e.to_content): e.label for e in await backend.get_all_edges()}
+    assert labels[("heavy rainfall", "flooding")] == "causes"
+    assert labels[("flooding", "Heavy rainfall caused flooding.")] is None
+
+    # get_neighbors exposes label + direction
+    neigh = {n["content"]: n for n in await backend.get_neighbors("heavy rainfall")}
+    assert neigh["flooding"]["label"] == "causes"
+    assert neigh["flooding"]["direction"] == "out"
+
+    # get_causal_relations returns the fact's directed pair
+    rels = await backend.get_causal_relations(["Heavy rainfall caused flooding."])
+    assert rels["Heavy rainfall caused flooding."] == [{"cause": "heavy rainfall", "effect": "flooding"}]
+    assert await backend.get_causal_relations([]) == {}

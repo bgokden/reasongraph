@@ -61,3 +61,40 @@ def test_http_synthesize_without_synthesizer_returns_400():
         client.post("/sessions/a/memory", json={"text": "Zeus is a god."})
         r = client.post("/query", json={"query": "Zeus", "session": "a", "synthesize": True})
         assert r.status_code == 400
+
+
+def test_http_push_many_and_stats():
+    with _client() as client:
+        r = client.post("/sessions/a/memory/batch", json={"texts": [
+            "Zeus threw lightning bolts.", "Zeus lived on Mount Olympus.",
+        ]})
+        assert r.status_code == 200 and r.json()["count"] == 2
+        assert client.get("/stats").json()["facts"] == 2
+
+
+def test_http_query_with_synthesize():
+    with _client() as client:
+        client.post("/sessions/a/memory", json={"text": "Zeus rules the sky."})
+        r = client.post("/query", json={"query": "Zeus", "session": "a", "synthesize": True})
+        assert r.status_code == 200
+        data = r.json()
+        assert "Zeus rules the sky." in data["facts"]
+        assert "Zeus" in data["answer"]
+
+
+def test_http_supersede_replaces_fact():
+    with _client() as client:
+        client.post("/sessions/a/memory", json={"text": "Zeus is mortal."})
+        r = client.post("/supersede", json={
+            "session": "a", "old_text": "Zeus is mortal.", "new_text": "Zeus is immortal.",
+        })
+        assert r.status_code == 200 and r.json()["superseded"] is True
+        facts = client.post("/query", json={"query": "Zeus", "session": "a"}).json()["facts"]
+        assert "Zeus is immortal." in facts and "Zeus is mortal." not in facts
+
+
+def test_http_forget_endpoint():
+    with _client() as client:
+        client.post("/sessions/a/memory", json={"text": "Zeus is a god."})
+        r = client.post("/forget")
+        assert r.status_code == 200 and "deleted" in r.json()

@@ -53,6 +53,21 @@ def test_cue_multilingual():
     ]
 
 
+@pytest.mark.parametrize("text,cause,effect", [
+    ("Crop yields fell due to the drought.", "the drought", "Crop yields fell"),  # effect_first
+    ("Deforestation led to soil erosion.", "Deforestation", "soil erosion"),      # cause_first
+    ("持续干旱导致水资源紧张。", "持续干旱", "水资源紧张"),                        # zh cause_first (导致)
+    ("Starke Regenfälle verursachten Überschwemmungen.", "Starke Regenfälle", "Überschwemmungen"),  # de cause_first
+])
+def test_cue_marker_orientations(text, cause, effect):
+    out = causal_from_cues(text)
+    assert out and out[0]["cause"] == cause and out[0]["effect"] == effect
+
+
+def test_cue_no_marker_no_output():
+    assert causal_from_cues("The market closed higher today.") == []
+
+
 # -- hybrid: cue first, model fallback (fake relex, no model load) --
 
 class _FakeRelex:
