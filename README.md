@@ -188,7 +188,7 @@ results = graph.query_sync("credit freeze", search_mode="hybrid", rrf_k=30)
 
 ## Entity and Causal Extraction
 
-By default `add_text()` / `add_texts()` use **`gliner_small-v2.5`** (fast, multilingual, highest entity recall) when `gliner` is installed, falling back to **GLiNER2** (adds causal-relation detection) then BERT NER. Override per call with the `extractor` argument -- e.g. `gliner_large-v2.5` for higher precision, or `GLiNER2Extractor()` when you want causal edges.
+Entity extraction and causal extraction are **two independent, both-on-by-default** capabilities. `add_text()` / `add_texts()` use **`gliner_small-v2.5`** for entities (fast, multilingual, highest entity recall) when `gliner` is installed, falling back to GLiNER2 then BERT NER. Override per call with the `extractor` argument -- e.g. `gliner_large-v2.5` for higher precision.
 
 ```python
 from reasongraph import ReasonGraph, NERExtractor, GLiNER2Extractor
@@ -217,6 +217,43 @@ entities = graph.add_text_sync(
 # Any callable works
 entities = graph.add_text_sync("some text", extractor=lambda t: ["custom"])
 ```
+
+### Causal reasoning (default on)
+
+Causality is the headline feature, so causal extraction runs **by default**
+(opt out per call with `causal=False`). Directed cause->effect relations become
+first-class **typed edges** (`label="causes"`) in the graph, distinct from
+anonymous entity bridges, and `discover()` returns them per fact:
+
+```python
+graph.add_text_sync("Heavy rainfall caused severe flooding.")
+# -> typed edge  heavy rainfall --causes--> severe flooding
+
+for fact in graph.discover_sync("flooding"):
+    print(fact["content"], fact["causes"])  # [{'cause': 'heavy rainfall', 'effect': 'severe flooding'}]
+```
+
+The default causal extractor is a **hybrid** (`HybridCausalExtractor`): a fast,
+model-free multilingual **cue pass** handles explicit and reversed phrasing with
+correct direction, and sentences with no causal connective (implicit causality)
+fall through to **`gliner-relex-multi`** (Apache-2.0, mDeBERTa, ~100 languages).
+On a four-regime probe set (explicit / multilingual / implicit / reversed) the
+hybrid reached **100% directed-pair recall vs 61-79%** for either part alone --
+each covers the other's blind spot -- and most sentences never touch the model,
+so the average cost is low. Reproduce with `tests/bench_causal_extractors.py`.
+
+```python
+from reasongraph import HybridCausalExtractor, GlinerRelexExtractor, GLiNER2Extractor
+
+ReasonGraph(causal_extractor=HybridCausalExtractor())  # the default
+ReasonGraph(causal_extractor=GlinerRelexExtractor())   # relex model only
+ReasonGraph(causal_extractor=GLiNER2Extractor().extract_causal)  # single-model alternative
+ReasonGraph(causal_extractor=False)                    # disable causal extraction
+```
+
+Causal extraction needs `pip install reasongraph[causal]` (gliner>=0.2.27). If it
+is unavailable the default warns once rather than silently dropping causality;
+`add_text(..., causal=True)` raises when no causal extractor can be resolved.
 
 ## Fast inference (pure ONNX)
 
@@ -385,16 +422,18 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 
 ## API Reference
 
-### `ReasonGraph(backend=None, embed_model=None, rerank_model=None, forget_after=30, forget_every=None)`
+### `ReasonGraph(backend=None, embed_model=None, rerank_model=None, forget_after=30, forget_every=None, synthesizer=None, causal_extractor=None)`
+
+`causal_extractor`: `None` builds the default hybrid causal extractor lazily; `False` disables causal extraction; a callable/object with `extract_causal` uses it.
 
 | Method | Description |
 |--------|-------------|
 | `add_nodes(nodes)` | Add `(content, type)` tuples to the graph |
-| `add_edges(edges)` | Add `(from, to)` content edges |
-| `add_text(text, extractor=None, scopes=None)` | Add text with automatic entity extraction, tagged with optional `scopes` |
-| `add_texts(texts, extractor=None, causal_extractor=None, scopes=None)` | Batch add with entity + causal extraction (auto-enabled with GLiNER2) |
+| `add_edges(edges)` | Add `(from, to)` or `(from, to, label)` content edges (label e.g. `"causes"`) |
+| `add_text(text, extractor=None, scopes=None, causal_extractor=None, causal=None)` | Add text with entity + causal extraction; `causal=False` disables, `True` forces (raises if unavailable) |
+| `add_texts(texts, extractor=None, causal_extractor=None, scopes=None, causal=None)` | Batch add with entity + causal extraction (causal on by default) |
 | `query(query, top_k=5, hops=4, rerank_top_k=4, search_mode="embedding", rrf_k=60, recency_weight=0.0, scopes=None)` | Search and traverse the graph; `recency_weight` in [0,1] blends recency into ranking; `scopes` narrows the seeds (traversal still crosses scopes) |
-| `discover(query, top_k=5, hops=4, scopes=None, max_results=10, max_visited=1000)` | Like `query`, but returns *connection paths* -- how each fact links back to a seed via bridging entities, tagged with scopes and flagging cross-session links. Scales to large graphs: the walk stops after `max_visited` nodes, scopes are fetched only for reached facts, and results beyond `max_results` are reranked by relevance |
+| `discover(query, top_k=5, hops=4, scopes=None, max_results=10, max_visited=1000)` | Like `query`, but returns *connection paths* -- how each fact links back to a seed via bridging entities, tagged with scopes, flagging cross-session links, and listing each fact's directed `causes` relations. Scales to large graphs: the walk stops after `max_visited` nodes, scopes/causes are fetched only for reached facts, and results beyond `max_results` are reranked by relevance |
 | `answer(query, use_discover=True, scopes=None, ...)` | Rephrase the retrieved facts/paths into logical free text via the pluggable `synthesizer` (bring your own small model) |
 | `load_dataset(name)` | Load a built-in dataset |
 | `delete_stale()` | Remove nodes not accessed within `forget_after` days |

@@ -69,6 +69,8 @@ def _print_connections(connections):
             for step in c["path"]
         )
         print(f"      path: {path}")
+        for rel in c.get("causes", []):
+            print(f"      causes: {rel['cause']} -> {rel['effect']}")
 
 
 async def main():
