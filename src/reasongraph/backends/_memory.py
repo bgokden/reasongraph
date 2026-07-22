@@ -24,7 +24,8 @@ class MemoryBackend(Backend):
     def __init__(self, file_path: str | None = None) -> None:
         self.file_path = file_path
         self._nodes: dict[str, Node] = {}
-        self._edges: set[tuple[str, str]] = set()
+        # (from_content, to_content) -> edge label (None for untyped edges)
+        self._edges: dict[tuple[str, str], str | None] = {}
 
     async def initialize(self) -> None:
         if self.file_path is None:
@@ -45,7 +46,7 @@ class MemoryBackend(Backend):
                 scopes=set(n.get("scopes", [])),
             )
         for e in data.get("edges", []):
-            self._edges.add((e["from_content"], e["to_content"]))
+            self._edges[(e["from_content"], e["to_content"])] = e.get("label")
 
     async def close(self) -> None:
         if self.file_path is None:
@@ -61,8 +62,8 @@ class MemoryBackend(Backend):
                 "scopes": sorted(node.scopes),
             })
         edges = []
-        for from_c, to_c in self._edges:
-            edges.append({"from_content": from_c, "to_content": to_c})
+        for (from_c, to_c), label in self._edges.items():
+            edges.append({"from_content": from_c, "to_content": to_c, "label": label})
         with open(self.file_path, "w") as f:
             json.dump({"nodes": nodes, "edges": edges}, f)
 
@@ -99,7 +100,7 @@ class MemoryBackend(Backend):
 
     async def insert_edges(self, edges: list[Edge]) -> None:
         for edge in edges:
-            self._edges.add((edge.from_content, edge.to_content))
+            self._edges[(edge.from_content, edge.to_content)] = edge.label
 
     async def knn_search(
         self, embedding: list[float], top_k: int,
@@ -230,13 +231,23 @@ class MemoryBackend(Backend):
         return results
 
     async def get_neighbors(self, content: str) -> list[dict[str, str]]:
-        neighbors: dict[str, str] = {}
-        for from_c, to_c in self._edges:
+        # neighbor content -> (type, label, direction). A labeled edge wins over
+        # an untyped one when both connect the same pair, so causal links surface.
+        neighbors: dict[str, tuple[str, str | None, str]] = {}
+        for (from_c, to_c), label in self._edges.items():
             if from_c == content and to_c in self._nodes:
-                neighbors[to_c] = self._nodes[to_c].type
+                other, direction = to_c, "out"
             elif to_c == content and from_c in self._nodes:
-                neighbors[from_c] = self._nodes[from_c].type
-        return [{"content": c, "type": t} for c, t in neighbors.items()]
+                other, direction = from_c, "in"
+            else:
+                continue
+            existing = neighbors.get(other)
+            if existing is None or (label is not None and existing[1] is None):
+                neighbors[other] = (self._nodes[other].type, label, direction)
+        return [
+            {"content": c, "type": t, "label": label, "direction": direction}
+            for c, (t, label, direction) in neighbors.items()
+        ]
 
     async def delete_stale_nodes(self, days: int) -> int:
         cutoff = datetime.now() - timedelta(days=days)
@@ -245,7 +256,7 @@ class MemoryBackend(Backend):
             del self._nodes[content]
         # Remove edges referencing deleted nodes
         self._edges = {
-            (f, t) for f, t in self._edges
+            (f, t): label for (f, t), label in self._edges.items()
             if f in self._nodes and t in self._nodes
         }
         return len(stale)
@@ -259,7 +270,7 @@ class MemoryBackend(Backend):
         if deleted:
             # Remove edges referencing deleted nodes
             self._edges = {
-                (f, t) for f, t in self._edges
+                (f, t): label for (f, t), label in self._edges.items()
                 if f in self._nodes and t in self._nodes
             }
         return deleted
@@ -278,11 +289,23 @@ class MemoryBackend(Backend):
             if c in self._nodes
         }
 
+    async def get_causal_relations(self, contents: list[str]) -> dict[str, list[dict]]:
+        wanted = set(contents)
+        result: dict[str, list[dict]] = {}
+        for (cause, effect), label in self._edges.items():
+            if label != "causes":
+                continue
+            # Facts linked to BOTH the cause span and the effect span.
+            for fact in wanted:
+                if (cause, fact) in self._edges and (effect, fact) in self._edges:
+                    result.setdefault(fact, []).append({"cause": cause, "effect": effect})
+        return result
+
     async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         return self._candidates(scopes)
 
     async def get_all_edges(self) -> list[Edge]:
         return [
-            Edge(from_content=f, to_content=t)
-            for f, t in self._edges
+            Edge(from_content=f, to_content=t, label=label)
+            for (f, t), label in self._edges.items()
         ]

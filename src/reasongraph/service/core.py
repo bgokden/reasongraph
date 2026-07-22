@@ -35,10 +35,12 @@ class MemoryService:
         rerank_model=None,
         synthesizer=None,
         extractor: ExtractorFn | None = None,
+        causal_extractor=None,
     ) -> None:
         self.graph = graph or ReasonGraph(
             backend=backend, embed_model=embed_model,
             rerank_model=rerank_model, synthesizer=synthesizer,
+            causal_extractor=causal_extractor,
         )
         self.extractor = extractor
         # Writes run a (sync, CPU-bound) extraction model; serialize them so

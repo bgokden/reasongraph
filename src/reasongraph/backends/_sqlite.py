@@ -70,9 +70,16 @@ class SqliteBackend(Backend):
                 from_content TEXT NOT NULL REFERENCES nodes(content) ON DELETE CASCADE,
                 to_content TEXT NOT NULL REFERENCES nodes(content) ON DELETE CASCADE,
                 last_accessed TEXT NOT NULL,
+                label TEXT,
                 UNIQUE(from_content, to_content)
             )
         """)
+
+        # Migrate pre-existing DBs that were created before the typed-edge column.
+        cursor = await self._db.execute("PRAGMA table_info(edges)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "label" not in columns:
+            await self._db.execute("ALTER TABLE edges ADD COLUMN label TEXT")
 
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS edges_from_idx ON edges (from_content)"
@@ -187,12 +194,13 @@ class SqliteBackend(Backend):
     async def insert_edges(self, edges: list[Edge]) -> None:
         db = await self._conn()
         now = datetime.now().isoformat()
-        rows = [(e.from_content, e.to_content, now) for e in edges]
+        rows = [(e.from_content, e.to_content, now, e.label) for e in edges]
         await db.executemany(
             """
-            INSERT INTO edges (from_content, to_content, last_accessed)
-            VALUES (?, ?, ?)
-            ON CONFLICT(from_content, to_content) DO NOTHING
+            INSERT INTO edges (from_content, to_content, last_accessed, label)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(from_content, to_content)
+            DO UPDATE SET label = COALESCE(excluded.label, edges.label)
             """,
             rows,
         )
@@ -363,13 +371,21 @@ class SqliteBackend(Backend):
         db = await self._conn()
         cursor = await db.execute(
             """
-            SELECT DISTINCT n.content, n.type FROM nodes n
+            SELECT n.content, n.type, e.label,
+                   CASE WHEN e.from_content = ? THEN 'out' ELSE 'in' END AS direction
+            FROM nodes n
             INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = ?)
                                OR (e.from_content = n.content AND e.to_content = ?)
             """,
-            (content, content),
+            (content, content, content),
         )
-        return [{"content": row[0], "type": row[1]} for row in await cursor.fetchall()]
+        # Dedup by neighbor, preferring a labeled edge so causal links surface.
+        neighbors: dict[str, dict[str, str]] = {}
+        for c, node_type, label, direction in await cursor.fetchall():
+            existing = neighbors.get(c)
+            if existing is None or (label is not None and existing["label"] is None):
+                neighbors[c] = {"content": c, "type": node_type, "label": label, "direction": direction}
+        return list(neighbors.values())
 
     async def delete_stale_nodes(self, days: int) -> int:
         db = await self._conn()
@@ -466,6 +482,31 @@ class SqliteBackend(Backend):
             result.setdefault(content, set()).add(scope)
         return result
 
+    async def get_causal_relations(self, contents: list[str]) -> dict[str, list[dict]]:
+        if not contents:
+            return {}
+        db = await self._conn()
+        placeholders = ",".join("?" for _ in contents)
+        cursor = await db.execute(
+            f"""
+            SELECT c2.to_content AS fact, ce.from_content AS cause, ce.to_content AS effect
+            FROM edges ce
+            JOIN edges c2 ON c2.from_content = ce.from_content
+            JOIN edges e2 ON e2.from_content = ce.to_content AND e2.to_content = c2.to_content
+            WHERE ce.label = 'causes' AND c2.to_content IN ({placeholders})
+            """,
+            contents,
+        )
+        result: dict[str, list[dict]] = {}
+        seen: set[tuple[str, str, str]] = set()
+        for fact, cause, effect in await cursor.fetchall():
+            key = (fact, cause, effect)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.setdefault(fact, []).append({"cause": cause, "effect": effect})
+        return result
+
     async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         db = await self._conn()
         if scopes:
@@ -505,13 +546,14 @@ class SqliteBackend(Backend):
     async def get_all_edges(self) -> list[Edge]:
         db = await self._conn()
         cursor = await db.execute(
-            "SELECT from_content, to_content, last_accessed FROM edges"
+            "SELECT from_content, to_content, last_accessed, label FROM edges"
         )
         return [
             Edge(
                 from_content=row[0],
                 to_content=row[1],
                 last_accessed=datetime.fromisoformat(row[2]),
+                label=row[3],
             )
             for row in await cursor.fetchall()
         ]

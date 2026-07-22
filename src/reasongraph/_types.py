@@ -24,8 +24,15 @@ class Node:
 
 @dataclass
 class Edge:
-    """A directed edge between two nodes."""
+    """A directed edge between two nodes.
+
+    ``label`` types the edge. Most edges are untyped (``None``) structural links
+    (entity->text, text->text). A ``"causes"`` label marks a directed
+    cause->effect link, making causality first-class and distinguishable from an
+    anonymous entity bridge.
+    """
 
     from_content: str
     to_content: str
     last_accessed: datetime = field(default_factory=datetime.now)
+    label: str | None = None

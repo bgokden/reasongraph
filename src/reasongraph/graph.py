@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import warnings
 from collections import deque
 from datetime import datetime
-from importlib import resources
 
 from reasongraph._embeddings import EmbeddingManager, EmbedderLike
 from reasongraph._extraction import (
     NERExtractor,
     GLiNER2Extractor,
     GlinerExtractor,
+    HybridCausalExtractor,
     ExtractorFn,
     CausalExtractorFn,
 )
@@ -34,6 +34,7 @@ class ReasonGraph:
         forget_after: int = 30,
         forget_every: float | None = None,
         synthesizer=None,
+        causal_extractor: CausalExtractorFn | bool | None = None,
     ) -> None:
         self.backend = backend or MemoryBackend()
         self.embeddings = EmbeddingManager(
@@ -42,6 +43,12 @@ class ReasonGraph:
         self.forget_after = forget_after
         self.forget_every = forget_every
         self._last_forget: datetime | None = None
+        # Causal extraction (the headline feature) is ON by default. This holds
+        # the caller's choice: None -> build the default hybrid causal extractor
+        # lazily on first use; False -> disable causal extraction; a
+        # callable/object with extract_causal -> use it. Resolved (and any model
+        # built) lazily, never at construction time.
+        self._causal_extractor_arg = causal_extractor
         # Optional pluggable synthesizer: a callable(query, context) -> str, or an
         # object with a synthesize(query, context) method. Keeps LLMs out of the
         # library core -- bring your own small model.
@@ -101,13 +108,21 @@ class ReasonGraph:
         ]
         await self.backend.insert_nodes(node_objs)
 
-    async def add_edges(self, edges: list[tuple[str, str]]) -> None:
+    async def add_edges(
+        self, edges: list[tuple[str, str] | tuple[str, str, str | None]]
+    ) -> None:
         """Add edges to the graph.
 
         Args:
-            edges: List of (from_content, to_content) tuples.
+            edges: List of ``(from_content, to_content)`` tuples, or
+                ``(from_content, to_content, label)`` to type the edge (e.g.
+                ``"causes"`` for a directed cause->effect link).
         """
-        edge_objs = [Edge(from_content=f, to_content=t) for f, t in edges]
+        edge_objs = []
+        for e in edges:
+            f, t = e[0], e[1]
+            label = e[2] if len(e) > 2 else None
+            edge_objs.append(Edge(from_content=f, to_content=t, label=label))
         await self.backend.insert_edges(edge_objs)
 
     @staticmethod
@@ -132,29 +147,78 @@ class ReasonGraph:
         except ImportError:
             return NERExtractor()
 
+    @staticmethod
+    def _build_default_causal_extractor():
+        """Build the default causal extractor (the hybrid cue + relex model).
+
+        Causal extraction is the headline feature, so it defaults ON. The
+        ``HybridCausalExtractor`` is lazy (its model loads on first call), so
+        building it here is cheap. Returns ``None`` and warns once when no causal
+        backend is installed, so the drop is visible rather than silent.
+        """
+        try:
+            import gliner as _gliner_check  # noqa: F401
+        except ImportError:
+            warnings.warn(
+                "Causal extraction disabled: no causal extractor is available. "
+                "Install reasongraph[gliner] (gliner>=0.2.27) for the default "
+                "hybrid causal extractor, or pass causal_extractor=... .",
+                stacklevel=2,
+            )
+            return None
+        return HybridCausalExtractor()
+
+    def _resolve_causal_extractor(self) -> CausalExtractorFn | None:
+        """Return the causal callable to use, per the constructor's choice.
+
+        None arg -> build (once, lazily) and cache the default hybrid; False ->
+        disabled; a callable/object -> that (its ``extract_causal`` when present,
+        so an object is not mistaken for an entity extractor).
+        """
+        arg = self._causal_extractor_arg
+        if arg is False:
+            return None
+        if arg is None:
+            if not hasattr(self, "_default_causal_extractor"):
+                self._default_causal_extractor = self._build_default_causal_extractor()
+            obj = self._default_causal_extractor
+        else:
+            obj = arg
+        if obj is None:
+            return None
+        return obj.extract_causal if hasattr(obj, "extract_causal") else obj
+
     async def add_text(
         self,
         text: str,
         extractor: ExtractorFn | None = None,
         scopes: set[str] | list[str] | None = None,
+        causal_extractor: CausalExtractorFn | None = None,
+        causal: bool | None = None,
     ) -> list[str]:
-        """Add text to the graph with automatic entity extraction.
+        """Add text to the graph with automatic entity and causal extraction.
 
         Creates a text node for the input, extracts entities using the provided
         extractor, creates entity nodes, and links each entity to the text node.
+        Causal relations are extracted by default (see ``add_texts``).
 
         Args:
             text: The text content to add.
             extractor: A callable(str) -> list[str] that extracts entity strings.
                 Defaults to GlinerExtractor (gliner_small-v2.5) when `gliner` is
-                installed, else GLiNER2Extractor (adds causal relations), else
-                NERExtractor. Pass gliner_large-v2.5 for higher precision.
+                installed, else GLiNER2Extractor, else NERExtractor.
             scopes: Optional free-text scope tags for the text and its entities.
+            causal_extractor: Optional causal extractor override (see ``add_texts``).
+            causal: True forces causal extraction (raises if unavailable), False
+                disables it, None (default) runs it when an extractor is available.
 
         Returns:
             List of extracted entity strings.
         """
-        result = await self.add_texts([text], extractor=extractor, scopes=scopes)
+        result = await self.add_texts(
+            [text], extractor=extractor, causal_extractor=causal_extractor,
+            scopes=scopes, causal=causal,
+        )
         return result[0]
 
     async def add_texts(
@@ -163,6 +227,7 @@ class ReasonGraph:
         extractor: ExtractorFn | None = None,
         causal_extractor: CausalExtractorFn | None = None,
         scopes: set[str] | list[str] | None = None,
+        causal: bool | None = None,
     ) -> list[list[str]]:
         """Add multiple texts with automatic entity and causal extraction.
 
@@ -193,8 +258,23 @@ class ReasonGraph:
                 self._default_extractor = self._build_default_extractor()
             extractor = self._default_extractor
 
-        if causal_extractor is None and hasattr(extractor, "extract_causal"):
-            causal_extractor = extractor.extract_causal
+        # Causal extraction (the headline feature) runs by default. Resolution:
+        # an explicit causal_extractor wins; else reuse the entity extractor's own
+        # extract_causal when it has one (e.g. GLiNER2 -- no second model); else
+        # fall back to the instance default causal extractor (the hybrid). Disable
+        # per call with causal=False, or at construction with causal_extractor=False.
+        # causal=True with nothing available raises, so the drop is never silent.
+        disabled = causal is False or self._causal_extractor_arg is False
+        if causal_extractor is None and not disabled:
+            if hasattr(extractor, "extract_causal"):
+                causal_extractor = extractor.extract_causal
+            else:
+                causal_extractor = self._resolve_causal_extractor()
+        if causal is True and causal_extractor is None:
+            raise ValueError(
+                "causal=True but no causal extractor is available. Install "
+                "reasongraph[gliner] (gliner>=0.2.27) or pass causal_extractor=... ."
+            )
 
         all_entities = []
         all_nodes = []
@@ -224,8 +304,8 @@ class ReasonGraph:
                     # graph connectors but don't appear in query results.
                     all_nodes.append((cause, "entity"))
                     all_nodes.append((effect, "entity"))
-                    # cause -> effect (causal link)
-                    all_edges.append((cause, effect))
+                    # cause -> effect (typed causal link)
+                    all_edges.append((cause, effect, "causes"))
                     # Both link back to the source sentence
                     all_edges.append((cause, text))
                     all_edges.append((effect, text))
@@ -389,7 +469,11 @@ class ReasonGraph:
         Returns a list of dicts::
 
             {"content": str, "scopes": [str], "cross_session": bool,
+             "causes": [{"cause": str, "effect": str}, ...],
              "path": [{"content": str, "scopes": [str]} | {"entity": str}, ...]}
+
+        ``causes`` lists the directed cause->effect relations the fact asserts
+        (from typed ``"causes"`` edges), surfacing causality first-class.
         """
         scope_set = set(scopes) if scopes else None
         embedding = self.embeddings.encode(query)
@@ -453,7 +537,7 @@ class ReasonGraph:
                     frontier.append((nc, "text", depth + 1))
                     order.append(nc)
                 else:
-                    # text->text (direct) or entity->entity (causal) edge.
+                    # text->text (direct) or entity->entity (e.g. cause->effect) edge.
                     prior = content if nt == "text" else parent.get(content, (None,))[0]
                     parent[nc] = (prior, None, depth + 1)
                     frontier.append((nc, nt, depth + 1))
@@ -477,6 +561,10 @@ class ReasonGraph:
                 cur = prior_fact
             return list(reversed(steps))
 
+        # Causal relations each discovered fact asserts (bounded fetch keyed by
+        # the reached facts), so causality is surfaced first-class in the output.
+        causal_map = await self.backend.get_causal_relations(order)
+
         candidates: list[dict] = []
         for content in order:
             node_scopes = scope_map.get(content, set())
@@ -484,6 +572,7 @@ class ReasonGraph:
                 "content": content,
                 "scopes": sorted(node_scopes),
                 "cross_session": bool(scope_set) and not (node_scopes & scope_set),
+                "causes": causal_map.get(content, []),
                 "path": reconstruct(content),
             })
 
@@ -656,8 +745,10 @@ class ReasonGraph:
     def add_text_sync(
         self, text: str, extractor: ExtractorFn | None = None,
         scopes: set[str] | list[str] | None = None,
+        causal_extractor: CausalExtractorFn | None = None,
+        causal: bool | None = None,
     ) -> list[str]:
-        return self._run(self.add_text(text, extractor, scopes))
+        return self._run(self.add_text(text, extractor, scopes, causal_extractor, causal))
 
     def add_texts_sync(
         self,
@@ -665,8 +756,9 @@ class ReasonGraph:
         extractor: ExtractorFn | None = None,
         causal_extractor: CausalExtractorFn | None = None,
         scopes: set[str] | list[str] | None = None,
+        causal: bool | None = None,
     ) -> list[list[str]]:
-        return self._run(self.add_texts(texts, extractor, causal_extractor, scopes))
+        return self._run(self.add_texts(texts, extractor, causal_extractor, scopes, causal))
 
     def query_sync(
         self,

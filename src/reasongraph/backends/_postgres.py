@@ -57,9 +57,12 @@ class PostgresBackend(Backend):
                     from_content TEXT NOT NULL REFERENCES nodes(content) ON DELETE CASCADE,
                     to_content TEXT NOT NULL REFERENCES nodes(content) ON DELETE CASCADE,
                     last_accessed TIMESTAMP DEFAULT NOW(),
+                    label TEXT,
                     UNIQUE(from_content, to_content)
                 )
             """)
+            # Migrate pre-existing DBs created before the typed-edge column.
+            await conn.execute("ALTER TABLE edges ADD COLUMN IF NOT EXISTS label TEXT")
 
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS edges_from_idx ON edges (from_content)"
@@ -120,12 +123,13 @@ class PostgresBackend(Backend):
         pool = await self._get_pool()
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
-                data = [(e.from_content, e.to_content) for e in edges]
+                data = [(e.from_content, e.to_content, e.label) for e in edges]
                 await cur.executemany(
                     """
-                    INSERT INTO edges (from_content, to_content)
-                    VALUES (%s, %s)
-                    ON CONFLICT DO NOTHING
+                    INSERT INTO edges (from_content, to_content, label)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (from_content, to_content)
+                    DO UPDATE SET label = COALESCE(EXCLUDED.label, edges.label)
                     """,
                     data,
                 )
@@ -235,16 +239,24 @@ class PostgresBackend(Backend):
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
-                    SELECT DISTINCT n.content, n.type FROM nodes n
+                    SELECT n.content, n.type, e.label,
+                           CASE WHEN e.from_content = %s THEN 'out' ELSE 'in' END AS direction
+                    FROM nodes n
                     INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = %s)
                                        OR (e.from_content = n.content AND e.to_content = %s)
                     """,
-                    (content, content),
+                    (content, content, content),
                 )
-                return [
-                    {"content": row[0], "type": row[1]}
-                    for row in await cur.fetchall()
-                ]
+                # Dedup by neighbor, preferring a labeled edge so causal links surface.
+                neighbors: dict[str, dict[str, str]] = {}
+                for c, node_type, label, direction in await cur.fetchall():
+                    existing = neighbors.get(c)
+                    if existing is None or (label is not None and existing["label"] is None):
+                        neighbors[c] = {
+                            "content": c, "type": node_type,
+                            "label": label, "direction": direction,
+                        }
+                return list(neighbors.values())
 
     async def delete_stale_nodes(self, days: int) -> int:
         pool = await self._get_pool()
@@ -297,6 +309,29 @@ class PostgresBackend(Backend):
                     result.setdefault(node_content, set()).add(scope)
                 return result
 
+    async def get_causal_relations(self, contents: list[str]) -> dict[str, list[dict]]:
+        if not contents:
+            return {}
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT DISTINCT c2.to_content AS fact,
+                           ce.from_content AS cause, ce.to_content AS effect
+                    FROM edges ce
+                    JOIN edges c2 ON c2.from_content = ce.from_content
+                    JOIN edges e2 ON e2.from_content = ce.to_content
+                                 AND e2.to_content = c2.to_content
+                    WHERE ce.label = 'causes' AND c2.to_content = ANY(%s)
+                    """,
+                    (list(contents),),
+                )
+                result: dict[str, list[dict]] = {}
+                for fact, cause, effect in await cur.fetchall():
+                    result.setdefault(fact, []).append({"cause": cause, "effect": effect})
+                return result
+
     async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         pool = await self._get_pool()
         async with pool.connection() as conn:
@@ -340,9 +375,9 @@ class PostgresBackend(Backend):
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT from_content, to_content, last_accessed FROM edges"
+                    "SELECT from_content, to_content, last_accessed, label FROM edges"
                 )
                 return [
-                    Edge(from_content=row[0], to_content=row[1], last_accessed=row[2])
+                    Edge(from_content=row[0], to_content=row[1], last_accessed=row[2], label=row[3])
                     for row in await cur.fetchall()
                 ]

@@ -47,9 +47,16 @@ gliner2 = [
     "urllib3>=2.0.0",
     "requests>=2.28.0",
 ]
-# Default extractor: GlinerExtractor (gliner_small-v2.5), torch inference.
+# Default entity extractor (GlinerExtractor, gliner_small-v2.5) AND the default
+# causal extractor (HybridCausalExtractor, gliner-relex-multi). 0.2.27 is the
+# minimum that loads the GLiNER-relex models.
 gliner = [
-    "gliner>=0.2.20",
+    "gliner>=0.2.27",
+]
+# Causal extraction (the headline feature): the default hybrid cue + relex model.
+# Same dependency as `gliner`; named for discoverability.
+causal = [
+    "gliner>=0.2.27",
 ]
 # Fast pure-ONNX embedder + reranker (FastEmbedEmbedder / FastEmbedReranker).
 fastembed = [
@@ -64,7 +71,7 @@ service = [
 # GLiNER v1 zero-shot extractor with ONNX inference (GlinerExtractor); `onnx`
 # is needed to convert the model to ONNX on first use.
 gliner-onnx = [
-    "gliner>=0.2.20",
+    "gliner>=0.2.27",
     "onnx>=1.16.0",
     "onnxruntime>=1.17.0",
 ]
@@ -80,6 +87,7 @@ postgres = [
 all = [
     "aiosqlite>=0.19.0",
     "sqlite-vec>=0.1.6",
+    "gliner>=0.2.27",
     "gliner2>=1.2.0",
     "urllib3>=2.0.0",
     "requests>=2.28.0",
@@ -92,6 +100,7 @@ all = [
 dev = [
     "aiosqlite>=0.19.0",
     "sqlite-vec>=0.1.6",
+    "gliner>=0.2.27",
     "fastembed>=0.8.0",
     "onnxruntime>=1.17.0",
     "fastapi>=0.110.0",

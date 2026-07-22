@@ -76,6 +76,16 @@ class Backend(ABC):
         """
 
     @abstractmethod
+    async def get_causal_relations(self, contents: list[str]) -> dict[str, list[dict]]:
+        """Return {fact content: [{'cause','effect'}, ...]} for the given facts.
+
+        A fact's causal relations are the directed ``"causes"`` edges (cause ->
+        effect span) where both spans link back to that fact. Facts with none are
+        omitted. Bounded by ``contents``, so it scales with the result set rather
+        than the whole graph.
+        """
+
+    @abstractmethod
     async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
         """Return every node in the graph, or only those in the given scopes."""
 
