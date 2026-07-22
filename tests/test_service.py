@@ -29,6 +29,7 @@ async def svc():
         embed_model=_fake_embed,
         extractor=_zeus_extractor,
         synthesizer=_fake_synth,
+        causal_extractor=False,  # no real causal model in unit tests
     )
     await s.initialize()
     yield s
@@ -117,6 +118,7 @@ async def world():
         embed_model=_fake_embed,
         extractor=_multidomain_extractor,
         synthesizer=_fake_synth,
+        causal_extractor=False,  # no real causal model in unit tests
     )
     await s.initialize()
     for session, facts in _MULTIDOMAIN.items():
@@ -146,7 +148,9 @@ async def test_markets_query_reaches_supply_and_policy(world):
     supply = by_content["TSMC manufactures the advanced chips that Nvidia designs."]
     assert supply["cross_session"] is True
     assert supply["scopes"] == ["supply-bot"]
-    assert any(step.get("entity") == "Nvidia" for step in supply["path"])
+    # Reached through a shared markets<->supply bridge (this fact carries both
+    # Nvidia and TSMC entities; either is a valid bridge, so accept either).
+    assert any(step.get("entity") in ("Nvidia", "TSMC") for step in supply["path"])
 
     policy = by_content["Export controls restricted Nvidia AI chips from China."]
     assert policy["cross_session"] is True

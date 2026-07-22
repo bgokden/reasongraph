@@ -29,6 +29,7 @@ def _client():
     svc = MemoryService(
         backend=MemoryBackend(), embed_model=_fake_embed,
         extractor=_zeus_extractor, synthesizer=_fake_synth,
+        causal_extractor=False,  # no real causal model in unit tests
     )
     return TestClient(create_app(svc))
 
@@ -55,7 +56,7 @@ def test_http_multi_agent_discovery_and_synthesis():
 
 
 def test_http_synthesize_without_synthesizer_returns_400():
-    svc = MemoryService(backend=MemoryBackend(), embed_model=_fake_embed, extractor=_zeus_extractor)
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_fake_embed, extractor=_zeus_extractor, causal_extractor=False)
     with TestClient(create_app(svc)) as client:
         client.post("/sessions/a/memory", json={"text": "Zeus is a god."})
         r = client.post("/query", json={"query": "Zeus", "session": "a", "synthesize": True})

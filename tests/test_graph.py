@@ -25,7 +25,9 @@ def _fake_rerank(query, results, top_k, recency_weight=0.0):
 
 @pytest.fixture
 async def graph():
-    g = ReasonGraph(backend=SqliteBackend(":memory:"))
+    # causal_extractor=False keeps unit tests from loading a real causal model;
+    # causal-specific tests pass their own causal_extractor per call.
+    g = ReasonGraph(backend=SqliteBackend(":memory:"), causal_extractor=False)
     # Mock the embedding manager to avoid loading real models
     g.embeddings.encode = _fake_encode
     g.embeddings.encode_batch = _fake_encode_batch
@@ -55,7 +57,7 @@ async def test_add_and_query_nodes(graph):
 
 @pytest.mark.asyncio
 async def test_context_manager():
-    g = ReasonGraph(backend=SqliteBackend(":memory:"))
+    g = ReasonGraph(backend=SqliteBackend(":memory:"), causal_extractor=False)
     g.embeddings.encode = _fake_encode
     g.embeddings.encode_batch = _fake_encode_batch
     g.embeddings.rerank = _fake_rerank
@@ -556,7 +558,7 @@ def test_delete_and_supersede_sync():
     Uses MemoryBackend so repeated asyncio.run() calls (one per _sync call)
     don't hit loop-bound resources.
     """
-    g = ReasonGraph(backend=MemoryBackend())
+    g = ReasonGraph(backend=MemoryBackend(), causal_extractor=False)
     g.embeddings.encode = _fake_encode
     g.embeddings.encode_batch = _fake_encode_batch
     g.embeddings.rerank = _fake_rerank
@@ -581,7 +583,7 @@ async def test_pluggable_embedder_via_constructor():
     def embed(x):
         return [_fake_encode(t) for t in x] if isinstance(x, list) else _fake_encode(x)
 
-    g = ReasonGraph(backend=MemoryBackend(), embed_model=embed)
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=embed, causal_extractor=False)
     async with g:
         await g.add_text(
             "Socrates was a philosopher in Athens.", extractor=_fake_extractor
@@ -757,7 +759,7 @@ async def test_answer_uses_pluggable_synthesizer():
         uniq = list(dict.fromkeys(facts))
         return f"Q:{query} | facts:{len(uniq)} | " + " + ".join(uniq)
 
-    g = ReasonGraph(backend=MemoryBackend(), embed_model=_noop_embed, synthesizer=synth)
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_noop_embed, synthesizer=synth, causal_extractor=False)
     async with g:
         await g.add_text("Fact A about Zeus.", extractor=lambda t: ["Zeus"], scopes=["s1"])
         await g.add_text("Fact B about Zeus.", extractor=lambda t: ["Zeus"], scopes=["s2"])

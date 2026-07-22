@@ -141,6 +141,7 @@ async def test_prompt_synthesizer_drives_answer():
         backend=MemoryBackend(),
         embed_model=_fake_embed,
         synthesizer=PromptSynthesizer(generate),
+        causal_extractor=False,  # no real causal model in unit tests
     )
     async with g:
         await g.add_text("Fact A about Zeus.", extractor=lambda t: ["Zeus"], scopes=["s1"])

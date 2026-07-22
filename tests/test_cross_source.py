@@ -33,7 +33,9 @@ SOURCE_B_WATER = [
 
 @pytest.fixture
 async def graph():
-    g = ReasonGraph()
+    # These tests exercise entity bridging; the dedicated causal_graph fixture
+    # covers causal extraction, so disable it here to keep them focused and fast.
+    g = ReasonGraph(causal_extractor=False)
     await g.initialize()
     await g.add_texts(SOURCE_A_TECH)
     await g.add_texts(SOURCE_B_WATER)
