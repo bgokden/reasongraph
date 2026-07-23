@@ -68,6 +68,34 @@ def test_cue_no_marker_no_output():
     assert causal_from_cues("The market closed higher today.") == []
 
 
+def test_cue_bounds_span_to_clause():
+    # The cause span stops at the clause boundary instead of swallowing the
+    # trailing relative clause.
+    out = causal_from_cues(
+        "The blackout was caused by a failure at the substation, which had been "
+        "flagged as vulnerable months earlier."
+    )
+    assert out == [{"cause": "a failure at the substation", "effect": "The blackout was"}]
+
+
+def test_cue_skips_noun_usage():
+    # "causes" as a noun after a determiner is not a causal connective.
+    assert causal_from_cues("Researchers studied the causes of coral bleaching.") == []
+
+
+def test_cue_uses_earliest_marker():
+    # "because of" occurs before "resulted in", so it wins (and the whole
+    # sentence is not swallowed).
+    out = causal_from_cues("Sales dropped because of weak demand, which resulted in layoffs.")
+    assert out == [{"cause": "weak demand", "effect": "Sales dropped"}]
+
+
+def test_cue_rejects_pronoun_cause():
+    # A lone relative pronoun is not a usable cause span.
+    out = causal_from_cues("Prices rose, which caused, in turn, more spending.")
+    assert all(r["cause"].lower() != "which" for r in out)
+
+
 # -- hybrid: cue first, model fallback (fake relex, no model load) --
 
 class _FakeRelex:

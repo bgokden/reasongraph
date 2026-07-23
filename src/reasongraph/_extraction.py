@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 
 
@@ -414,28 +415,84 @@ CAUSAL_CUE_MARKERS = [
 ]
 
 
-def causal_from_cues(text: str, markers=CAUSAL_CUE_MARKERS) -> list[dict]:
-    """Split a sentence on its first causal cue marker into a cause->effect pair.
+# Clause boundaries (incl. CJK) used to stop a span from swallowing whole
+# subordinate clauses. Determiners before a noun-capable marker signal noun
+# usage ("the causes of X"); pronoun-only spans carry no cause/effect content.
+_CLAUSE_DELIMS = set(",;:—–…،؛，；：。！？!?")
+_DETERMINERS = {
+    "the", "a", "an", "its", "their", "this", "that", "these", "those",
+    "of", "his", "her", "our", "your", "my", "no", "some", "any",
+}
+_NOUN_MARKERS = {"causes", "cause"}
+_PRONOUN_SPANS = {"which", "that", "who", "this", "it", "they", "these", "those", "and", "but"}
+_CUE_STRIP = " \t\n,.;:!?،。！？\"'()[]"
 
-    A fast, model-free, direction-aware pass: it only fires when an explicit
-    causal connective is present, but then it assigns direction correctly (which
-    is where span models tend to invert on reversed phrasing like "X resulted
-    from Y"). Returns ``[]`` when no marker is found (implicit causality), where a
-    model pass should take over.
+
+def _marker_hits(text: str, low: str, markers):
+    """Yield (idx, marker, orient) for word-boundary-valid marker occurrences."""
+    for marker, orient in markers:
+        if marker.isascii() and marker[:1].isalpha():
+            for m in re.finditer(r"\b" + re.escape(marker) + r"\b", low):
+                yield m.start(), marker, orient
+        else:  # CJK / punctuation markers have no word boundaries
+            start = 0
+            while (i := low.find(marker, start)) >= 0:
+                yield i, marker, orient
+                start = i + len(marker)
+
+
+def _preceding_word(text: str, idx: int) -> str:
+    j = idx
+    while j > 0 and not text[j - 1].isalnum():
+        j -= 1
+    k = j
+    while k > 0 and (text[k - 1].isalnum() or text[k - 1] == "'"):
+        k -= 1
+    return text[k:j].lower()
+
+
+def _clause_before(text: str, idx: int) -> str:
+    """The clause immediately before ``idx``, bounded by the nearest delimiter."""
+    seg = text[:idx]
+    cut = max((seg.rfind(d) for d in _CLAUSE_DELIMS), default=-1)
+    return seg[cut + 1:] if cut >= 0 else seg
+
+
+def _clause_after(text: str, start: int) -> str:
+    """The clause immediately after ``start``, bounded by the nearest delimiter."""
+    seg = text[start:]
+    cuts = [p for p in (seg.find(d) for d in _CLAUSE_DELIMS) if p >= 0]
+    return seg[:min(cuts)] if cuts else seg
+
+
+def causal_from_cues(text: str, markers=CAUSAL_CUE_MARKERS) -> list[dict]:
+    """Split a sentence on its causal cue marker into a directed cause->effect pair.
+
+    A fast, model-free, direction-aware pass over explicit causal connectives. It
+    (1) uses the EARLIEST-occurring marker in the text (longest at a tie), not the
+    first table entry; (2) bounds each span to the immediate clause (nearest
+    comma/semicolon/sentence edge) rather than the whole sentence; and (3) guards
+    word boundaries, skips noun usage ("the causes of X"), and rejects pronoun-only
+    spans. Direction comes from the marker orientation, which span models get wrong
+    on reversed phrasing. Returns ``[]`` when no usable marker is found (implicit
+    causality), where the model pass takes over.
+
+    Even with clause bounding the spans are approximate on long, nested free-form
+    prose -- a trained span model is the accurate path; this is the fast fallback.
     """
     low = text.lower()
-    strip_chars = " ,.;:!?،。"
-    for marker, orient in markers:
-        idx = low.find(marker)
-        if idx < 0:
+    hits = sorted(_marker_hits(text, low, markers), key=lambda h: (h[0], -len(h[1])))
+    for idx, marker, orient in hits:
+        if marker in _NOUN_MARKERS and _preceding_word(text, idx) in _DETERMINERS:
+            continue  # noun usage ("the causes of ..."), not a connective
+        before = _clause_before(text, idx).strip(_CUE_STRIP).strip()
+        after = _clause_after(text, idx + len(marker)).strip(_CUE_STRIP).strip()
+        if len(before) < 2 or len(after) < 2:
             continue
-        before = text[:idx].strip(strip_chars).strip()
-        after = text[idx + len(marker):].strip(strip_chars).strip()
-        if not before or not after:
-            continue
-        if orient == "cause_first":
-            return [{"cause": before, "effect": after}]
-        return [{"cause": after, "effect": before}]
+        cause, effect = (before, after) if orient == "cause_first" else (after, before)
+        if cause.lower() in _PRONOUN_SPANS:
+            continue  # a lone pronoun is not a cause span
+        return [{"cause": cause, "effect": effect}]
     return []
 
 
