@@ -618,6 +618,99 @@ class HybridCausalExtractor:
     __call__ = extract_causal
 
 
+class CausalPointerExtractor:
+    """Causal extractor backed by the span-pointer model (causal-span-model).
+
+    Wraps the stronger span-pointer causal model (start/end pointers + beam-search
+    decoding) so it can be used as reasongraph's ``causal_extractor``. On the
+    Causal News Corpus Subtask-2 dev set this model scores ~0.70 F1 on the official
+    scorer, beating the 0.627 organizer baseline -- higher accuracy than the
+    default hybrid, at the cost of a heavier dependency. It is trained on English
+    spans but multilingual at inference (mDeBERTa encoder + script-aware
+    segmentation), verified on es/fr/de/pt/tr/ru/ar and CJK (zh/ja).
+
+    The model is a custom architecture, so loading and inference go through the
+    ``causal_span_model`` package (an optional dependency). ``model`` may be a
+    local checkpoint directory or a Hugging Face repo id (downloaded on first use).
+
+    The model has a built-in causal gate (a causal/non-causal head, ~0.85 accuracy
+    on CNC dev), so ``relations_for`` returns ``[]`` on text it judges non-causal --
+    safe to run on arbitrary input. Beam duplicates are collapsed to one relation
+    per distinct cause->effect.
+
+    Args:
+        model: local pointer-model dir, or a HF repo id (e.g.
+            ``"Berk/causal-span-pointer-mdeberta"``).
+        topk: beam width for the span decoder.
+        max_len: tokenizer truncation length.
+        device: torch device (default: cuda if available else cpu).
+    """
+
+    def __init__(
+        self,
+        model: str = "Berk/causal-span-pointer-mdeberta",
+        topk: int = 5,
+        max_len: int = 256,
+        device: str | None = None,
+    ) -> None:
+        self.model = model
+        self.topk = topk
+        self.max_len = max_len
+        self.device = device
+        self._model = None
+        self._tok = None
+
+    def _load(self) -> None:
+        if self._model is not None:
+            return
+        try:
+            from causal_span_model.pointer.submission import load_pointer
+        except ImportError as exc:
+            raise ImportError(
+                "CausalPointerExtractor needs the causal-span-model package. "
+                "Install it (pip install causal-span-model) to use the pointer model."
+            ) from exc
+        import torch
+
+        model_dir = self.model
+        if not os.path.isdir(model_dir):  # treat as a HF repo id
+            from huggingface_hub import snapshot_download
+            model_dir = snapshot_download(self.model)
+        self._model, self._tok = load_pointer(model_dir)
+        if self.device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model.to(self.device)
+
+    def relations_for(self, text: str) -> list[dict]:
+        """Return deduplicated cause->effect pairs for a single text (any language).
+
+        Uses the pointer model's script-aware inference, so it works for
+        whitespace and CJK/Thai scripts alike (no separate multilingual model or
+        language routing needed).
+        """
+        from causal_span_model.pointer.infer import predict_relations
+
+        self._load()
+        relations = predict_relations(
+            self._model, self._tok, text, self.max_len, self.topk, self.device
+        )
+        return [{"cause": r["cause"], "effect": r["effect"]} for r in relations]
+
+    def extract_causal(self, texts: list[str]) -> list[dict]:
+        """Extract cause-effect relations (compatible with CausalExtractorFn)."""
+        results = []
+        for text in texts:
+            relations = self.relations_for(text)
+            results.append({
+                "text": text,
+                "causal": len(relations) > 0,
+                "relations": relations,
+            })
+        return results
+
+    __call__ = extract_causal
+
+
 # Type alias for any entity extractor callable: text -> list of entity strings
 ExtractorFn = Callable[[str], list[str]]
 

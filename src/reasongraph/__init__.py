@@ -18,6 +18,7 @@ from reasongraph._extraction import (
     GlinerExtractor,
     GlinerRelexExtractor,
     HybridCausalExtractor,
+    CausalPointerExtractor,
 )
 from reasongraph._fastembed import FastEmbedEmbedder, FastEmbedReranker
 from reasongraph._synthesizers import (
@@ -34,7 +35,7 @@ __all__ = [
     "MemoryBackend",
     "NERExtractor", "GLiNER2Extractor", "ChatExtractor",
     "OnnxTokenClassifierExtractor", "GlinerExtractor",
-    "GlinerRelexExtractor", "HybridCausalExtractor",
+    "GlinerRelexExtractor", "HybridCausalExtractor", "CausalPointerExtractor",
     "FastEmbedEmbedder", "FastEmbedReranker",
     "TemplateSynthesizer", "PromptSynthesizer", "TransformersSynthesizer",
     "load_dataset",
