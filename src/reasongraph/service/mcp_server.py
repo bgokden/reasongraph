@@ -8,9 +8,10 @@
     create_mcp(service).run()          # stdio MCP server
 
 Agents get push_memory / query_memory / query_memory_detailed /
-discover_connections / answer / update_memory / delete_memory / forget_stale /
-list_sessions tools -- including self-correction (update/delete) so an agent can
-fix its own memory. Requires ``pip install reasongraph[service]``.
+discover_connections / answer / update_memory / delete_memory / memory_history /
+forget_stale / list_sessions tools -- including self-correction (update/delete) and
+supersession audit (memory_history) so an agent can fix and explain its own memory.
+Requires ``pip install reasongraph[service]``.
 """
 
 from __future__ import annotations
@@ -92,6 +93,13 @@ def create_mcp(service: MemoryService):
         """Delete a fact by its exact text. Set `purge_orphans` true to also erase
         entities left dangling by the removal; entities still used elsewhere stay."""
         return await service.delete(text, purge_orphans=purge_orphans)
+
+    @mcp.tool()
+    async def memory_history(text: str) -> dict:
+        """Audit a fact's supersession: what it replaced ('supersedes') and what has
+        replaced it ('superseded_by'). A non-empty 'superseded_by' is why a fact is
+        no longer surfaced by default."""
+        return await service.history(text)
 
     @mcp.tool()
     async def forget_stale() -> dict:

@@ -130,6 +130,14 @@ def test_http_delete_endpoint():
         assert "Zeus is a god." not in client.post("/query", json={"query": "Zeus"}).json()["facts"]
 
 
+def test_http_history_endpoint():
+    with _client() as client:
+        client.post("/sessions/a/memory", json={"text": "Zeus is a god."})
+        h = client.post("/history", json={"text": "Zeus is a god."})
+        assert h.status_code == 200
+        assert set(h.json()) == {"supersedes", "superseded_by"}
+
+
 def test_http_query_detailed():
     with _client() as client:
         client.post("/sessions/a/memory", json={"text": "Zeus rules the sky."})

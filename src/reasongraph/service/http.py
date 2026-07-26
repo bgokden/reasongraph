@@ -67,6 +67,10 @@ class DeleteIn(BaseModel):
     purge_orphans: bool = False
 
 
+class HistoryIn(BaseModel):
+    text: str
+
+
 def _api_key_dependency(api_key: str | None):
     """Bearer / X-API-Key check. A no-op when ``api_key`` is None (dev default)."""
     async def check(
@@ -195,6 +199,10 @@ def create_app(service: MemoryService, api_key: str | None = None) -> FastAPI:
     @router.post("/delete")
     async def delete(body: DeleteIn):
         return await service.delete(body.text, purge_orphans=body.purge_orphans)
+
+    @router.post("/history")
+    async def history(body: HistoryIn):
+        return await service.history(body.text)
 
     @router.post("/forget")
     async def forget():

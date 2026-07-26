@@ -162,6 +162,10 @@ class MemoryService:
             deleted = await self.graph.delete(text, purge_orphans=purge_orphans)
         return {"deleted": deleted}
 
+    async def history(self, text: str) -> dict:
+        """Supersession audit for a fact: what it replaced and what replaced it."""
+        return await self.graph.supersession_history(text)
+
     async def forget(self) -> dict:
         """Drop facts not accessed within the graph's forget window."""
         async with self._write_lock:

@@ -58,7 +58,7 @@ async def test_mcp_lists_all_tools():
         assert names == {
             "push_memory", "query_memory", "query_memory_detailed",
             "discover_connections", "answer", "update_memory", "delete_memory",
-            "forget_stale", "list_sessions",
+            "memory_history", "forget_stale", "list_sessions",
         }
     finally:
         await svc.close()
