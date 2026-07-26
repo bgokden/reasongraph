@@ -233,7 +233,15 @@ for fact in graph.discover_sync("flooding"):
     print(fact["content"], fact["causes"])  # [{'cause': 'heavy rainfall', 'effect': 'severe flooding'}]
 ```
 
-The default causal extractor is a **hybrid** (`HybridCausalExtractor`): a fast,
+The default causal extractor picks the **best available** backend. When the
+`causal-span-model` package is installed it uses the **span-pointer model**
+(`CausalPointerExtractor`): a fine-tuned mDeBERTa-v3 that scores **~0.70 F1** on the
+Causal News Corpus Subtask-2 official scorer -- beating the 0.627 organizer baseline,
+the hybrid, and a few-shot LLM baseline (~0.24-0.41). It is trained on English but
+multilingual at inference (script-aware segmentation, verified on es/fr/de/pt/tr/ru/ar
+and zh/ja) and has a built-in causal gate, so it returns nothing on non-causal text.
+
+Otherwise it falls back to the **hybrid** (`HybridCausalExtractor`): a fast,
 model-free multilingual **cue pass** handles explicit and reversed phrasing with
 correct direction, and sentences with no causal connective (implicit causality)
 fall through to **`gliner-relex-multi`** (Apache-2.0, mDeBERTa, ~100 languages).
@@ -243,17 +251,19 @@ each covers the other's blind spot -- and most sentences never touch the model,
 so the average cost is low. Reproduce with `tests/bench_causal_extractors.py`.
 
 ```python
-from reasongraph import HybridCausalExtractor, GlinerRelexExtractor, GLiNER2Extractor
+from reasongraph import CausalPointerExtractor, HybridCausalExtractor, GlinerRelexExtractor
 
-ReasonGraph(causal_extractor=HybridCausalExtractor())  # the default
+ReasonGraph()                                          # best available (pointer if installed, else hybrid)
+ReasonGraph(causal_extractor=CausalPointerExtractor())  # force the span-pointer model
+ReasonGraph(causal_extractor=HybridCausalExtractor())  # force the hybrid
 ReasonGraph(causal_extractor=GlinerRelexExtractor())   # relex model only
-ReasonGraph(causal_extractor=GLiNER2Extractor().extract_causal)  # single-model alternative
 ReasonGraph(causal_extractor=False)                    # disable causal extraction
 ```
 
-Causal extraction needs `pip install reasongraph[causal]` (gliner>=0.2.27). If it
-is unavailable the default warns once rather than silently dropping causality;
-`add_text(..., causal=True)` raises when no causal extractor can be resolved.
+The pointer model needs `pip install causal-span-model`; the hybrid needs
+`pip install reasongraph[causal]` (gliner>=0.2.27). If neither is available the
+default warns once rather than silently dropping causality; `add_text(..., causal=True)`
+raises when no causal extractor can be resolved.
 
 ## Fast inference (pure ONNX)
 
@@ -424,7 +434,7 @@ Reproduce: `uv run python tests/eval_financial_reasoning.py`
 
 ### `ReasonGraph(backend=None, embed_model=None, rerank_model=None, forget_after=30, forget_every=None, synthesizer=None, causal_extractor=None)`
 
-`causal_extractor`: `None` builds the default hybrid causal extractor lazily; `False` disables causal extraction; a callable/object with `extract_causal` uses it.
+`causal_extractor`: `None` builds the best available causal extractor lazily (the span-pointer model when `causal-span-model` is installed, else the hybrid); `False` disables causal extraction; a callable/object with `extract_causal` uses it.
 
 | Method | Description |
 |--------|-------------|
@@ -533,9 +543,40 @@ reasongraph-serve            # or: uvicorn reasongraph.service.app:create_app_fr
 | `REASONGRAPH_DATABASE_URL` | -- | Postgres URL, sqlite path, or memory JSON path |
 | `REASONGRAPH_EMBED_MODEL` | built-in | Model name; prefix `fastembed:` for pure-ONNX |
 | `REASONGRAPH_SYNTHESIZER` | `template` | `none` \| `template` \| `transformers` |
-| `REASONGRAPH_FORGET_AFTER` / `REASONGRAPH_FORGET_EVERY` | `30` / off | Auto-forget window (days) and sweep interval (seconds) |
+| `REASONGRAPH_FORGET_AFTER` / `REASONGRAPH_FORGET_EVERY` | `30` / off | Auto-forget window (days) and sweep interval (seconds). When the interval is set the service runs the sweep on a background task. |
+| `REASONGRAPH_ISOLATE` | off | Confine traversal to the query session (multi-tenant). Off keeps cross-session discovery. |
+| `REASONGRAPH_API_KEY` | -- | When set, data endpoints require it (`Authorization: Bearer` or `X-API-Key`); `/health` and `/ready` stay open. |
+| `REASONGRAPH_DEFER_EXTRACT` | off | Run entity/causal extraction in a background worker so pushes return immediately. |
 
 Use a persistent backend (PostgresBackend) for real multi-agent concurrency.
+
+### Multi-tenant and production
+
+By default the graph is shared: a scoped query seeds from its session but the walk
+crosses sessions, which is the cross-session discovery feature. For a
+confidentiality boundary between tenants, turn on **traversal isolation** so a query
+can only reach its own session's facts:
+
+```python
+ReasonGraph(isolate_traversal=True)               # graph-wide default
+graph.query("...", scopes={"tenant-a"}, isolate=True)   # or per query
+```
+
+Other production controls:
+
+- **Auth**: `create_app(service, api_key="...")` (or `REASONGRAPH_API_KEY`) gates every
+  data endpoint; the MCP server exposes the same tools.
+- **Structured results**: `query_detailed(...)` (and the HTTP `detailed` flag /
+  `query_memory_detailed` MCP tool) return `{content, score, created_at, scopes}` for
+  thresholding, dedup, and "remembered on <date>".
+- **Erasure**: `delete(content, purge_orphans=True)` / `supersede(..., purge_orphans=True)`
+  also remove entities left dangling by the deletion (right-to-be-forgotten); shared
+  entities survive. Exposed as `delete_memory` / `update_memory` MCP tools.
+- **Semantic dedup**: `add_text(..., dedup_threshold=0.95)` drops near-duplicate
+  restatements instead of accumulating them, unioning scopes onto the kept fact.
+- **Health**: `/health` (liveness) and `/ready` (readiness) for orchestration probes.
+- **Postgres** creates an HNSW cosine index, so vector search is index-accelerated
+  rather than a sequential scan.
 
 ## License
 
