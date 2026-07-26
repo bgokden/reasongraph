@@ -24,7 +24,8 @@ class MemoryBackend(Backend):
     def __init__(self, file_path: str | None = None) -> None:
         self.file_path = file_path
         self._nodes: dict[str, Node] = {}
-        self._edges: set[tuple[str, str]] = set()
+        # (from_content, to_content) -> edge label (None for untyped edges)
+        self._edges: dict[tuple[str, str], str | None] = {}
 
     async def initialize(self) -> None:
         if self.file_path is None:
@@ -42,9 +43,12 @@ class MemoryBackend(Backend):
                 embedding=n["embedding"],
                 created_at=datetime.fromisoformat(n["created_at"]),
                 last_accessed=datetime.fromisoformat(n["last_accessed"]),
+                scopes=set(n.get("scopes", [])),
+                invalid_at=(datetime.fromisoformat(n["invalid_at"])
+                            if n.get("invalid_at") else None),
             )
         for e in data.get("edges", []):
-            self._edges.add((e["from_content"], e["to_content"]))
+            self._edges[(e["from_content"], e["to_content"])] = e.get("label")
 
     async def close(self) -> None:
         if self.file_path is None:
@@ -57,10 +61,12 @@ class MemoryBackend(Backend):
                 "embedding": node.embedding,
                 "created_at": node.created_at.isoformat(),
                 "last_accessed": node.last_accessed.isoformat(),
+                "scopes": sorted(node.scopes),
+                "invalid_at": node.invalid_at.isoformat() if node.invalid_at else None,
             })
         edges = []
-        for from_c, to_c in self._edges:
-            edges.append({"from_content": from_c, "to_content": to_c})
+        for (from_c, to_c), label in self._edges.items():
+            edges.append({"from_content": from_c, "to_content": to_c, "label": label})
         with open(self.file_path, "w") as f:
             json.dump({"nodes": nodes, "edges": edges}, f)
 
@@ -70,36 +76,50 @@ class MemoryBackend(Backend):
             if node.embedding is None:
                 raise ValueError(f"Node '{node.content}' has no embedding")
 
-        # Deduplicate within batch (keep first occurrence)
-        seen: dict[str, Node] = {}
-        unique: list[Node] = []
+        # Process in order; the first occurrence of a content stores a COPY of
+        # the caller's node (so we never mutate the caller's objects), and later
+        # occurrences (in-batch or already stored) union their scopes into it.
         for node in nodes:
-            if node.content not in seen:
-                seen[node.content] = node
-                unique.append(node)
-
-        for node in unique:
-            if node.content in self._nodes:
-                # Update last_accessed for existing nodes
-                self._nodes[node.content].last_accessed = now
+            content = node.content
+            if content in self._nodes:
+                existing = self._nodes[content]
+                existing.last_accessed = now
+                existing.scopes |= node.scopes
+                # Re-asserting a fact revives it: a previously retired fact
+                # (soft-superseded) becomes current again.
+                existing.invalid_at = None
             else:
-                node.last_accessed = now
-                self._nodes[node.content] = node
+                self._nodes[content] = Node(
+                    content=content,
+                    type=node.type,
+                    embedding=node.embedding,
+                    created_at=node.created_at,
+                    last_accessed=now,
+                    scopes=set(node.scopes),
+                )
+
+    def _candidates(self, scopes: set[str] | None) -> list[Node]:
+        """Nodes eligible as search seeds, filtered by scope when given."""
+        if scopes:
+            return [n for n in self._nodes.values() if n.scopes & scopes]
+        return list(self._nodes.values())
 
     async def insert_edges(self, edges: list[Edge]) -> None:
         for edge in edges:
-            self._edges.add((edge.from_content, edge.to_content))
+            self._edges[(edge.from_content, edge.to_content)] = edge.label
 
     async def knn_search(
-        self, embedding: list[float], top_k: int
+        self, embedding: list[float], top_k: int,
+        scopes: set[str] | None = None,
     ) -> list[dict[str, str]]:
-        if not self._nodes:
+        candidates = self._candidates(scopes)
+        if not candidates:
             return []
 
         contents = []
         types = []
         embeddings = []
-        for node in self._nodes.values():
+        for node in candidates:
             contents.append(node.content)
             types.append(node.type)
             embeddings.append(node.embedding)
@@ -133,14 +153,16 @@ class MemoryBackend(Backend):
     async def hybrid_search(
         self, embedding: list[float], query_text: str, top_k: int,
         rrf_k: int = 60, keyword_only: bool = False,
+        scopes: set[str] | None = None,
     ) -> list[dict[str, str]]:
-        if not self._nodes:
+        candidates = self._candidates(scopes)
+        if not candidates:
             return []
 
         contents = []
         types = []
         embeddings = []
-        for node in self._nodes.values():
+        for node in candidates:
             contents.append(node.content)
             types.append(node.type)
             embeddings.append(node.embedding)
@@ -214,14 +236,30 @@ class MemoryBackend(Backend):
             results.append({"content": contents[idx], "type": types[idx]})
         return results
 
-    async def get_neighbors(self, content: str) -> list[dict[str, str]]:
-        neighbors: dict[str, str] = {}
-        for from_c, to_c in self._edges:
+    async def get_neighbors(
+        self, content: str, scopes: set[str] | None = None
+    ) -> list[dict[str, str]]:
+        # neighbor content -> (type, label, direction). A labeled edge wins over
+        # an untyped one when both connect the same pair, so causal links surface.
+        # When ``scopes`` is given, only neighbors carrying at least one of those
+        # scopes are returned, confining traversal to a tenant (isolation mode).
+        neighbors: dict[str, tuple[str, str | None, str]] = {}
+        for (from_c, to_c), label in self._edges.items():
             if from_c == content and to_c in self._nodes:
-                neighbors[to_c] = self._nodes[to_c].type
+                other, direction = to_c, "out"
             elif to_c == content and from_c in self._nodes:
-                neighbors[from_c] = self._nodes[from_c].type
-        return [{"content": c, "type": t} for c, t in neighbors.items()]
+                other, direction = from_c, "in"
+            else:
+                continue
+            if scopes is not None and not (self._nodes[other].scopes & scopes):
+                continue
+            existing = neighbors.get(other)
+            if existing is None or (label is not None and existing[1] is None):
+                neighbors[other] = (self._nodes[other].type, label, direction)
+        return [
+            {"content": c, "type": t, "label": label, "direction": direction}
+            for c, (t, label, direction) in neighbors.items()
+        ]
 
     async def delete_stale_nodes(self, days: int) -> int:
         cutoff = datetime.now() - timedelta(days=days)
@@ -230,16 +268,70 @@ class MemoryBackend(Backend):
             del self._nodes[content]
         # Remove edges referencing deleted nodes
         self._edges = {
-            (f, t) for f, t in self._edges
+            (f, t): label for (f, t), label in self._edges.items()
             if f in self._nodes and t in self._nodes
         }
         return len(stale)
 
-    async def get_all_nodes(self) -> list[Node]:
-        return list(self._nodes.values())
+    async def delete_nodes(self, contents: list[str]) -> int:
+        deleted = 0
+        for content in contents:
+            if content in self._nodes:
+                del self._nodes[content]
+                deleted += 1
+        if deleted:
+            # Remove edges referencing deleted nodes
+            self._edges = {
+                (f, t): label for (f, t), label in self._edges.items()
+                if f in self._nodes and t in self._nodes
+            }
+        return deleted
+
+    async def get_created_at(self, contents: list[str]) -> dict[str, str]:
+        return {
+            c: self._nodes[c].created_at.isoformat()
+            for c in contents
+            if c in self._nodes
+        }
+
+    async def set_invalid(self, contents: list[str], when: datetime) -> None:
+        for content in contents:
+            node = self._nodes.get(content)
+            if node is not None:
+                node.invalid_at = when
+
+    async def get_validity(self, contents: list[str]) -> dict[str, str | None]:
+        out: dict[str, str | None] = {}
+        for c in contents:
+            node = self._nodes.get(c)
+            if node is not None:
+                out[c] = node.invalid_at.isoformat() if node.invalid_at else None
+        return out
+
+    async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
+        return {
+            c: set(self._nodes[c].scopes)
+            for c in contents
+            if c in self._nodes
+        }
+
+    async def get_causal_relations(self, contents: list[str]) -> dict[str, list[dict]]:
+        wanted = set(contents)
+        result: dict[str, list[dict]] = {}
+        for (cause, effect), label in self._edges.items():
+            if label != "causes":
+                continue
+            # Facts linked to BOTH the cause span and the effect span.
+            for fact in wanted:
+                if (cause, fact) in self._edges and (effect, fact) in self._edges:
+                    result.setdefault(fact, []).append({"cause": cause, "effect": effect})
+        return result
+
+    async def get_all_nodes(self, scopes: set[str] | None = None) -> list[Node]:
+        return self._candidates(scopes)
 
     async def get_all_edges(self) -> list[Edge]:
         return [
-            Edge(from_content=f, to_content=t)
-            for f, t in self._edges
+            Edge(from_content=f, to_content=t, label=label)
+            for (f, t), label in self._edges.items()
         ]

@@ -1,4 +1,4 @@
-__version__ = "0.3.1"
+__version__ = "0.5.0"
 
 import os as _os
 
@@ -10,7 +10,23 @@ if "TQDM_DISABLE" not in _os.environ:
     _os.environ["TQDM_DISABLE"] = "1"
 
 from reasongraph._types import Node, Edge
-from reasongraph._extraction import NERExtractor, GLiNER2Extractor
+from reasongraph._extraction import (
+    NERExtractor,
+    GLiNER2Extractor,
+    ChatExtractor,
+    OnnxTokenClassifierExtractor,
+    GlinerExtractor,
+    GlinerRelexExtractor,
+    HybridCausalExtractor,
+    CausalPointerExtractor,
+)
+from reasongraph._conflict import ConflictResolver, NLIConflictResolver, LLMConflictResolver
+from reasongraph._fastembed import FastEmbedEmbedder, FastEmbedReranker
+from reasongraph._synthesizers import (
+    TemplateSynthesizer,
+    PromptSynthesizer,
+    TransformersSynthesizer,
+)
 from reasongraph.graph import ReasonGraph
 from reasongraph.backends._memory import MemoryBackend
 from reasongraph.datasets import load_dataset
@@ -18,6 +34,11 @@ from reasongraph.datasets import load_dataset
 __all__ = [
     "ReasonGraph", "Node", "Edge",
     "MemoryBackend",
-    "NERExtractor", "GLiNER2Extractor",
+    "NERExtractor", "GLiNER2Extractor", "ChatExtractor",
+    "OnnxTokenClassifierExtractor", "GlinerExtractor",
+    "GlinerRelexExtractor", "HybridCausalExtractor", "CausalPointerExtractor",
+    "ConflictResolver", "NLIConflictResolver", "LLMConflictResolver",
+    "FastEmbedEmbedder", "FastEmbedReranker",
+    "TemplateSynthesizer", "PromptSynthesizer", "TransformersSynthesizer",
     "load_dataset",
 ]

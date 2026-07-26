@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reasongraph"
-version = "0.3.1"
+version = "0.5.0"
 description = "A graph-based reasoning library with embedding search and multi-hop traversal"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,6 +34,9 @@ Homepage = "https://github.com/bgokden/reasongraph"
 Repository = "https://github.com/bgokden/reasongraph"
 Issues = "https://github.com/bgokden/reasongraph/issues"
 
+[project.scripts]
+reasongraph-serve = "reasongraph.service.app:main"
+
 [project.optional-dependencies]
 sqlite = [
     "aiosqlite>=0.19.0",
@@ -44,6 +47,41 @@ gliner2 = [
     "urllib3>=2.0.0",
     "requests>=2.28.0",
 ]
+# Default entity extractor (GlinerExtractor, gliner_small-v2.5) AND the default
+# causal extractor (HybridCausalExtractor, gliner-relex-multi). 0.2.27 is the
+# minimum that loads the GLiNER-relex models.
+gliner = [
+    "gliner>=0.2.27",
+]
+# Causal extraction (the headline feature). Ships the SOTA span-pointer model
+# (CausalPointerExtractor, ~0.70 F1 on CNC Subtask-2 dev), which the graph prefers
+# whenever `causal_span_model` is importable, plus the model-free hybrid cue + relex
+# fallback (gliner). `pip install reasongraph[causal]` is the SOTA-causal path.
+causal = [
+    "causal-span-model>=0.1.1",
+    "gliner>=0.2.27",
+]
+# Fast pure-ONNX embedder + reranker (FastEmbedEmbedder / FastEmbedReranker).
+fastembed = [
+    "fastembed>=0.8.0",
+]
+# Agent-memory service (HTTP + MCP transports over MemoryService).
+service = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "mcp>=1.0.0",
+]
+# GLiNER v1 zero-shot extractor with ONNX inference (GlinerExtractor); `onnx`
+# is needed to convert the model to ONNX on first use.
+gliner-onnx = [
+    "gliner>=0.2.27",
+    "onnx>=1.16.0",
+    "onnxruntime>=1.17.0",
+]
+# Generic ONNX token-classification extractor (OnnxTokenClassifierExtractor).
+onnx = [
+    "onnxruntime>=1.17.0",
+]
 postgres = [
     "psycopg[binary]>=3.1.0",
     "psycopg-pool>=3.1.0",
@@ -52,9 +90,13 @@ postgres = [
 all = [
     "aiosqlite>=0.19.0",
     "sqlite-vec>=0.1.6",
+    "causal-span-model>=0.1.1",
+    "gliner>=0.2.27",
     "gliner2>=1.2.0",
     "urllib3>=2.0.0",
     "requests>=2.28.0",
+    "fastembed>=0.8.0",
+    "onnxruntime>=1.17.0",
     "psycopg[binary]>=3.1.0",
     "psycopg-pool>=3.1.0",
     "pgvector>=0.2.0",
@@ -62,6 +104,11 @@ all = [
 dev = [
     "aiosqlite>=0.19.0",
     "sqlite-vec>=0.1.6",
+    "gliner>=0.2.27",
+    "fastembed>=0.8.0",
+    "onnxruntime>=1.17.0",
+    "fastapi>=0.110.0",
+    "httpx>=0.27.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",

@@ -180,6 +180,37 @@ async def test_file_persistence():
 
 
 @pytest.mark.asyncio
+async def test_temporal_validity_persists(backend):
+    from datetime import datetime
+
+    await backend.insert_nodes([_make_node("current"), _make_node("retired")])
+    when = datetime(2022, 1, 1)
+    await backend.set_invalid(["retired"], when)
+    validity = await backend.get_validity(["current", "retired"])
+    assert validity == {"current": None, "retired": when.isoformat()}
+
+    # re-asserting a retired fact revives it (upsert clears invalid_at)
+    await backend.insert_nodes([_make_node("retired")])
+    assert (await backend.get_validity(["retired"]))["retired"] is None
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    try:
+        b1 = MemoryBackend(file_path=path)
+        await b1.initialize()
+        await b1.insert_nodes([_make_node("retired")])
+        await b1.set_invalid(["retired"], when)
+        await b1.close()
+        b2 = MemoryBackend(file_path=path)
+        await b2.initialize()
+        # invalid_at survives the JSON round-trip
+        assert (await b2.get_all_nodes())[0].invalid_at == when
+        await b2.close()
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.asyncio
 async def test_file_persistence_missing_file():
     """Initialize with a non-existent file path should not raise."""
     b = MemoryBackend(file_path="/tmp/nonexistent_reasongraph_test.json")
@@ -242,3 +273,132 @@ async def test_batch_dedup_within_insert(backend):
 
     all_nodes = await backend.get_all_nodes()
     assert len(all_nodes) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes(backend):
+    await backend.insert_nodes([_make_node("keep"), _make_node("remove")])
+
+    deleted = await backend.delete_nodes(["remove"])
+    assert deleted == 1
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"keep"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_removes_incident_edges(backend):
+    await backend.insert_nodes([
+        _make_node("the fact", "text"),
+        _make_node("Amsterdam", "entity"),
+    ])
+    await backend.insert_edges([Edge(from_content="Amsterdam", to_content="the fact")])
+
+    await backend.delete_nodes(["the fact"])
+    assert await backend.get_all_edges() == []
+    # The shared entity node survives; only its edge to the deleted text is gone
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"Amsterdam"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_missing_content_is_noop(backend):
+    await backend.insert_nodes([_make_node("present")])
+
+    deleted = await backend.delete_nodes(["absent"])
+    assert deleted == 0
+    assert len(await backend.get_all_nodes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_batch(backend):
+    await backend.insert_nodes([_make_node("a"), _make_node("b"), _make_node("c")])
+
+    deleted = await backend.delete_nodes(["a", "c", "missing"])
+    assert deleted == 2
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"b"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_empty_list(backend):
+    await backend.insert_nodes([_make_node("present")])
+
+    assert await backend.delete_nodes([]) == 0
+    assert len(await backend.get_all_nodes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_created_at(backend):
+    from datetime import datetime
+
+    await backend.insert_nodes([_make_node("a"), _make_node("b")])
+
+    got = await backend.get_created_at(["a", "b", "missing"])
+    assert set(got.keys()) == {"a", "b"}  # missing content omitted
+    datetime.fromisoformat(got["a"])  # values are parseable ISO strings
+    assert await backend.get_created_at([]) == {}
+
+
+def _scoped_node(content: str, scopes: set[str], node_type: str = "text") -> Node:
+    node = _make_node(content, node_type)
+    node.scopes = set(scopes)
+    return node
+
+
+@pytest.mark.asyncio
+async def test_scopes_multi_label_union_and_seed_filter(backend):
+    await backend.insert_nodes([_scoped_node("shared fact", {"user-1", "topic-econ"})])
+    # Re-adding the same content under a new scope unions the tags
+    await backend.insert_nodes([_scoped_node("shared fact", {"session-9"})])
+    await backend.insert_nodes([_scoped_node("other fact", {"user-2"})])
+
+    by_content = {n.content: n for n in await backend.get_all_nodes()}
+    assert by_content["shared fact"].scopes == {"user-1", "topic-econ", "session-9"}
+
+    # A scoped KNN only seeds from nodes carrying that scope
+    emb = _make_node("other fact").embedding
+    res = await backend.knn_search(emb, top_k=10, scopes={"user-1"})
+    assert all(r["content"] != "other fact" for r in res)
+    assert "shared fact" in {r["content"] for r in res}
+
+    # get_all_nodes can filter by scope too
+    assert {n.content for n in await backend.get_all_nodes(scopes={"topic-econ"})} == {"shared fact"}
+    assert {n.content for n in await backend.get_all_nodes(scopes={"user-2"})} == {"other fact"}
+
+
+@pytest.mark.asyncio
+async def test_get_scopes_bounded_lookup(backend):
+    await backend.insert_nodes([
+        _scoped_node("fact one", {"user-1", "topic-econ"}),
+        _scoped_node("fact two", {"user-2"}),
+        _make_node("unscoped fact"),  # no scopes
+    ])
+
+    got = await backend.get_scopes(["fact one", "fact two", "unscoped fact", "missing"])
+    assert got["fact one"] == {"user-1", "topic-econ"}
+    assert got["fact two"] == {"user-2"}
+    # Unscoped nodes map to an empty set; missing contents are omitted entirely.
+    assert got.get("unscoped fact", set()) == set()
+    assert "missing" not in got
+    assert await backend.get_scopes([]) == {}
+
+
+@pytest.mark.asyncio
+async def test_insert_nodes_does_not_mutate_caller_scopes(backend):
+    a = _scoped_node("dup", {"s-a"})
+    b = _scoped_node("dup", {"s-b"})
+    await backend.insert_nodes([a, b])
+
+    # The caller's Node objects are left untouched
+    assert a.scopes == {"s-a"}
+    assert b.scopes == {"s-b"}
+    # The stored node holds the union
+    stored = {n.content: n for n in await backend.get_all_nodes()}["dup"]
+    assert stored.scopes == {"s-a", "s-b"}
+
+    # Re-inserting the same content under a new scope also must not mutate the caller
+    c = _scoped_node("dup", {"s-c"})
+    await backend.insert_nodes([c])
+    assert c.scopes == {"s-c"}
+    stored = {n.content: n for n in await backend.get_all_nodes()}["dup"]
+    assert stored.scopes == {"s-a", "s-b", "s-c"}

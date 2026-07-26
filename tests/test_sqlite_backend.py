@@ -184,3 +184,151 @@ def test_escape_fts5_basic():
 
 def test_escape_fts5_quotes():
     assert _escape_fts5('say "hi"') == '"say ""hi"""'
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes(backend):
+    await backend.insert_nodes([_make_node("keep"), _make_node("remove")])
+
+    deleted = await backend.delete_nodes(["remove"])
+    assert deleted == 1
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"keep"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_purges_vec_and_fts(backend):
+    """Deleted nodes must vanish from the vec_nodes and fts_nodes shadow tables."""
+    keep = _make_node("keep this around")
+    remove = _make_node("remove this now")
+    await backend.insert_nodes([keep, remove])
+
+    await backend.delete_nodes(["remove this now"])
+
+    # Vector search must not surface the deleted node, even queried with its own embedding
+    knn = await backend.knn_search(remove.embedding, top_k=5)
+    assert all(r["content"] != "remove this now" for r in knn)
+
+    # Trigram keyword search must not surface it either
+    kw = await backend.hybrid_search(
+        remove.embedding, "remove this now", top_k=5, keyword_only=True
+    )
+    assert all(r["content"] != "remove this now" for r in kw)
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_removes_incident_edges(backend):
+    await backend.insert_nodes([
+        _make_node("the fact", "text"),
+        _make_node("Amsterdam", "entity"),
+    ])
+    await backend.insert_edges([Edge(from_content="Amsterdam", to_content="the fact")])
+
+    await backend.delete_nodes(["the fact"])
+    assert await backend.get_all_edges() == []
+    # The shared entity node survives; only its edge to the deleted text is gone
+    contents = {n.content for n in await backend.get_all_nodes()}
+    assert contents == {"Amsterdam"}
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_missing_content_is_noop(backend):
+    await backend.insert_nodes([_make_node("present")])
+
+    deleted = await backend.delete_nodes(["absent"])
+    assert deleted == 0
+    assert len(await backend.get_all_nodes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_nodes_empty_list(backend):
+    await backend.insert_nodes([_make_node("present")])
+
+    assert await backend.delete_nodes([]) == 0
+    assert len(await backend.get_all_nodes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_created_at(backend):
+    from datetime import datetime
+
+    await backend.insert_nodes([_make_node("a"), _make_node("b")])
+
+    got = await backend.get_created_at(["a", "b", "missing"])
+    assert set(got.keys()) == {"a", "b"}  # missing content omitted
+    datetime.fromisoformat(got["a"])  # values are parseable ISO strings
+    assert await backend.get_created_at([]) == {}
+
+
+def _scoped_node(content: str, scopes: set[str], node_type: str = "text") -> Node:
+    node = _make_node(content, node_type)
+    node.scopes = set(scopes)
+    return node
+
+
+@pytest.mark.asyncio
+async def test_get_scopes_bounded_lookup(backend):
+    await backend.insert_nodes([
+        _scoped_node("fact one", {"user-1", "topic-econ"}),
+        _scoped_node("fact two", {"user-2"}),
+        _make_node("unscoped fact"),  # no scopes
+    ])
+
+    got = await backend.get_scopes(["fact one", "fact two", "unscoped fact", "missing"])
+    assert got["fact one"] == {"user-1", "topic-econ"}
+    assert got["fact two"] == {"user-2"}
+    # Unscoped and missing contents produce no row; callers treat them as empty.
+    assert "unscoped fact" not in got
+    assert "missing" not in got
+    assert await backend.get_scopes([]) == {}
+
+
+@pytest.mark.asyncio
+async def test_scopes_multi_label_union_and_seed_filter(backend):
+    await backend.insert_nodes([_scoped_node("shared fact", {"user-1", "topic-econ"})])
+    # Re-adding the same content under a new scope unions the tags
+    await backend.insert_nodes([_scoped_node("shared fact", {"session-9"})])
+    await backend.insert_nodes([_scoped_node("other fact", {"user-2"})])
+
+    by_content = {n.content: n for n in await backend.get_all_nodes()}
+    assert by_content["shared fact"].scopes == {"user-1", "topic-econ", "session-9"}
+
+    # Scoped KNN (vec_distance_cosine path) only seeds from that scope
+    emb = _make_node("other fact").embedding
+    res = await backend.knn_search(emb, top_k=10, scopes={"user-1"})
+    assert all(r["content"] != "other fact" for r in res)
+    assert "shared fact" in {r["content"] for r in res}
+
+    # Scoped keyword and hybrid search also stay within the scope
+    kw = await backend.hybrid_search(emb, "other fact", 10, keyword_only=True, scopes={"user-1"})
+    assert all(r["content"] != "other fact" for r in kw)
+    hy = await backend.hybrid_search(emb, "shared", 10, scopes={"user-1"})
+    assert all(r["content"] != "other fact" for r in hy)
+
+    # Scoped get_all_nodes
+    assert {n.content for n in await backend.get_all_nodes(scopes={"topic-econ"})} == {"shared fact"}
+
+    # Deleting a node cascades its scope rows
+    await backend.delete_nodes(["shared fact"])
+    assert await backend.get_all_nodes(scopes={"user-1"}) == []
+
+
+@pytest.mark.asyncio
+async def test_insert_nodes_does_not_mutate_caller_scopes(backend):
+    a = _scoped_node("dup", {"s-a"})
+    b = _scoped_node("dup", {"s-b"})
+    await backend.insert_nodes([a, b])
+
+    # The caller's Node objects are left untouched
+    assert a.scopes == {"s-a"}
+    assert b.scopes == {"s-b"}
+    # The stored node holds the union
+    stored = {n.content: n for n in await backend.get_all_nodes()}["dup"]
+    assert stored.scopes == {"s-a", "s-b"}
+
+    # Re-inserting the same content under a new scope also must not mutate the caller
+    c = _scoped_node("dup", {"s-c"})
+    await backend.insert_nodes([c])
+    assert c.scopes == {"s-c"}
+    stored = {n.content: n for n in await backend.get_all_nodes()}["dup"]
+    assert stored.scopes == {"s-a", "s-b", "s-c"}
