@@ -574,6 +574,12 @@ Other production controls:
   entities survive. Exposed as `delete_memory` / `update_memory` MCP tools.
 - **Semantic dedup**: `add_text(..., dedup_threshold=0.95)` drops near-duplicate
   restatements instead of accumulating them, unioning scopes onto the kept fact.
+- **Contradiction resolution**: `ReasonGraph(conflict_resolver=NLIConflictResolver())`
+  (or `REASONGRAPH_RESOLVE_CONFLICTS=1`) soft-supersedes facts a new one contradicts
+  -- a `supersedes` edge drops the old fact from default recall while keeping it
+  auditable and retrievable via `include_superseded=True`. The resolver is pluggable
+  (any object with `contradictions(new, candidates)`); the shipped NLI cross-encoder
+  distinguishes contradiction from mere similarity, which cosine cannot.
 - **Health**: `/health` (liveness) and `/ready` (readiness) for orchestration probes.
 - **Postgres** creates an HNSW cosine index, so vector search is index-accelerated
   rather than a sequential scan.

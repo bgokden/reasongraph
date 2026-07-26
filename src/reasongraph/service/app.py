@@ -22,6 +22,8 @@ Environment variables:
     REASONGRAPH_API_KEY        when set, data endpoints require it (Bearer/X-API-Key)
     REASONGRAPH_DEFER_EXTRACT  1/true to run entity/causal extraction in the
                                background so pushes return fast; default off
+    REASONGRAPH_RESOLVE_CONFLICTS  1/true to soft-supersede facts a new push
+                               contradicts (loads an NLI model); default off
     REASONGRAPH_HOST/PORT      bind address for the console script (0.0.0.0 / 8000)
 
 Requires ``pip install reasongraph[service]`` plus the extras for the chosen
@@ -105,6 +107,11 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
     env = env if env is not None else os.environ
     from reasongraph import ReasonGraph
 
+    resolver = None
+    if _bool_env(env, "REASONGRAPH_RESOLVE_CONFLICTS", False):
+        from reasongraph import NLIConflictResolver
+        resolver = NLIConflictResolver()
+
     graph = ReasonGraph(
         backend=build_backend(env),
         embed_model=build_embed_model(env),
@@ -112,6 +119,7 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
         forget_after=_int_env(env, "REASONGRAPH_FORGET_AFTER", 30),
         forget_every=_int_env(env, "REASONGRAPH_FORGET_EVERY", None),
         isolate_traversal=_bool_env(env, "REASONGRAPH_ISOLATE", False),
+        conflict_resolver=resolver,
     )
     return MemoryService(
         graph=graph,

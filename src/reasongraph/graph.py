@@ -37,6 +37,7 @@ class ReasonGraph:
         synthesizer=None,
         causal_extractor: CausalExtractorFn | bool | None = None,
         isolate_traversal: bool = False,
+        conflict_resolver=None,
     ) -> None:
         self.backend = backend or MemoryBackend()
         self.embeddings = EmbeddingManager(
@@ -50,6 +51,11 @@ class ReasonGraph:
         # scopes (the cross-session discovery feature). True confines the walk to
         # the query scopes -- the multi-tenant setting. Overridable per query.
         self.isolate_traversal = isolate_traversal
+        # Optional conflict resolver (a ConflictResolver, e.g. NLIConflictResolver).
+        # When set, a new fact that contradicts existing ones soft-supersedes them:
+        # a "supersedes" edge marks the old fact so it drops out of default recall
+        # while staying auditable. None (default) disables conflict resolution.
+        self.conflict_resolver = conflict_resolver
         # Causal extraction (the headline feature) is ON by default. This holds
         # the caller's choice: None -> build the default hybrid causal extractor
         # lazily on first use; False -> disable causal extraction; a
@@ -213,6 +219,7 @@ class ReasonGraph:
         causal_extractor: CausalExtractorFn | None = None,
         causal: bool | None = None,
         dedup_threshold: float | None = None,
+        resolve_conflicts: bool | None = None,
     ) -> list[str]:
         """Add text to the graph with automatic entity and causal extraction.
 
@@ -236,6 +243,7 @@ class ReasonGraph:
         result = await self.add_texts(
             [text], extractor=extractor, causal_extractor=causal_extractor,
             scopes=scopes, causal=causal, dedup_threshold=dedup_threshold,
+            resolve_conflicts=resolve_conflicts,
         )
         return result[0]
 
@@ -247,6 +255,7 @@ class ReasonGraph:
         scopes: set[str] | list[str] | None = None,
         causal: bool | None = None,
         dedup_threshold: float | None = None,
+        resolve_conflicts: bool | None = None,
     ) -> list[list[str]]:
         """Add multiple texts with automatic entity and causal extraction.
 
@@ -274,6 +283,11 @@ class ReasonGraph:
                 unioned onto the existing fact. Prevents an evolving memory from
                 accumulating paraphrased restatements. None (default) disables it.
                 Dedup is against facts already in the graph, not within one batch.
+            resolve_conflicts: When the graph has a ``conflict_resolver``, a new
+                fact that contradicts existing ones soft-supersedes them (a
+                "supersedes" edge drops them from default recall, keeping them
+                auditable). None (default) resolves iff a resolver is configured;
+                True requires one (raises otherwise); False skips resolution.
 
         Returns:
             List of entity lists, one per input text. Skipped duplicates yield [].
@@ -358,7 +372,53 @@ class ReasonGraph:
         if all_edges:
             await self.add_edges(all_edges)
 
+        # Conflict resolution: soft-supersede existing facts the new ones contradict.
+        do_resolve = (self.conflict_resolver is not None
+                      if resolve_conflicts is None else resolve_conflicts)
+        if do_resolve:
+            if self.conflict_resolver is None:
+                raise ValueError(
+                    "resolve_conflicts=True but no conflict_resolver is configured. "
+                    "Pass conflict_resolver=NLIConflictResolver() to ReasonGraph."
+                )
+            if active_texts:
+                await self._resolve_conflicts(active_texts)
+
         return all_entities
+
+    async def _superseded(self, contents: list[str]) -> list[str]:
+        """Return the subset of ``contents`` that a newer fact has superseded.
+
+        A fact is superseded when another fact points at it via a ``"supersedes"``
+        edge (soft-supersede): it stays in the graph but drops out of default recall.
+        """
+        out = []
+        for content in contents:
+            neighbors = await self.backend.get_neighbors(content)
+            if any(n.get("label") == "supersedes" and n.get("direction") == "in"
+                   for n in neighbors):
+                out.append(content)
+        return out
+
+    async def _resolve_conflicts(self, texts: list[str]) -> None:
+        """Add a ``"supersedes"`` edge from each new fact to the facts it contradicts."""
+        batch = set(texts)
+        edges: list[tuple] = []
+        for text in texts:
+            embedding = self.embeddings.encode(text)
+            candidates = await self.backend.knn_search(embedding, top_k=5)
+            pool = [c["content"] for c in candidates
+                    if c.get("type") == "text" and c["content"] not in batch]
+            if not pool:
+                continue
+            already = set(await self._superseded(pool))
+            pool = [c for c in pool if c not in already]
+            if not pool:
+                continue
+            for old in self.conflict_resolver.contradictions(text, pool):
+                edges.append((text, old, "supersedes"))
+        if edges:
+            await self.add_edges(edges)
 
     async def _find_duplicate(self, text: str, threshold: float) -> str | None:
         """Return an existing text fact that near-duplicates ``text``, or None.
@@ -390,6 +450,7 @@ class ReasonGraph:
         recency_weight: float = 0.0,
         scopes: set[str] | list[str] | None = None,
         isolate: bool | None = None,
+        include_superseded: bool = False,
     ) -> list[str]:
         """Query the graph with vector similarity and multi-hop traversal.
 
@@ -412,6 +473,10 @@ class ReasonGraph:
                 discovery). True confines the walk to ``scopes`` so a query can
                 only reach facts in its own tenant -- the multi-tenant setting.
                 Has no effect without ``scopes``.
+            include_superseded: When False (default) facts a newer fact has
+                contradicted (soft-superseded) are dropped from the results. Set
+                True to also return them. Only applies when a conflict_resolver is
+                configured.
 
         Returns:
             List of text-type node contents in relevance order.
@@ -507,7 +572,13 @@ class ReasonGraph:
 
             seeds = chain_next + bridge_next + entity_next
 
-        return [node["content"] for node in results if node["type"] == "text"]
+        texts = [node["content"] for node in results if node["type"] == "text"]
+        # Drop soft-superseded facts (only possible when a resolver is configured,
+        # so this costs nothing for graphs that don't use conflict resolution).
+        if not include_superseded and self.conflict_resolver is not None and texts:
+            superseded = set(await self._superseded(texts))
+            texts = [t for t in texts if t not in superseded]
+        return texts
 
     async def query_detailed(
         self,
@@ -520,6 +591,7 @@ class ReasonGraph:
         recency_weight: float = 0.0,
         scopes: set[str] | list[str] | None = None,
         isolate: bool | None = None,
+        include_superseded: bool = False,
     ) -> list[dict]:
         """Like :meth:`query` but return structured results instead of bare strings.
 
@@ -532,7 +604,7 @@ class ReasonGraph:
         contents = await self.query(
             query, top_k=top_k, hops=hops, rerank_top_k=rerank_top_k,
             search_mode=search_mode, rrf_k=rrf_k, recency_weight=recency_weight,
-            scopes=scopes, isolate=isolate,
+            scopes=scopes, isolate=isolate, include_superseded=include_superseded,
         )
         if not contents:
             return []

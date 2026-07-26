@@ -144,6 +144,35 @@ async def test_get_all_nodes_and_edges(graph):
     assert len(edges) == 1
 
 
+class _SubjectResolver:
+    """Test resolver: a new fact contradicts existing facts with the same subject
+    (first word), standing in for a real NLI model."""
+
+    def contradictions(self, new_text, candidates):
+        subject = new_text.split()[0].lower()
+        return [c for c in candidates if c.split()[0].lower() == subject]
+
+
+@pytest.mark.asyncio
+async def test_conflict_resolution_soft_supersedes(graph):
+    graph.conflict_resolver = _SubjectResolver()
+    await graph.add_text("Alice lives in Munich.", extractor=lambda t: [])
+    # a contradicting fact soft-supersedes the old one
+    await graph.add_text("Alice lives in Berlin.", extractor=lambda t: [])
+
+    res = await graph.query("Where does Alice live?", top_k=5, hops=2)
+    assert "Alice lives in Berlin." in res
+    assert "Alice lives in Munich." not in res  # dropped from default recall
+
+    # the superseded fact is retained, auditable, and retrievable on request
+    res_all = await graph.query(
+        "Where does Alice live?", top_k=5, hops=2, include_superseded=True,
+    )
+    assert "Alice lives in Munich." in res_all
+    labels = {(e.from_content, e.to_content): e.label for e in await graph.get_all_edges()}
+    assert labels.get(("Alice lives in Berlin.", "Alice lives in Munich.")) == "supersedes"
+
+
 @pytest.mark.asyncio
 async def test_semantic_dedup_on_write(graph):
     # Simulate an embedder that judges the two phrasings near-identical.
