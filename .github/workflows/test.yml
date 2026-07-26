@@ -19,9 +19,23 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
+
+      # The suite loads real transformer models (embedder, reranker, NER, GLiNER,
+      # NLI). Cache the Hugging Face hub dir so they download once and are restored
+      # on later runs; bump the key suffix when the set of models changes.
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ runner.os }}-py${{ matrix.python-version }}-v1
+          restore-keys: |
+            hf-models-${{ runner.os }}-py${{ matrix.python-version }}-
+            hf-models-${{ runner.os }}-
 
       - name: Install dependencies
         run: uv sync --all-extras

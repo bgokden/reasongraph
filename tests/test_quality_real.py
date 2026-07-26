@@ -65,6 +65,23 @@ async def test_real_embedding_retrieval_scores_and_dedup():
         await g.close()
 
 
+def test_real_nli_resolver_detects_contradiction():
+    # Loads the real NLI cross-encoder (cached in CI). Guards that the shipped
+    # resolver actually separates a contradiction from an unrelated statement --
+    # the whole reason NLI is used over cosine similarity.
+    from reasongraph import NLIConflictResolver
+
+    resolver = NLIConflictResolver()
+    # Both candidates are topically similar (the realistic knn case): one is a
+    # same-subject contradiction, the other a different-subject fact that stands.
+    out = resolver.contradictions(
+        "Alice lives in Berlin.",
+        ["Alice lives in Munich.", "Bob lives in Munich."],
+    )
+    assert "Alice lives in Munich." in out
+    assert "Bob lives in Munich." not in out
+
+
 @pytest.mark.asyncio
 async def test_real_supersede_removes_old_fact():
     g = await _graph()
