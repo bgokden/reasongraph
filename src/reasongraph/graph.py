@@ -387,18 +387,14 @@ class ReasonGraph:
         return all_entities
 
     async def _superseded(self, contents: list[str]) -> list[str]:
-        """Return the subset of ``contents`` that a newer fact has superseded.
+        """Return the subset of ``contents`` that have been retired (soft-superseded).
 
-        A fact is superseded when another fact points at it via a ``"supersedes"``
-        edge (soft-supersede): it stays in the graph but drops out of default recall.
+        A retired fact carries an ``invalid_at`` timestamp: it stays in the graph but
+        drops out of default recall. This is a bounded validity lookup, not an edge
+        scan, so it stays cheap on the query hot path.
         """
-        out = []
-        for content in contents:
-            neighbors = await self.backend.get_neighbors(content)
-            if any(n.get("label") == "supersedes" and n.get("direction") == "in"
-                   for n in neighbors):
-                out.append(content)
-        return out
+        validity = await self.backend.get_validity(contents)
+        return [c for c in contents if validity.get(c) is not None]
 
     async def supersession_history(self, content: str) -> dict:
         """Audit trail for a fact from its ``"supersedes"`` edges.
@@ -416,9 +412,15 @@ class ReasonGraph:
         }
 
     async def _resolve_conflicts(self, texts: list[str]) -> None:
-        """Add a ``"supersedes"`` edge from each new fact to the facts it contradicts."""
+        """Soft-supersede facts each new fact contradicts.
+
+        Records a ``"supersedes"`` edge (provenance: which fact replaced which) and
+        stamps the old fact's ``invalid_at`` (validity state: dropped from default
+        recall, still time-travellable).
+        """
         batch = set(texts)
         edges: list[tuple] = []
+        retired: list[str] = []
         for text in texts:
             embedding = self.embeddings.encode(text)
             candidates = await self.backend.knn_search(embedding, top_k=5)
@@ -432,8 +434,11 @@ class ReasonGraph:
                 continue
             for old in self.conflict_resolver.contradictions(text, pool):
                 edges.append((text, old, "supersedes"))
+                retired.append(old)
         if edges:
             await self.add_edges(edges)
+        if retired:
+            await self.backend.set_invalid(retired, datetime.now())
 
     async def _find_duplicate(self, text: str, threshold: float) -> str | None:
         """Return an existing text fact that near-duplicates ``text``, or None.
@@ -466,6 +471,7 @@ class ReasonGraph:
         scopes: set[str] | list[str] | None = None,
         isolate: bool | None = None,
         include_superseded: bool = False,
+        as_of: datetime | None = None,
     ) -> list[str]:
         """Query the graph with vector similarity and multi-hop traversal.
 
@@ -492,6 +498,9 @@ class ReasonGraph:
                 contradicted (soft-superseded) are dropped from the results. Set
                 True to also return them. Only applies when a conflict_resolver is
                 configured.
+            as_of: Time-travel. When given, return only facts that were current at
+                that moment -- created at or before ``as_of`` and not yet retired
+                (``invalid_at`` after ``as_of``). Overrides ``include_superseded``.
 
         Returns:
             List of text-type node contents in relevance order.
@@ -588,12 +597,28 @@ class ReasonGraph:
             seeds = chain_next + bridge_next + entity_next
 
         texts = [node["content"] for node in results if node["type"] == "text"]
-        # Drop soft-superseded facts (only possible when a resolver is configured,
-        # so this costs nothing for graphs that don't use conflict resolution).
-        if not include_superseded and self.conflict_resolver is not None and texts:
+        if as_of is not None and texts:
+            # Time-travel: keep only facts current at ``as_of``. Stored timestamps
+            # are naive, so coerce an aware ``as_of`` to naive local time.
+            if as_of.tzinfo is not None:
+                as_of = as_of.astimezone().replace(tzinfo=None)
+            created = await self.backend.get_created_at(texts)
+            validity = await self.backend.get_validity(texts)
+            texts = [t for t in texts if self._valid_at(t, as_of, created, validity)]
+        elif not include_superseded and texts and self.conflict_resolver is not None:
+            # Drop retired (soft-superseded) facts. Only a resolver retires facts,
+            # so skip the validity lookup entirely when none is configured.
             superseded = set(await self._superseded(texts))
             texts = [t for t in texts if t not in superseded]
         return texts
+
+    @staticmethod
+    def _valid_at(content, as_of, created, validity) -> bool:
+        cr = created.get(content)
+        iv = validity.get(content)
+        born = cr is None or datetime.fromisoformat(cr) <= as_of
+        retired = iv is not None and datetime.fromisoformat(iv) <= as_of
+        return born and not retired
 
     async def query_detailed(
         self,
@@ -607,6 +632,7 @@ class ReasonGraph:
         scopes: set[str] | list[str] | None = None,
         isolate: bool | None = None,
         include_superseded: bool = False,
+        as_of: datetime | None = None,
     ) -> list[dict]:
         """Like :meth:`query` but return structured results instead of bare strings.
 
@@ -620,6 +646,7 @@ class ReasonGraph:
             query, top_k=top_k, hops=hops, rerank_top_k=rerank_top_k,
             search_mode=search_mode, rrf_k=rrf_k, recency_weight=recency_weight,
             scopes=scopes, isolate=isolate, include_superseded=include_superseded,
+            as_of=as_of,
         )
         if not contents:
             return []
@@ -750,8 +777,9 @@ class ReasonGraph:
 
         # Scope lookup for the discovered facts only -- a bounded fetch keyed by
         # the reached contents, so it scales with the result set, not the graph.
-        # Drop soft-superseded facts (gated on a resolver, so non-users pay nothing).
-        if not include_superseded and self.conflict_resolver is not None and order:
+        # Drop retired (soft-superseded) facts. Only a resolver retires facts, so
+        # skip the validity lookup when none is configured.
+        if not include_superseded and order and self.conflict_resolver is not None:
             superseded = set(await self._superseded(order))
             order = [c for c in order if c not in superseded]
 
@@ -923,8 +951,9 @@ class ReasonGraph:
         queries. The new text is added before the old node is removed, so any
         entity shared between them survives and keeps bridging the graph.
 
-        When ``old_content`` equals ``new_text`` the call is a no-op
-        replacement: the fact is (re)added and kept, never deleted.
+        When ``old_content`` equals ``new_text`` the fact is re-asserted: it is
+        (re)added and kept, never deleted, and a previously retired
+        (soft-superseded) fact is revived (its ``invalid_at`` is cleared).
 
         Args:
             old_content: Exact content of the node to remove.
@@ -1015,10 +1044,11 @@ class ReasonGraph:
         scopes: set[str] | list[str] | None = None,
         isolate: bool | None = None,
         include_superseded: bool = False,
+        as_of: datetime | None = None,
     ) -> list[str]:
         return self._run(self.query(
             query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight,
-            scopes, isolate, include_superseded,
+            scopes, isolate, include_superseded, as_of,
         ))
 
     def query_detailed_sync(
@@ -1033,10 +1063,11 @@ class ReasonGraph:
         scopes: set[str] | list[str] | None = None,
         isolate: bool | None = None,
         include_superseded: bool = False,
+        as_of: datetime | None = None,
     ) -> list[dict]:
         return self._run(self.query_detailed(
             query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight,
-            scopes, isolate, include_superseded,
+            scopes, isolate, include_superseded, as_of,
         ))
 
     def discover_sync(

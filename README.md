@@ -582,8 +582,11 @@ Other production controls:
   (any object with `contradictions(new, candidates)`): the `NLIConflictResolver`
   cross-encoder needs no LLM but can over-flag complements (it treats "works in
   Munich" vs "lives in Berlin" as a conflict), while `LLMConflictResolver(generate)`
-  brings any LLM and is more precise. Soft-supersede is deliberately reversible, so
-  a wrong call is recoverable.
+  brings any LLM and is more precise. Soft-supersede is deliberately reversible:
+  re-asserting a fact revives it, and `query(..., as_of=<datetime>)` **time-travels**
+  to what was current at that moment (each fact carries a `created_at`/`invalid_at`
+  validity interval). Exposed to agents as the `memory_history` MCP tool and
+  `/history` endpoint.
 - **Health**: `/health` (liveness) and `/ready` (readiness) for orchestration probes.
 - **Postgres** creates an HNSW cosine index, so vector search is index-accelerated
   rather than a sequential scan.

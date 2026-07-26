@@ -81,6 +81,12 @@ class SqliteBackend(Backend):
         if "label" not in columns:
             await self._db.execute("ALTER TABLE edges ADD COLUMN label TEXT")
 
+        # Migrate pre-existing DBs created before the temporal-validity column.
+        cursor = await self._db.execute("PRAGMA table_info(nodes)")
+        node_columns = {row[1] for row in await cursor.fetchall()}
+        if "invalid_at" not in node_columns:
+            await self._db.execute("ALTER TABLE nodes ADD COLUMN invalid_at TEXT")
+
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS edges_from_idx ON edges (from_content)"
         )
@@ -153,9 +159,10 @@ class SqliteBackend(Backend):
 
         for node in unique_nodes:
             if node.content in existing:
-                # Existing node: bump last_accessed and union in any new scopes
+                # Existing node: bump last_accessed, union scopes, and revive it
+                # (clear invalid_at) -- re-asserting a fact makes it current again.
                 await db.execute(
-                    "UPDATE nodes SET last_accessed = ? WHERE content = ?",
+                    "UPDATE nodes SET last_accessed = ?, invalid_at = NULL WHERE content = ?",
                     (now, node.content),
                 )
                 await self._insert_scopes(db, existing[node.content], merged_scopes[node.content])
@@ -475,6 +482,28 @@ class SqliteBackend(Backend):
         )
         return {row[0]: row[1] for row in await cursor.fetchall()}
 
+    async def set_invalid(self, contents: list[str], when: datetime) -> None:
+        if not contents:
+            return
+        db = await self._conn()
+        placeholders = ",".join("?" for _ in contents)
+        await db.execute(
+            f"UPDATE nodes SET invalid_at = ? WHERE content IN ({placeholders})",
+            [when.isoformat(), *contents],
+        )
+        await db.commit()
+
+    async def get_validity(self, contents: list[str]) -> dict[str, str | None]:
+        if not contents:
+            return {}
+        db = await self._conn()
+        placeholders = ",".join("?" for _ in contents)
+        cursor = await db.execute(
+            f"SELECT content, invalid_at FROM nodes WHERE content IN ({placeholders})",
+            contents,
+        )
+        return {row[0]: row[1] for row in await cursor.fetchall()}
+
     async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
         if not contents:
             return {}
@@ -525,7 +554,8 @@ class SqliteBackend(Backend):
             scope_ph = ",".join("?" for _ in scopes)
             cursor = await db.execute(
                 f"""
-                SELECT n.id, n.content, n.type, n.embedding, n.created_at, n.last_accessed
+                SELECT n.id, n.content, n.type, n.embedding, n.created_at,
+                       n.last_accessed, n.invalid_at
                 FROM nodes n
                 WHERE n.id IN (SELECT node_id FROM node_scopes WHERE scope IN ({scope_ph}))
                 """,
@@ -533,7 +563,8 @@ class SqliteBackend(Backend):
             )
         else:
             cursor = await db.execute(
-                "SELECT id, content, type, embedding, created_at, last_accessed FROM nodes"
+                "SELECT id, content, type, embedding, created_at, last_accessed, "
+                "invalid_at FROM nodes"
             )
         rows = await cursor.fetchall()
 
@@ -544,7 +575,7 @@ class SqliteBackend(Backend):
             scope_map.setdefault(node_id, set()).add(scope)
 
         nodes = []
-        for node_id, content, node_type, blob, created_at, last_accessed in rows:
+        for node_id, content, node_type, blob, created_at, last_accessed, invalid_at in rows:
             nodes.append(Node(
                 content=content,
                 type=node_type,
@@ -552,6 +583,7 @@ class SqliteBackend(Backend):
                 created_at=datetime.fromisoformat(created_at),
                 last_accessed=datetime.fromisoformat(last_accessed),
                 scopes=scope_map.get(node_id, set()),
+                invalid_at=datetime.fromisoformat(invalid_at) if invalid_at else None,
             ))
         return nodes
 

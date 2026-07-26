@@ -180,6 +180,56 @@ async def test_conflict_resolution_soft_supersedes(graph):
 
 
 @pytest.mark.asyncio
+async def test_time_travel_as_of(graph):
+    from reasongraph._types import Node
+
+    # a resolver is configured so retired facts drop from default recall (the
+    # default-exclusion path is resolver-gated); time-travel itself is ungated.
+    graph.conflict_resolver = _SubjectResolver()
+    t0, t1, t2 = datetime(2020, 1, 1), datetime(2021, 1, 1), datetime(2022, 1, 1)
+    emb = graph.embeddings.encode("Alice lives in Munich.")
+    await graph.backend.insert_nodes([
+        Node(content="Alice lives in Munich.", type="text", embedding=emb, created_at=t0),
+    ])
+    await graph.backend.set_invalid(["Alice lives in Munich."], t2)
+
+    async def q(**kw):
+        return await graph.query("Munich", top_k=5, hops=1, **kw)
+
+    # current at t1 (created at t0, retired at t2) -> present
+    assert "Alice lives in Munich." in await q(as_of=t1)
+    # before it was created -> absent
+    assert "Alice lives in Munich." not in await q(as_of=datetime(2019, 1, 1))
+    # after it was retired -> absent
+    assert "Alice lives in Munich." not in await q(as_of=datetime(2023, 1, 1))
+    # default recall drops the retired fact; include_superseded brings it back
+    assert "Alice lives in Munich." not in await q()
+    assert "Alice lives in Munich." in await q(include_superseded=True)
+
+
+@pytest.mark.asyncio
+async def test_time_travel_accepts_tz_aware_as_of(graph):
+    from datetime import timezone
+
+    await graph.add_nodes([("Alice lives in Munich.", "text")])
+    # an aware datetime must not crash the naive-timestamp comparison
+    res = await graph.query("Munich", top_k=5, hops=1, as_of=datetime.now(timezone.utc))
+    assert "Alice lives in Munich." in res
+
+
+@pytest.mark.asyncio
+async def test_reasserting_revives_retired_fact(graph):
+    graph.conflict_resolver = _SubjectResolver()
+    await graph.add_text("Alice lives in Munich.", extractor=lambda t: [])
+    await graph.add_text("Alice lives in Berlin.", extractor=lambda t: [])  # retires Munich
+    assert "Alice lives in Munich." not in await graph.query("Alice", top_k=5, hops=2)
+
+    # re-asserting the exact retired fact revives it (invalid_at cleared)
+    await graph.add_text("Alice lives in Munich.", extractor=lambda t: [], resolve_conflicts=False)
+    assert "Alice lives in Munich." in await graph.query("Alice", top_k=5, hops=2)
+
+
+@pytest.mark.asyncio
 async def test_conflict_resolution_excludes_superseded_from_discover(graph):
     graph.conflict_resolver = _SubjectResolver()
     await graph.add_nodes([

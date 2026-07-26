@@ -83,6 +83,22 @@ class Backend(ABC):
         """
 
     @abstractmethod
+    async def set_invalid(self, contents: list[str], when: datetime) -> None:
+        """Stamp the given facts as retired at ``when`` (soft-supersede).
+
+        The nodes stay in the graph; ``invalid_at`` marks them as no longer current.
+        """
+
+    @abstractmethod
+    async def get_validity(self, contents: list[str]) -> dict[str, str | None]:
+        """Return {content: invalid_at ISO string or None} for the given contents.
+
+        Missing contents are omitted. A present key with ``None`` means still valid;
+        an ISO string is the retirement time. Bounded lookup (like get_created_at),
+        used to exclude retired facts and for time-travel queries.
+        """
+
+    @abstractmethod
     async def get_causal_relations(self, contents: list[str]) -> dict[str, list[dict]]:
         """Return {fact content: [{'cause','effect'}, ...]} for the given facts.
 

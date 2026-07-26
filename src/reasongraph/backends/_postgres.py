@@ -71,6 +71,10 @@ class PostgresBackend(Backend):
             """)
             # Migrate pre-existing DBs created before the typed-edge column.
             await conn.execute("ALTER TABLE edges ADD COLUMN IF NOT EXISTS label TEXT")
+            # Temporal validity: retirement time for soft-superseded facts.
+            await conn.execute(
+                "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS invalid_at TIMESTAMP"
+            )
 
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS edges_from_idx ON edges (from_content)"
@@ -139,7 +143,8 @@ class PostgresBackend(Backend):
                     """
                     INSERT INTO nodes (content, embedding, created_at, last_accessed, type)
                     VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (content) DO UPDATE SET last_accessed = NOW()
+                    ON CONFLICT (content) DO UPDATE
+                        SET last_accessed = NOW(), invalid_at = NULL
                     """,
                     data,
                 )
@@ -342,6 +347,32 @@ class PostgresBackend(Backend):
                     row[0]: row[1].isoformat() for row in await cur.fetchall()
                 }
 
+    async def set_invalid(self, contents: list[str], when: datetime) -> None:
+        if not contents:
+            return
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE nodes SET invalid_at = %s WHERE content = ANY(%s)",
+                    (when, contents),
+                )
+
+    async def get_validity(self, contents: list[str]) -> dict[str, str | None]:
+        if not contents:
+            return {}
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT content, invalid_at FROM nodes WHERE content = ANY(%s)",
+                    (contents,),
+                )
+                return {
+                    row[0]: (row[1].isoformat() if row[1] else None)
+                    for row in await cur.fetchall()
+                }
+
     async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
         if not contents:
             return {}
@@ -387,7 +418,7 @@ class PostgresBackend(Backend):
                 if scopes:
                     await cur.execute(
                         """
-                        SELECT content, type, embedding, created_at, last_accessed
+                        SELECT content, type, embedding, created_at, last_accessed, invalid_at
                         FROM nodes
                         WHERE content IN (
                             SELECT node_content FROM node_scopes WHERE scope = ANY(%s)
@@ -397,7 +428,8 @@ class PostgresBackend(Backend):
                     )
                 else:
                     await cur.execute(
-                        "SELECT content, type, embedding, created_at, last_accessed FROM nodes"
+                        "SELECT content, type, embedding, created_at, last_accessed, "
+                        "invalid_at FROM nodes"
                     )
                 rows = await cur.fetchall()
 
@@ -407,7 +439,7 @@ class PostgresBackend(Backend):
                     scope_map.setdefault(node_content, set()).add(scope)
 
                 nodes = []
-                for content, node_type, emb, created_at, last_accessed in rows:
+                for content, node_type, emb, created_at, last_accessed, invalid_at in rows:
                     nodes.append(Node(
                         content=content,
                         type=node_type,
@@ -415,6 +447,7 @@ class PostgresBackend(Backend):
                         created_at=created_at,
                         last_accessed=last_accessed,
                         scopes=scope_map.get(content, set()),
+                        invalid_at=invalid_at,
                     ))
                 return nodes
 

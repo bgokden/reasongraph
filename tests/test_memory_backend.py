@@ -180,6 +180,37 @@ async def test_file_persistence():
 
 
 @pytest.mark.asyncio
+async def test_temporal_validity_persists(backend):
+    from datetime import datetime
+
+    await backend.insert_nodes([_make_node("current"), _make_node("retired")])
+    when = datetime(2022, 1, 1)
+    await backend.set_invalid(["retired"], when)
+    validity = await backend.get_validity(["current", "retired"])
+    assert validity == {"current": None, "retired": when.isoformat()}
+
+    # re-asserting a retired fact revives it (upsert clears invalid_at)
+    await backend.insert_nodes([_make_node("retired")])
+    assert (await backend.get_validity(["retired"]))["retired"] is None
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    try:
+        b1 = MemoryBackend(file_path=path)
+        await b1.initialize()
+        await b1.insert_nodes([_make_node("retired")])
+        await b1.set_invalid(["retired"], when)
+        await b1.close()
+        b2 = MemoryBackend(file_path=path)
+        await b2.initialize()
+        # invalid_at survives the JSON round-trip
+        assert (await b2.get_all_nodes())[0].invalid_at == when
+        await b2.close()
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.asyncio
 async def test_file_persistence_missing_file():
     """Initialize with a non-existent file path should not raise."""
     b = MemoryBackend(file_path="/tmp/nonexistent_reasongraph_test.json")

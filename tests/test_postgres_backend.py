@@ -131,6 +131,29 @@ async def test_edges_neighbors_and_cascade_delete(backend):
 
 
 @pytest.mark.asyncio
+async def test_temporal_validity(backend):
+    from datetime import datetime
+
+    await backend.insert_nodes([_make_node("current"), _make_node("retired")])
+    assert await backend.get_validity(["current", "retired"]) == {"current": None, "retired": None}
+
+    when = datetime(2022, 1, 1)
+    await backend.set_invalid(["retired"], when)
+    validity = await backend.get_validity(["current", "retired", "missing"])
+    assert validity["current"] is None
+    assert validity["retired"] == when.isoformat()
+    assert "missing" not in validity
+    # invalid_at round-trips through get_all_nodes
+    by_content = {n.content: n for n in await backend.get_all_nodes()}
+    assert by_content["retired"].invalid_at == when
+    assert by_content["current"].invalid_at is None
+
+    # re-asserting a retired fact revives it (upsert clears invalid_at)
+    await backend.insert_nodes([_make_node("retired")])
+    assert (await backend.get_validity(["retired"]))["retired"] is None
+
+
+@pytest.mark.asyncio
 async def test_hybrid_search(backend):
     emb = [0.5] * 384
     await backend.insert_nodes([

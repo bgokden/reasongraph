@@ -20,6 +20,11 @@ class Node:
     created_at: datetime = field(default_factory=datetime.now)
     last_accessed: datetime = field(default_factory=datetime.now)
     scopes: set[str] = field(default_factory=set)
+    # When a fact is soft-superseded (retired) it stays in the graph but is stamped
+    # with the time it stopped being current. ``None`` means still valid. Together
+    # with ``created_at`` this gives each fact a validity interval, so a query can
+    # exclude retired facts by default and time-travel to "what was current at T".
+    invalid_at: datetime | None = None
 
 
 @dataclass

@@ -44,6 +44,8 @@ class MemoryBackend(Backend):
                 created_at=datetime.fromisoformat(n["created_at"]),
                 last_accessed=datetime.fromisoformat(n["last_accessed"]),
                 scopes=set(n.get("scopes", [])),
+                invalid_at=(datetime.fromisoformat(n["invalid_at"])
+                            if n.get("invalid_at") else None),
             )
         for e in data.get("edges", []):
             self._edges[(e["from_content"], e["to_content"])] = e.get("label")
@@ -60,6 +62,7 @@ class MemoryBackend(Backend):
                 "created_at": node.created_at.isoformat(),
                 "last_accessed": node.last_accessed.isoformat(),
                 "scopes": sorted(node.scopes),
+                "invalid_at": node.invalid_at.isoformat() if node.invalid_at else None,
             })
         edges = []
         for (from_c, to_c), label in self._edges.items():
@@ -82,6 +85,9 @@ class MemoryBackend(Backend):
                 existing = self._nodes[content]
                 existing.last_accessed = now
                 existing.scopes |= node.scopes
+                # Re-asserting a fact revives it: a previously retired fact
+                # (soft-superseded) becomes current again.
+                existing.invalid_at = None
             else:
                 self._nodes[content] = Node(
                     content=content,
@@ -287,6 +293,20 @@ class MemoryBackend(Backend):
             for c in contents
             if c in self._nodes
         }
+
+    async def set_invalid(self, contents: list[str], when: datetime) -> None:
+        for content in contents:
+            node = self._nodes.get(content)
+            if node is not None:
+                node.invalid_at = when
+
+    async def get_validity(self, contents: list[str]) -> dict[str, str | None]:
+        out: dict[str, str | None] = {}
+        for c in contents:
+            node = self._nodes.get(c)
+            if node is not None:
+                out[c] = node.invalid_at.isoformat() if node.invalid_at else None
+        return out
 
     async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
         return {
