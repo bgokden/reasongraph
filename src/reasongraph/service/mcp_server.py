@@ -8,10 +8,11 @@
     create_mcp(service).run()          # stdio MCP server
 
 Agents get push_memory / query_memory / query_memory_detailed /
-discover_connections / trace_memory / answer / update_memory / delete_memory /
-memory_history / forget_stale / list_sessions tools -- including causal tracing
-(trace_memory), self-correction (update/delete), and supersession audit
-(memory_history) so an agent can reason over, fix, and explain its own memory.
+discover_connections / trace_memory / what_if_memory / answer / update_memory /
+delete_memory / memory_history / forget_stale / list_sessions tools -- including
+causal tracing (trace_memory), counterfactual analysis (what_if_memory),
+self-correction (update/delete), and supersession audit (memory_history) so an
+agent can reason over, fix, and explain its own memory.
 Requires ``pip install reasongraph[service]``.
 """
 
@@ -106,6 +107,22 @@ def create_mcp(service: MemoryService):
         hop cited to its source fact), and the terminal effects / root causes."""
         return await service.trace(
             content, direction=direction, session=session,
+            max_depth=max_depth, isolate=isolate,
+        )
+
+    @mcp.tool()
+    async def what_if_memory(
+        content: str, origin: str | None = None, direction: str = "effects",
+        session: str | None = None, max_depth: int = 6, isolate: bool = False,
+    ) -> dict:
+        """Counterfactual: if the given fact were false, which downstream effects would
+        COLLAPSE (lose all causal support) vs SURVIVE via another path. E.g. if the
+        rainfall fact were false, hospital disruptions lose their only path. Returns the
+        pruned fact, the causal edges it solely supported (removed), the collapsed spans
+        each cited to a now-unsupported source fact, and the spans an alternate path
+        rescued."""
+        return await service.what_if(
+            content, origin=origin, direction=direction, session=session,
             max_depth=max_depth, isolate=isolate,
         )
 

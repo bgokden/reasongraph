@@ -835,6 +835,50 @@ class ReasonGraph:
                 return h["content"]
         return None
 
+    async def _causal_reach(
+        self, start: list[str], edge_dir: str, *,
+        blocked_edges: frozenset = frozenset(), max_depth: int,
+        walk_scopes: set[str] | None, max_visited: int,
+    ) -> tuple[list[dict], set[str], set[str], set[str]]:
+        """BFS over ``causes`` edges from ``start`` spans in ``edge_dir`` (``'out'``
+        forward / ``'in'`` backward).
+
+        Returns ``(chain, reached_facts, reached_targets, has_next)`` where ``chain``
+        is one ``{cause, effect, depth}`` dict per traversed hop. ``blocked_edges``
+        is a set of ``(span, other)`` traversal pairs that are neither recorded nor
+        followed -- used by ``what_if`` for counterfactual pruning; empty (the
+        default) reproduces the plain walk exactly.
+        """
+        visited_spans: set[str] = set(start)
+        frontier: deque = deque((s, 0) for s in start)
+        chain: list[dict] = []
+        reached_facts: set[str] = set()
+        reached_targets: set[str] = set()
+        has_next: set[str] = set()
+
+        while frontier and len(visited_spans) <= max_visited:
+            span, depth = frontier.popleft()
+            if depth >= max_depth:
+                continue
+            for n in await self.backend.get_neighbors(span, walk_scopes):
+                if n.get("type") == "text":
+                    reached_facts.add(n["content"])
+                    continue
+                if n.get("label") != "causes" or n.get("direction") != edge_dir:
+                    continue
+                other = n["content"]
+                if (span, other) in blocked_edges:
+                    continue
+                has_next.add(span)
+                reached_targets.add(other)
+                cause, effect = (span, other) if edge_dir == "out" else (other, span)
+                chain.append({"cause": cause, "effect": effect, "depth": depth})
+                if other not in visited_spans and len(visited_spans) < max_visited:
+                    visited_spans.add(other)
+                    frontier.append((other, depth + 1))
+
+        return chain, reached_facts, reached_targets, has_next
+
     async def _trace(
         self, content: str, direction: str, *, max_depth: int = 6,
         scopes=None, isolate: bool | None = None, include_superseded: bool = False,
@@ -860,32 +904,10 @@ class ReasonGraph:
         edge_dir = "out" if direction == "effects" else "in"
         start = [p["cause"] for p in pairs] if direction == "effects" else [p["effect"] for p in pairs]
 
-        visited_spans: set[str] = set(start)
-        frontier: deque = deque((s, 0) for s in start)
-        chain: list[dict] = []
-        reached_facts: set[str] = set()
-        reached_targets: set[str] = set()
-        has_next: set[str] = set()
-
-        while frontier and len(visited_spans) <= max_visited:
-            span, depth = frontier.popleft()
-            if depth >= max_depth:
-                continue
-            for n in await self.backend.get_neighbors(span, walk_scopes):
-                if n.get("type") == "text":
-                    reached_facts.add(n["content"])
-                    continue
-                if n.get("label") != "causes" or n.get("direction") != edge_dir:
-                    continue
-                other = n["content"]
-                has_next.add(span)
-                reached_targets.add(other)
-                cause, effect = (span, other) if direction == "effects" else (other, span)
-                chain.append({"cause": cause, "effect": effect, "depth": depth})
-                if other not in visited_spans and len(visited_spans) < max_visited:
-                    visited_spans.add(other)
-                    frontier.append((other, depth + 1))
-
+        chain, reached_facts, reached_targets, has_next = await self._causal_reach(
+            start, edge_dir, max_depth=max_depth, walk_scopes=walk_scopes,
+            max_visited=max_visited,
+        )
         terminals = sorted(reached_targets - has_next)
 
         # Map each hop to the fact that asserted it, and tag scopes / retirement.
@@ -958,6 +980,140 @@ class ReasonGraph:
             if hop["effect"] in target_spans or hop["cause"] in target_spans:
                 return traced["chain"]
         return None
+
+    async def what_if(
+        self, content: str, *, origin: str | None = None, direction: str = "effects",
+        max_depth: int = 6, scopes=None, isolate: bool | None = None,
+        include_superseded: bool = False, max_visited: int = 1000,
+    ) -> dict:
+        """Counterfactual: if the fact nearest ``content`` were false, which downstream
+        effects would collapse?
+
+        Hypothetically prunes the resolved fact (no graph mutation) and re-runs the
+        causal reachability walk from ``origin`` -- the pruned fact itself by default,
+        or a distinct upstream fact if given. Only edges the pruned fact *solely*
+        supports are removed; an edge another live fact also asserts stays, so its
+        downstream survives. ``direction='effects'`` (default) walks forward;
+        ``'causes'`` mirrors upstream (which cause spans become orphaned).
+
+        Returns ``pruned`` (the resolved fact, echoed so the caller can verify what was
+        pruned), ``origin``, ``pruned_edges`` (the solely-supported causal edges that
+        were removed, as ``{cause, effect}``), ``collapsed`` (spans that lost all
+        causal support -- each cited to a now-unsupported ``fact`` with ``scopes``,
+        ``depth`` and a ``cross_session`` flag) and ``survived`` (spans directly
+        downstream of a removed edge that a live alternate path still reaches).
+
+        Superseded-supporter exclusion requires a configured ``conflict_resolver``
+        (same convention as ``trace_effects``); without one, a retired duplicate
+        assertion still counts as live support.
+        """
+        empty = {"pruned": None, "origin": None, "pruned_edges": [],
+                 "collapsed": [], "survived": []}
+        scope_set = set(scopes) if scopes else None
+        resolved_isolate = self.isolate_traversal if isolate is None else isolate
+        walk_scopes = scope_set if (resolved_isolate and scope_set) else None
+
+        pruned = await self._resolve_fact(content, scope_set)
+        if pruned is None:
+            return dict(empty)
+        origin_fact = pruned if origin is None else await self._resolve_fact(origin, scope_set)
+        if origin_fact is None:
+            return {**empty, "pruned": pruned}
+
+        edge_dir = "out" if direction == "effects" else "in"
+        down_key = "effect" if direction == "effects" else "cause"
+
+        def _oriented(pair):
+            # (cause, effect) -> (span, other) traversal pair matching _causal_reach.
+            return (pair["cause"], pair["effect"]) if direction == "effects" \
+                else (pair["effect"], pair["cause"])
+
+        def _to_ce(pair):
+            # (span, other) traversal pair -> {cause, effect} for output.
+            return {"cause": pair[0], "effect": pair[1]} if direction == "effects" \
+                else {"cause": pair[1], "effect": pair[0]}
+
+        pruned_pairs = (await self.backend.get_causal_relations([pruned])).get(pruned, [])
+        pruned_oriented = {_oriented(p) for p in pruned_pairs}
+
+        origin_pairs = (await self.backend.get_causal_relations([origin_fact])).get(origin_fact, [])
+        start = ([p["cause"] for p in origin_pairs] if direction == "effects"
+                 else [p["effect"] for p in origin_pairs])
+
+        base_chain, base_facts, _, _ = await self._causal_reach(
+            start, edge_dir, max_depth=max_depth, walk_scopes=walk_scopes,
+            max_visited=max_visited,
+        )
+        baseline_spans = {h[down_key] for h in base_chain}
+
+        if not pruned_oriented:
+            return {"pruned": pruned, "origin": origin_fact, "pruned_edges": [],
+                    "collapsed": [], "survived": []}
+
+        # Sound support map: gather every live fact that asserts a pruned edge from the
+        # pruned fact's OWN span neighborhoods, not the origin walk -- so an edge a
+        # disjoint fact also asserts is never falsely reported as solely-pruned.
+        span_pool: set[str] = {pruned}
+        for span in {s for pair in pruned_oriented for s in pair}:
+            for n in await self.backend.get_neighbors(span, walk_scopes):
+                if n.get("type") == "text":
+                    span_pool.add(n["content"])
+        support_rels = await self.backend.get_causal_relations(sorted(span_pool))
+        retired: set[str] = set()
+        if not include_superseded and self.conflict_resolver is not None:
+            retired = set(await self._superseded(sorted(span_pool)))
+        support: dict[tuple, set[str]] = {}
+        for fact, prs in support_rels.items():
+            if fact in retired:
+                continue
+            for p in prs:
+                support.setdefault(_oriented(p), set()).add(fact)
+
+        solely_pruned = frozenset(
+            e for e in pruned_oriented if support.get(e, set()) <= {pruned}
+        )
+        pruned_edges = [_to_ce(e) for e in sorted(solely_pruned)]
+        if not solely_pruned:
+            return {"pruned": pruned, "origin": origin_fact, "pruned_edges": [],
+                    "collapsed": [], "survived": []}
+
+        cf_chain, _, _, _ = await self._causal_reach(
+            start, edge_dir, blocked_edges=solely_pruned, max_depth=max_depth,
+            walk_scopes=walk_scopes, max_visited=max_visited,
+        )
+        cf_spans = {h[down_key] for h in cf_chain}
+
+        collapsed_spans = baseline_spans - cf_spans
+        directly_threatened = {other for (_span, other) in solely_pruned}
+        survived = sorted(directly_threatened & cf_spans)
+
+        # Cite each collapsed span to a fact that asserted its shallowest baseline hop.
+        cite_rels = await self.backend.get_causal_relations(sorted(base_facts))
+        reverse: dict[tuple, str] = {}
+        for fact, prs in cite_rels.items():
+            for p in prs:
+                reverse[(p["cause"], p["effect"])] = fact
+        by_span: dict[str, dict] = {}
+        for h in base_chain:
+            s = h[down_key]
+            if s in collapsed_spans and (s not in by_span or h["depth"] < by_span[s]["depth"]):
+                by_span[s] = h
+        cited = sorted({reverse.get((h["cause"], h["effect"])) for h in by_span.values()} - {None})
+        scope_map = await self.backend.get_scopes(cited)
+
+        collapsed = []
+        for span in sorted(collapsed_spans):
+            hop = by_span.get(span)
+            fact = reverse.get((hop["cause"], hop["effect"])) if hop else None
+            node_scopes = scope_map.get(fact, set()) if fact else set()
+            collapsed.append({
+                "span": span, "fact": fact, "depth": hop["depth"] if hop else 0,
+                "scopes": sorted(node_scopes),
+                "cross_session": bool(scope_set) and not (node_scopes & scope_set),
+            })
+
+        return {"pruned": pruned, "origin": origin_fact, "pruned_edges": pruned_edges,
+                "collapsed": collapsed, "survived": survived}
 
     async def answer(
         self,
@@ -1238,6 +1394,9 @@ class ReasonGraph:
 
     def causal_chain_sync(self, from_content: str, to_content: str, **kwargs) -> list[dict] | None:
         return self._run(self.causal_chain(from_content, to_content, **kwargs))
+
+    def what_if_sync(self, content: str, **kwargs) -> dict:
+        return self._run(self.what_if(content, **kwargs))
 
     def answer_sync(
         self,

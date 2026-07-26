@@ -79,6 +79,15 @@ class TraceIn(BaseModel):
     isolate: bool | None = None
 
 
+class WhatIfIn(BaseModel):
+    content: str
+    origin: str | None = None
+    direction: str = "effects"
+    session: str | None = None
+    max_depth: int = 6
+    isolate: bool | None = None
+
+
 def _api_key_dependency(api_key: str | None):
     """Bearer / X-API-Key check. A no-op when ``api_key`` is None (dev default)."""
     async def check(
@@ -217,6 +226,13 @@ def create_app(service: MemoryService, api_key: str | None = None) -> FastAPI:
         return await service.trace(
             body.content, direction=body.direction, session=body.session,
             max_depth=body.max_depth, isolate=body.isolate,
+        )
+
+    @router.post("/what_if")
+    async def what_if(body: WhatIfIn):
+        return await service.what_if(
+            body.content, origin=body.origin, direction=body.direction,
+            session=body.session, max_depth=body.max_depth, isolate=body.isolate,
         )
 
     @router.post("/forget")

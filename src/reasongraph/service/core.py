@@ -177,6 +177,17 @@ class MemoryService:
             content, scopes=self._scopes(session), max_depth=max_depth, isolate=isolate,
         )
 
+    async def what_if(
+        self, content: str, *, origin: str | None = None, direction: str = "effects",
+        session: str | None = None, max_depth: int = 6, isolate: bool | None = None,
+    ) -> dict:
+        """Counterfactual: if ``content`` were false, which downstream effects would
+        collapse (lose all causal support) vs survive via an alternate path."""
+        return await self.graph.what_if(
+            content, origin=origin, direction=direction, scopes=self._scopes(session),
+            max_depth=max_depth, isolate=isolate,
+        )
+
     async def forget(self) -> dict:
         """Drop facts not accessed within the graph's forget window."""
         async with self._write_lock:

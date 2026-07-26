@@ -57,8 +57,9 @@ async def test_mcp_lists_all_tools():
         names = {t.name for t in await mcp.list_tools()}
         assert names == {
             "push_memory", "query_memory", "query_memory_detailed",
-            "discover_connections", "trace_memory", "answer", "update_memory",
-            "delete_memory", "memory_history", "forget_stale", "list_sessions",
+            "discover_connections", "trace_memory", "what_if_memory", "answer",
+            "update_memory", "delete_memory", "memory_history", "forget_stale",
+            "list_sessions",
         }
     finally:
         await svc.close()
@@ -81,6 +82,32 @@ async def test_mcp_trace_memory():
         ))
         assert traced["origin"] == "Rain caused flooding."
         assert ("Rain", "flooding") in {(h["cause"], h["effect"]) for h in traced["chain"]}
+    finally:
+        await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_what_if_memory():
+    def fake_causal(texts):
+        rels = {
+            "Rain caused flooding.": {"cause": "Rain", "effect": "flooding"},
+            "Flooding caused outages.": {"cause": "flooding", "effect": "outages"},
+        }
+        return [{"causal": t in rels, "relations": [rels[t]] if t in rels else []} for t in texts]
+
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_fake_embed,
+                        extractor=lambda t: [], causal_extractor=fake_causal)
+    await svc.initialize()
+    try:
+        mcp = create_mcp(svc)
+        await mcp.call_tool("push_memory", {"session": "a", "text": "Rain caused flooding."})
+        await mcp.call_tool("push_memory", {"session": "a", "text": "Flooding caused outages."})
+        out = _unwrap(await mcp.call_tool(
+            "what_if_memory", {"content": "Rain caused flooding.", "session": "a"}
+        ))
+        assert out["pruned"] == "Rain caused flooding."
+        assert out["pruned_edges"] == [{"cause": "Rain", "effect": "flooding"}]
+        assert {c["span"] for c in out["collapsed"]} == {"flooding", "outages"}
     finally:
         await svc.close()
 

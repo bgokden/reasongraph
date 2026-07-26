@@ -123,6 +123,23 @@ def test_http_trace_effects():
         assert "outages" in data["terminals"]
 
 
+def test_http_what_if():
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_fake_embed,
+                        extractor=lambda t: [], causal_extractor=_fake_causal)
+    with TestClient(create_app(svc)) as client:
+        client.post("/sessions/a/memory/batch",
+                    json={"texts": ["Rain caused flooding.", "Flooding caused outages."]})
+        r = client.post("/what_if", json={
+            "content": "Rain caused flooding.", "session": "a",
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["pruned"] == "Rain caused flooding."
+        assert data["pruned_edges"] == [{"cause": "Rain", "effect": "flooding"}]
+        spans = {c["span"] for c in data["collapsed"]}
+        assert spans == {"flooding", "outages"}
+
+
 def test_http_health_and_ready():
     with _client() as client:
         assert client.get("/health").json() == {"status": "ok"}

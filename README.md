@@ -261,6 +261,32 @@ Each hop is tagged with the fact that asserts it, its scopes, and a `cross_sessi
 flag; retired (superseded) facts are skipped by default. Exposed to agents as the
 `trace_memory` MCP tool and the `/trace` HTTP endpoint.
 
+### Counterfactual: what breaks if a fact were false
+
+Because the causal edges are first-class, you can ask the inverse of a trace:
+**if one fact were false, which downstream effects collapse?** `what_if` prunes a
+fact hypothetically (no graph mutation), re-walks reachability, and reports which
+effect spans lost **all** causal support versus which **survived** via an alternate
+path. Only edges the pruned fact *solely* supports are removed -- an effect another
+fact also explains still stands.
+
+```python
+graph.what_if_sync("Flooding caused power outages.")
+# {
+#   'pruned': 'Flooding caused power outages.',
+#   'pruned_edges': [{'cause': 'flooding', 'effect': 'power outages'}],
+#   'collapsed': [                                 # lost their only causal path
+#       {'span': 'power outages', 'fact': 'Flooding caused power outages.', 'depth': 0, ...},
+#       {'span': 'hospital disruptions', 'fact': 'Power outages caused hospital disruptions.', 'depth': 1, ...},
+#   ],
+#   'survived': [],                                # spans an alternate path rescued
+# }
+```
+
+Pass `origin=` to measure collapse relative to an upstream fact, or
+`direction='causes'` to see which upstream causes become orphaned. Exposed as the
+`what_if_memory` MCP tool and the `/what_if` HTTP endpoint.
+
 The default causal extractor picks the **best available** backend. When the
 `causal-span-model` package is installed it uses the **span-pointer model**
 (`CausalPointerExtractor`): a fine-tuned mDeBERTa-v3 that scores **~0.70 F1** on the
