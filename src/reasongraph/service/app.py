@@ -17,6 +17,11 @@ Environment variables:
     REASONGRAPH_SYNTH_MODEL    instruct model for the transformers synthesizer
     REASONGRAPH_FORGET_AFTER   days; facts idle longer are droppable (default: 30)
     REASONGRAPH_FORGET_EVERY   seconds between auto-forget sweeps (unset: disabled)
+    REASONGRAPH_ISOLATE        1/true to confine traversal to the query session
+                               (multi-tenant); default off (cross-session discovery)
+    REASONGRAPH_API_KEY        when set, data endpoints require it (Bearer/X-API-Key)
+    REASONGRAPH_DEFER_EXTRACT  1/true to run entity/causal extraction in the
+                               background so pushes return fast; default off
     REASONGRAPH_HOST/PORT      bind address for the console script (0.0.0.0 / 8000)
 
 Requires ``pip install reasongraph[service]`` plus the extras for the chosen
@@ -88,6 +93,13 @@ def _int_env(env: Mapping[str, str], key: str, default: int | None) -> int | Non
     return int(value) if value not in (None, "") else default
 
 
+def _bool_env(env: Mapping[str, str], key: str, default: bool = False) -> bool:
+    value = env.get(key)
+    if value in (None, ""):
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
     """Construct a MemoryService (loading models) from environment variables."""
     env = env if env is not None else os.environ
@@ -99,13 +111,18 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
         synthesizer=build_synthesizer(env),
         forget_after=_int_env(env, "REASONGRAPH_FORGET_AFTER", 30),
         forget_every=_int_env(env, "REASONGRAPH_FORGET_EVERY", None),
+        isolate_traversal=_bool_env(env, "REASONGRAPH_ISOLATE", False),
     )
-    return MemoryService(graph=graph)
+    return MemoryService(
+        graph=graph,
+        defer_extraction=_bool_env(env, "REASONGRAPH_DEFER_EXTRACT", False),
+    )
 
 
 def create_app_from_env(env: Mapping[str, str] | None = None):
     """ASGI factory: ``uvicorn reasongraph.service.app:create_app_from_env --factory``."""
-    return create_app(build_service(env))
+    env = env if env is not None else os.environ
+    return create_app(build_service(env), api_key=env.get("REASONGRAPH_API_KEY") or None)
 
 
 def main() -> None:

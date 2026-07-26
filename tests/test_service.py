@@ -37,6 +37,28 @@ async def svc():
 
 
 @pytest.mark.asyncio
+async def test_deferred_extraction_enriches_in_background():
+    s = MemoryService(
+        backend=MemoryBackend(), embed_model=_fake_embed,
+        extractor=_zeus_extractor, causal_extractor=False,
+        defer_extraction=True,
+    )
+    await s.initialize()
+    try:
+        res = await s.push("agent-1", "Zeus is king of the gods.")
+        # push returns immediately with no entities (extraction is deferred)
+        assert res["deferred"] is True and res["entities"] == []
+        # the fact is queryable at once
+        assert "Zeus is king of the gods." in await s.query("Zeus", session="agent-1")
+        # after the background worker drains, the entity bridge exists
+        await s._enrich_queue.join()
+        st = await s.stats()
+        assert st["facts"] == 1 and st["entities"] == 1
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
 async def test_push_stats_sessions(svc):
     await svc.push("agent-1", "Zeus is king of the gods.")
     st = await svc.stats()

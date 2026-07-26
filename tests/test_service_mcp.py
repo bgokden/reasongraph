@@ -56,9 +56,45 @@ async def test_mcp_lists_all_tools():
         mcp = create_mcp(svc)
         names = {t.name for t in await mcp.list_tools()}
         assert names == {
-            "push_memory", "query_memory", "discover_connections",
-            "answer", "list_sessions",
+            "push_memory", "query_memory", "query_memory_detailed",
+            "discover_connections", "answer", "update_memory", "delete_memory",
+            "forget_stale", "list_sessions",
         }
+    finally:
+        await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_update_and_delete_memory():
+    svc = await _service()
+    try:
+        mcp = create_mcp(svc)
+        await mcp.call_tool("push_memory", {"session": "a", "text": "Zeus is mortal."})
+        # self-correction: replace the stale fact
+        res = _unwrap(await mcp.call_tool("update_memory", {
+            "session": "a", "old_text": "Zeus is mortal.", "new_text": "Zeus is immortal.",
+        }))
+        assert res["superseded"] is True
+        facts = _unwrap(await mcp.call_tool("query_memory", {"query": "Zeus", "session": "a"}))
+        assert "Zeus is immortal." in facts and "Zeus is mortal." not in facts
+        # delete by exact text
+        d = _unwrap(await mcp.call_tool("delete_memory", {"text": "Zeus is immortal."}))
+        assert d["deleted"] is True
+    finally:
+        await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_query_detailed_has_scores():
+    svc = await _service()
+    try:
+        mcp = create_mcp(svc)
+        await mcp.call_tool("push_memory", {"session": "a", "text": "Zeus rules the sky."})
+        rows = _unwrap(await mcp.call_tool(
+            "query_memory_detailed", {"query": "Zeus", "session": "a"}
+        ))
+        assert rows and isinstance(rows[0], dict)
+        assert set(rows[0]) == {"content", "score", "created_at", "scopes"}
     finally:
         await svc.close()
 

@@ -98,3 +98,43 @@ def test_http_forget_endpoint():
         client.post("/sessions/a/memory", json={"text": "Zeus is a god."})
         r = client.post("/forget")
         assert r.status_code == 200 and "deleted" in r.json()
+
+
+def test_http_health_and_ready():
+    with _client() as client:
+        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/ready").json() == {"ready": True}
+
+
+def test_http_api_key_auth():
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_fake_embed,
+                        extractor=_zeus_extractor, causal_extractor=False)
+    with TestClient(create_app(svc, api_key="secret")) as client:
+        # probes stay open for load balancers
+        assert client.get("/health").status_code == 200
+        assert client.get("/ready").status_code == 200
+        # data endpoints reject a missing/wrong key
+        assert client.post("/sessions/a/memory", json={"text": "Zeus is a god."}).status_code == 401
+        assert client.get("/stats", headers={"X-API-Key": "nope"}).status_code == 401
+        # both Bearer and X-API-Key are accepted
+        assert client.post("/sessions/a/memory", json={"text": "Zeus is a god."},
+                           headers={"Authorization": "Bearer secret"}).status_code == 200
+        assert client.get("/stats", headers={"X-API-Key": "secret"}).status_code == 200
+
+
+def test_http_delete_endpoint():
+    with _client() as client:
+        client.post("/sessions/a/memory", json={"text": "Zeus is a god."})
+        r = client.post("/delete", json={"text": "Zeus is a god.", "purge_orphans": True})
+        assert r.status_code == 200 and r.json()["deleted"] is True
+        assert "Zeus is a god." not in client.post("/query", json={"query": "Zeus"}).json()["facts"]
+
+
+def test_http_query_detailed():
+    with _client() as client:
+        client.post("/sessions/a/memory", json={"text": "Zeus rules the sky."})
+        facts = client.post(
+            "/query", json={"query": "Zeus", "session": "a", "detailed": True}
+        ).json()["facts"]
+        assert facts and isinstance(facts[0], dict)
+        assert set(facts[0]) == {"content", "score", "created_at", "scopes"}
