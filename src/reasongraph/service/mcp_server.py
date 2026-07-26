@@ -8,9 +8,10 @@
     create_mcp(service).run()          # stdio MCP server
 
 Agents get push_memory / query_memory / query_memory_detailed /
-discover_connections / answer / update_memory / delete_memory / memory_history /
-forget_stale / list_sessions tools -- including self-correction (update/delete) and
-supersession audit (memory_history) so an agent can fix and explain its own memory.
+discover_connections / trace_memory / answer / update_memory / delete_memory /
+memory_history / forget_stale / list_sessions tools -- including causal tracing
+(trace_memory), self-correction (update/delete), and supersession audit
+(memory_history) so an agent can reason over, fix, and explain its own memory.
 Requires ``pip install reasongraph[service]``.
 """
 
@@ -93,6 +94,20 @@ def create_mcp(service: MemoryService):
         """Delete a fact by its exact text. Set `purge_orphans` true to also erase
         entities left dangling by the removal; entities still used elsewhere stay."""
         return await service.delete(text, purge_orphans=purge_orphans)
+
+    @mcp.tool()
+    async def trace_memory(
+        content: str, direction: str = "effects", session: str | None = None,
+        max_depth: int = 6, isolate: bool = False,
+    ) -> dict:
+        """Walk the causal graph from a fact. direction='effects' traces downstream
+        impact ('what did this cause'); direction='causes' traces back to root causes
+        ('what led to this'). Returns the origin fact, the ordered causal chain (each
+        hop cited to its source fact), and the terminal effects / root causes."""
+        return await service.trace(
+            content, direction=direction, session=session,
+            max_depth=max_depth, isolate=isolate,
+        )
 
     @mcp.tool()
     async def memory_history(text: str) -> dict:

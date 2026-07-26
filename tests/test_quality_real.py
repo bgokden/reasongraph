@@ -83,6 +83,21 @@ def test_real_nli_resolver_detects_contradiction():
 
 
 @pytest.mark.asyncio
+async def test_real_trace_effects_single_hop():
+    # Default causal extractor (real gliner-relex hybrid) + the causal walk end to end.
+    g = ReasonGraph(backend=SqliteBackend(":memory:"))
+    await g.initialize()
+    try:
+        await g.add_text("Heavy rainfall caused severe flooding.")
+        traced = await g.trace_effects("Heavy rainfall caused severe flooding.")
+        assert traced["origin"] == "Heavy rainfall caused severe flooding."
+        assert traced["chain"], "real extractor should yield at least one causal hop"
+        assert traced["chain"][0]["fact"] == "Heavy rainfall caused severe flooding."
+    finally:
+        await g.close()
+
+
+@pytest.mark.asyncio
 async def test_real_supersede_removes_old_fact():
     g = await _graph()
     try:

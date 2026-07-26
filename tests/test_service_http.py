@@ -100,6 +100,29 @@ def test_http_forget_endpoint():
         assert r.status_code == 200 and "deleted" in r.json()
 
 
+def _fake_causal(texts):
+    rels = {
+        "Rain caused flooding.": {"cause": "Rain", "effect": "flooding"},
+        "Flooding caused outages.": {"cause": "flooding", "effect": "outages"},
+    }
+    return [{"causal": t in rels, "relations": [rels[t]] if t in rels else []} for t in texts]
+
+
+def test_http_trace_effects():
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_fake_embed,
+                        extractor=lambda t: [], causal_extractor=_fake_causal)
+    with TestClient(create_app(svc)) as client:
+        client.post("/sessions/a/memory/batch",
+                    json={"texts": ["Rain caused flooding.", "Flooding caused outages."]})
+        r = client.post("/trace", json={"content": "Rain caused flooding.", "direction": "effects"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["origin"] == "Rain caused flooding."
+        hops = {(h["cause"], h["effect"]) for h in data["chain"]}
+        assert ("Rain", "flooding") in hops and ("flooding", "outages") in hops
+        assert "outages" in data["terminals"]
+
+
 def test_http_health_and_ready():
     with _client() as client:
         assert client.get("/health").json() == {"status": "ok"}

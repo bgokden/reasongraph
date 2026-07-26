@@ -71,6 +71,14 @@ class HistoryIn(BaseModel):
     text: str
 
 
+class TraceIn(BaseModel):
+    content: str
+    direction: str = "effects"
+    session: str | None = None
+    max_depth: int = 6
+    isolate: bool | None = None
+
+
 def _api_key_dependency(api_key: str | None):
     """Bearer / X-API-Key check. A no-op when ``api_key`` is None (dev default)."""
     async def check(
@@ -203,6 +211,13 @@ def create_app(service: MemoryService, api_key: str | None = None) -> FastAPI:
     @router.post("/history")
     async def history(body: HistoryIn):
         return await service.history(body.text)
+
+    @router.post("/trace")
+    async def trace(body: TraceIn):
+        return await service.trace(
+            body.content, direction=body.direction, session=body.session,
+            max_depth=body.max_depth, isolate=body.isolate,
+        )
 
     @router.post("/forget")
     async def forget():

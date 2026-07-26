@@ -820,6 +820,145 @@ class ReasonGraph:
             return self.embeddings.rerank(query, candidates, max_results)
         return candidates
 
+    # -- causal chain tracing (walk the directed "causes" DAG) --
+
+    async def _resolve_fact(self, content: str, scopes: set[str] | None = None) -> str | None:
+        """Resolve free text to an existing text fact: exact match else nearest."""
+        hits = await self.backend.knn_search(
+            self.embeddings.encode(content), top_k=5, scopes=scopes
+        )
+        for h in hits:
+            if h["content"] == content and h.get("type") == "text":
+                return content
+        for h in hits:
+            if h.get("type") == "text":
+                return h["content"]
+        return None
+
+    async def _trace(
+        self, content: str, direction: str, *, max_depth: int = 6,
+        scopes=None, isolate: bool | None = None, include_superseded: bool = False,
+        max_visited: int = 1000,
+    ) -> dict:
+        """Directional walk over ``causes`` edges from the fact nearest ``content``.
+
+        ``direction='effects'`` walks forward (what this fact caused downstream);
+        ``'causes'`` walks backward (what led to it). Returns ``origin`` (the seed
+        fact), ``chain`` (one dict per causal hop in BFS-depth order, each resolved
+        to the fact that asserted it, with scopes and a cross_session flag), and
+        ``terminals`` (the leaf effects, or the root causes).
+        """
+        scope_set = set(scopes) if scopes else None
+        resolved_isolate = self.isolate_traversal if isolate is None else isolate
+        walk_scopes = scope_set if (resolved_isolate and scope_set) else None
+
+        origin = await self._resolve_fact(content, scope_set)
+        if origin is None:
+            return {"origin": None, "chain": [], "terminals": []}
+
+        pairs = (await self.backend.get_causal_relations([origin])).get(origin, [])
+        edge_dir = "out" if direction == "effects" else "in"
+        start = [p["cause"] for p in pairs] if direction == "effects" else [p["effect"] for p in pairs]
+
+        visited_spans: set[str] = set(start)
+        frontier: deque = deque((s, 0) for s in start)
+        chain: list[dict] = []
+        reached_facts: set[str] = set()
+        reached_targets: set[str] = set()
+        has_next: set[str] = set()
+
+        while frontier and len(visited_spans) <= max_visited:
+            span, depth = frontier.popleft()
+            if depth >= max_depth:
+                continue
+            for n in await self.backend.get_neighbors(span, walk_scopes):
+                if n.get("type") == "text":
+                    reached_facts.add(n["content"])
+                    continue
+                if n.get("label") != "causes" or n.get("direction") != edge_dir:
+                    continue
+                other = n["content"]
+                has_next.add(span)
+                reached_targets.add(other)
+                cause, effect = (span, other) if direction == "effects" else (other, span)
+                chain.append({"cause": cause, "effect": effect, "depth": depth})
+                if other not in visited_spans and len(visited_spans) < max_visited:
+                    visited_spans.add(other)
+                    frontier.append((other, depth + 1))
+
+        terminals = sorted(reached_targets - has_next)
+
+        # Map each hop to the fact that asserted it, and tag scopes / retirement.
+        causal_map = await self.backend.get_causal_relations(sorted(reached_facts))
+        reverse: dict[tuple, str] = {}
+        for fact, prs in causal_map.items():
+            for p in prs:
+                reverse[(p["cause"], p["effect"])] = fact
+        hop_facts = [reverse.get((h["cause"], h["effect"])) for h in chain]
+        present = sorted({f for f in hop_facts if f})
+        retired: set[str] = set()
+        if not include_superseded and present and self.conflict_resolver is not None:
+            retired = set(await self._superseded(present))
+        scope_map = await self.backend.get_scopes(present)
+
+        out_chain = []
+        for hop, fact in zip(chain, hop_facts):
+            if fact in retired:
+                continue
+            node_scopes = scope_map.get(fact, set()) if fact else set()
+            out_chain.append({
+                "cause": hop["cause"], "effect": hop["effect"], "fact": fact,
+                "depth": hop["depth"], "scopes": sorted(node_scopes),
+                "cross_session": bool(scope_set) and not (node_scopes & scope_set),
+            })
+        return {"origin": origin, "chain": out_chain, "terminals": terminals}
+
+    async def trace_effects(self, content: str, *, max_depth: int = 6, scopes=None,
+                            isolate: bool | None = None, include_superseded: bool = False,
+                            max_visited: int = 1000) -> dict:
+        """Forward causal walk: what the fact nearest ``content`` caused downstream."""
+        return await self._trace(content, "effects", max_depth=max_depth, scopes=scopes,
+                                  isolate=isolate, include_superseded=include_superseded,
+                                  max_visited=max_visited)
+
+    async def trace_causes(self, content: str, *, max_depth: int = 6, scopes=None,
+                           isolate: bool | None = None, include_superseded: bool = False,
+                           max_visited: int = 1000) -> dict:
+        """Backward causal walk: what led to the fact nearest ``content``."""
+        return await self._trace(content, "causes", max_depth=max_depth, scopes=scopes,
+                                 isolate=isolate, include_superseded=include_superseded,
+                                 max_visited=max_visited)
+
+    async def root_causes(self, content: str, **kwargs) -> list[str]:
+        """The root cause spans behind ``content`` (backward-walk terminals)."""
+        return (await self.trace_causes(content, **kwargs))["terminals"]
+
+    async def causal_chain(self, from_content: str, to_content: str, *, max_depth: int = 6,
+                           scopes=None, isolate: bool | None = None,
+                           include_superseded: bool = False) -> list[dict] | None:
+        """Directed causal hops linking ``from_content`` to ``to_content``, or None.
+
+        Returns the ordered list of causal hops (as in ``trace_effects``' chain) if
+        the fact nearest ``from_content`` causally leads to the one nearest
+        ``to_content``; otherwise None.
+        """
+        target = await self._resolve_fact(to_content, set(scopes) if scopes else None)
+        if target is None:
+            return None
+        target_pairs = (await self.backend.get_causal_relations([target])).get(target, [])
+        target_spans = {p["cause"] for p in target_pairs} | {p["effect"] for p in target_pairs}
+        if not target_spans:
+            return None
+        traced = await self.trace_effects(
+            from_content, max_depth=max_depth, scopes=scopes, isolate=isolate,
+            include_superseded=include_superseded,
+        )
+        # A chain exists if the forward walk reached any span of the target fact.
+        for hop in traced["chain"]:
+            if hop["effect"] in target_spans or hop["cause"] in target_spans:
+                return traced["chain"]
+        return None
+
     async def answer(
         self,
         query: str,
@@ -1087,6 +1226,18 @@ class ReasonGraph:
             query, top_k, hops, search_mode, rrf_k, scopes, max_results,
             max_visited, isolate, include_superseded,
         ))
+
+    def trace_effects_sync(self, content: str, **kwargs) -> dict:
+        return self._run(self.trace_effects(content, **kwargs))
+
+    def trace_causes_sync(self, content: str, **kwargs) -> dict:
+        return self._run(self.trace_causes(content, **kwargs))
+
+    def root_causes_sync(self, content: str, **kwargs) -> list[str]:
+        return self._run(self.root_causes(content, **kwargs))
+
+    def causal_chain_sync(self, from_content: str, to_content: str, **kwargs) -> list[dict] | None:
+        return self._run(self.causal_chain(from_content, to_content, **kwargs))
 
     def answer_sync(
         self,

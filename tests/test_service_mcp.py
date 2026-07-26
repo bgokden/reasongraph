@@ -57,9 +57,30 @@ async def test_mcp_lists_all_tools():
         names = {t.name for t in await mcp.list_tools()}
         assert names == {
             "push_memory", "query_memory", "query_memory_detailed",
-            "discover_connections", "answer", "update_memory", "delete_memory",
-            "memory_history", "forget_stale", "list_sessions",
+            "discover_connections", "trace_memory", "answer", "update_memory",
+            "delete_memory", "memory_history", "forget_stale", "list_sessions",
         }
+    finally:
+        await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_trace_memory():
+    def fake_causal(texts):
+        rels = {"Rain caused flooding.": {"cause": "Rain", "effect": "flooding"}}
+        return [{"causal": t in rels, "relations": [rels[t]] if t in rels else []} for t in texts]
+
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_fake_embed,
+                        extractor=lambda t: [], causal_extractor=fake_causal)
+    await svc.initialize()
+    try:
+        mcp = create_mcp(svc)
+        await mcp.call_tool("push_memory", {"session": "a", "text": "Rain caused flooding."})
+        traced = _unwrap(await mcp.call_tool(
+            "trace_memory", {"content": "Rain caused flooding.", "direction": "effects"}
+        ))
+        assert traced["origin"] == "Rain caused flooding."
+        assert ("Rain", "flooding") in {(h["cause"], h["effect"]) for h in traced["chain"]}
     finally:
         await svc.close()
 

@@ -166,6 +166,17 @@ class MemoryService:
         """Supersession audit for a fact: what it replaced and what replaced it."""
         return await self.graph.supersession_history(text)
 
+    async def trace(
+        self, content: str, *, direction: str = "effects", session: str | None = None,
+        max_depth: int = 6, isolate: bool | None = None,
+    ) -> dict:
+        """Walk the causal graph from ``content``. ``direction='effects'`` traces
+        downstream impact; ``'causes'`` traces back to root causes."""
+        method = self.graph.trace_causes if direction == "causes" else self.graph.trace_effects
+        return await method(
+            content, scopes=self._scopes(session), max_depth=max_depth, isolate=isolate,
+        )
+
     async def forget(self) -> dict:
         """Drop facts not accessed within the graph's forget window."""
         async with self._write_lock:

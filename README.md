@@ -233,6 +233,34 @@ for fact in graph.discover_sync("flooding"):
     print(fact["content"], fact["causes"])  # [{'cause': 'heavy rainfall', 'effect': 'severe flooding'}]
 ```
 
+### Causal chain tracing
+
+Because cause->effect edges are directed and first-class, you can **walk the causal
+graph** -- something a flat vector store cannot do. Trace downstream impact, trace
+back to root causes, or find a directed causal path between two facts:
+
+```python
+graph.add_texts_sync([
+    "Heavy rainfall caused flooding.",
+    "Flooding caused power outages.",
+    "Power outages caused hospital disruptions.",
+])
+
+graph.trace_effects_sync("Heavy rainfall caused flooding.")["terminals"]
+# -> ['hospital disruptions']            # downstream impact
+
+graph.root_causes_sync("Power outages caused hospital disruptions.")
+# -> ['rainfall']                        # what led here
+
+graph.causal_chain_sync("Heavy rainfall caused flooding.",
+                        "Power outages caused hospital disruptions.")
+# -> ordered causal hops, each cited to the fact that asserted it
+```
+
+Each hop is tagged with the fact that asserts it, its scopes, and a `cross_session`
+flag; retired (superseded) facts are skipped by default. Exposed to agents as the
+`trace_memory` MCP tool and the `/trace` HTTP endpoint.
+
 The default causal extractor picks the **best available** backend. When the
 `causal-span-model` package is installed it uses the **span-pointer model**
 (`CausalPointerExtractor`): a fine-tuned mDeBERTa-v3 that scores **~0.70 F1** on the
@@ -590,6 +618,10 @@ Other production controls:
 - **Health**: `/health` (liveness) and `/ready` (readiness) for orchestration probes.
 - **Postgres** creates an HNSW cosine index, so vector search is index-accelerated
   rather than a sequential scan.
+- **Speed**: `tests/bench_speed.py` measures write throughput and read latency
+  (query / discover / trace, p50/p95) at a configurable graph size and backend
+  (`--fake` for model-free timing). Indicative real-model, in-memory numbers:
+  query ~14ms, discover ~7ms, causal trace ~3ms p50.
 
 ## License
 
