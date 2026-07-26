@@ -244,7 +244,11 @@ def test_gliner_relex_extracts_directed_causal(relex_extractor):
 
 def test_pointer_extractor_is_exported_and_constructible():
     from reasongraph import CausalPointerExtractor
-    ext = CausalPointerExtractor(model="Berk/causal-span-pointer-mdeberta")
+    # default points at the pointer model's canonical HF repo (must match
+    # causal_span_model.pointer.submission.POINTER_HF_REPO so first-call download
+    # resolves); an explicit override is respected.
+    assert CausalPointerExtractor().model == "berk/causal-span-pointer-mdeberta"
+    ext = CausalPointerExtractor(model="some/local-or-repo")
+    assert ext.model == "some/local-or-repo"
     # lazy: no model loaded on construction
-    assert ext.model == "Berk/causal-span-pointer-mdeberta"
     assert ext.topk == 5 and ext._model is None

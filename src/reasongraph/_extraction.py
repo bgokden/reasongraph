@@ -639,8 +639,9 @@ class CausalPointerExtractor:
     per distinct cause->effect.
 
     Args:
-        model: local pointer-model dir, or a HF repo id (e.g.
-            ``"Berk/causal-span-pointer-mdeberta"``).
+        model: local pointer-model dir, or a HF repo id. Defaults to the pointer
+            model's canonical repo (``causal_span_model.pointer.submission``
+            ``.POINTER_HF_REPO``); keep this literal in sync with that constant.
         topk: beam width for the span decoder.
         max_len: tokenizer truncation length.
         device: torch device (default: cuda if available else cpu).
@@ -648,7 +649,7 @@ class CausalPointerExtractor:
 
     def __init__(
         self,
-        model: str = "Berk/causal-span-pointer-mdeberta",
+        model: str = "berk/causal-span-pointer-mdeberta",
         topk: int = 5,
         max_len: int = 256,
         device: str | None = None,
