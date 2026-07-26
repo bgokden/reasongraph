@@ -367,17 +367,29 @@ class SqliteBackend(Backend):
         await db.commit()
         return results
 
-    async def get_neighbors(self, content: str) -> list[dict[str, str]]:
+    async def get_neighbors(
+        self, content: str, scopes: set[str] | None = None
+    ) -> list[dict[str, str]]:
         db = await self._conn()
+        params: list = [content, content, content]
+        scope_clause = ""
+        if scopes:
+            placeholders = ", ".join("?" for _ in scopes)
+            scope_clause = (
+                f" WHERE n.id IN "
+                f"(SELECT node_id FROM node_scopes WHERE scope IN ({placeholders}))"
+            )
+            params.extend(sorted(scopes))
         cursor = await db.execute(
-            """
+            f"""
             SELECT n.content, n.type, e.label,
                    CASE WHEN e.from_content = ? THEN 'out' ELSE 'in' END AS direction
             FROM nodes n
             INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = ?)
                                OR (e.from_content = n.content AND e.to_content = ?)
+            {scope_clause}
             """,
-            (content, content, content),
+            params,
         )
         # Dedup by neighbor, preferring a labeled edge so causal links surface.
         neighbors: dict[str, dict[str, str]] = {}

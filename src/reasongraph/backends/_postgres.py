@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from datetime import datetime, timedelta
 
 from reasongraph._types import Node, Edge
@@ -52,6 +53,13 @@ class PostgresBackend(Backend):
                 )
             """)
 
+            # Approximate-nearest-neighbour index for the cosine (<=>) KNN in
+            # knn_search/hybrid_search. Without it, KNN is a full sequential scan
+            # whose latency grows linearly with the graph. HNSW (pgvector >= 0.5.0)
+            # suits an incrementally written table; on older servers we skip the
+            # index (correct, just slower) rather than fail initialization.
+            await self._create_vector_index(conn)
+
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS edges (
                     from_content TEXT NOT NULL REFERENCES nodes(content) ON DELETE CASCADE,
@@ -83,6 +91,35 @@ class PostgresBackend(Backend):
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS node_scopes_scope_idx ON node_scopes (scope)"
             )
+
+    @staticmethod
+    def _supports_hnsw(version: str | None) -> bool:
+        """HNSW was added in pgvector 0.5.0."""
+        if not version:
+            return False
+        try:
+            parts = tuple(int(p) for p in version.split(".")[:2])
+        except ValueError:
+            return False
+        return parts >= (0, 5)
+
+    async def _create_vector_index(self, conn) -> None:
+        row = await (await conn.execute(
+            "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+        )).fetchone()
+        version = row[0] if row else None
+        if not self._supports_hnsw(version):
+            warnings.warn(
+                f"pgvector {version or 'unknown'} lacks HNSW (needs >= 0.5.0); "
+                "vector KNN will use a sequential scan. Upgrade pgvector for "
+                "index-accelerated search.",
+                stacklevel=2,
+            )
+            return
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS nodes_embedding_hnsw "
+            "ON nodes USING hnsw (embedding vector_cosine_ops)"
+        )
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -233,19 +270,30 @@ class PostgresBackend(Backend):
                     for row in await cur.fetchall()
                 ]
 
-    async def get_neighbors(self, content: str) -> list[dict[str, str]]:
+    async def get_neighbors(
+        self, content: str, scopes: set[str] | None = None
+    ) -> list[dict[str, str]]:
         pool = await self._get_pool()
+        params: list = [content, content, content]
+        scope_clause = ""
+        if scopes:
+            scope_clause = (
+                " AND n.content IN "
+                "(SELECT node_content FROM node_scopes WHERE scope = ANY(%s))"
+            )
+            params.append(sorted(scopes))
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    """
+                    f"""
                     SELECT n.content, n.type, e.label,
                            CASE WHEN e.from_content = %s THEN 'out' ELSE 'in' END AS direction
                     FROM nodes n
                     INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = %s)
                                        OR (e.from_content = n.content AND e.to_content = %s)
+                    WHERE 1=1{scope_clause}
                     """,
-                    (content, content, content),
+                    params,
                 )
                 # Dedup by neighbor, preferring a labeled edge so causal links surface.
                 neighbors: dict[str, dict[str, str]] = {}

@@ -94,6 +94,19 @@ async def test_insert_and_query(backend):
 
 
 @pytest.mark.asyncio
+async def test_vector_index_created(backend):
+    # HNSW cosine index accelerates knn_search/hybrid_search (pgvector >= 0.5.0,
+    # which the test server has). Guards against the index silently going missing.
+    pool = await backend._get_pool()
+    async with pool.connection() as conn:
+        row = await (await conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'nodes_embedding_hnsw'"
+        )).fetchone()
+    assert row is not None, "HNSW vector index should be created on init"
+    assert "hnsw" in row[0].lower() and "vector_cosine_ops" in row[0].lower()
+
+
+@pytest.mark.asyncio
 async def test_edges_neighbors_and_cascade_delete(backend):
     await backend.insert_nodes([_make_node("A"), _make_node("B", "entity"), _make_node("C")])
     await backend.insert_edges([
@@ -106,6 +119,11 @@ async def test_edges_neighbors_and_cascade_delete(backend):
 
     neighbors = {n["content"] for n in await backend.get_neighbors("B")}
     assert neighbors == {"A", "C"}
+
+    # Scoped traversal (isolation): only neighbors carrying the scope are returned.
+    await backend.insert_nodes([_make_node("A", scopes={"t1"}), _make_node("C", scopes={"t2"})])
+    scoped = {n["content"] for n in await backend.get_neighbors("B", scopes={"t1"})}
+    assert scoped == {"A"}  # C is out of scope t1
 
     # deleting B cascades its incident edges
     assert await backend.delete_nodes(["B"]) == 1

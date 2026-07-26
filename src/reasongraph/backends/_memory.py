@@ -230,9 +230,13 @@ class MemoryBackend(Backend):
             results.append({"content": contents[idx], "type": types[idx]})
         return results
 
-    async def get_neighbors(self, content: str) -> list[dict[str, str]]:
+    async def get_neighbors(
+        self, content: str, scopes: set[str] | None = None
+    ) -> list[dict[str, str]]:
         # neighbor content -> (type, label, direction). A labeled edge wins over
         # an untyped one when both connect the same pair, so causal links surface.
+        # When ``scopes`` is given, only neighbors carrying at least one of those
+        # scopes are returned, confining traversal to a tenant (isolation mode).
         neighbors: dict[str, tuple[str, str | None, str]] = {}
         for (from_c, to_c), label in self._edges.items():
             if from_c == content and to_c in self._nodes:
@@ -240,6 +244,8 @@ class MemoryBackend(Backend):
             elif to_c == content and from_c in self._nodes:
                 other, direction = from_c, "in"
             else:
+                continue
+            if scopes is not None and not (self._nodes[other].scopes & scopes):
                 continue
             existing = neighbors.get(other)
             if existing is None or (label is not None and existing[1] is None):

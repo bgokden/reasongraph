@@ -46,8 +46,15 @@ class Backend(ABC):
         """
 
     @abstractmethod
-    async def get_neighbors(self, content: str) -> list[dict[str, str]]:
-        """Return all direct neighbors (both directions) as dicts with 'content' and 'type'."""
+    async def get_neighbors(
+        self, content: str, scopes: set[str] | None = None
+    ) -> list[dict[str, str]]:
+        """Return all direct neighbors (both directions) as dicts with 'content' and 'type'.
+
+        When ``scopes`` is given, only neighbors carrying at least one of those
+        scopes are returned. This is opt-in traversal isolation: passing the query
+        scope confines a walk to one tenant instead of crossing scopes freely.
+        """
 
     @abstractmethod
     async def delete_stale_nodes(self, days: int) -> int:
