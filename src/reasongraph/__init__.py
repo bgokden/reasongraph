@@ -20,7 +20,7 @@ from reasongraph._extraction import (
     HybridCausalExtractor,
     CausalPointerExtractor,
 )
-from reasongraph._conflict import ConflictResolver, NLIConflictResolver
+from reasongraph._conflict import ConflictResolver, NLIConflictResolver, LLMConflictResolver
 from reasongraph._fastembed import FastEmbedEmbedder, FastEmbedReranker
 from reasongraph._synthesizers import (
     TemplateSynthesizer,
@@ -37,7 +37,7 @@ __all__ = [
     "NERExtractor", "GLiNER2Extractor", "ChatExtractor",
     "OnnxTokenClassifierExtractor", "GlinerExtractor",
     "GlinerRelexExtractor", "HybridCausalExtractor", "CausalPointerExtractor",
-    "ConflictResolver", "NLIConflictResolver",
+    "ConflictResolver", "NLIConflictResolver", "LLMConflictResolver",
     "FastEmbedEmbedder", "FastEmbedReranker",
     "TemplateSynthesizer", "PromptSynthesizer", "TransformersSynthesizer",
     "load_dataset",

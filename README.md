@@ -576,10 +576,14 @@ Other production controls:
   restatements instead of accumulating them, unioning scopes onto the kept fact.
 - **Contradiction resolution**: `ReasonGraph(conflict_resolver=NLIConflictResolver())`
   (or `REASONGRAPH_RESOLVE_CONFLICTS=1`) soft-supersedes facts a new one contradicts
-  -- a `supersedes` edge drops the old fact from default recall while keeping it
-  auditable and retrievable via `include_superseded=True`. The resolver is pluggable
-  (any object with `contradictions(new, candidates)`); the shipped NLI cross-encoder
-  distinguishes contradiction from mere similarity, which cosine cannot.
+  -- a `supersedes` edge drops the old fact from default `query`/`discover` recall
+  while keeping it auditable and retrievable via `include_superseded=True`;
+  `supersession_history(fact)` shows what replaced what. The resolver is pluggable
+  (any object with `contradictions(new, candidates)`): the `NLIConflictResolver`
+  cross-encoder needs no LLM but can over-flag complements (it treats "works in
+  Munich" vs "lives in Berlin" as a conflict), while `LLMConflictResolver(generate)`
+  brings any LLM and is more precise. Soft-supersede is deliberately reversible, so
+  a wrong call is recoverable.
 - **Health**: `/health` (liveness) and `/ready` (readiness) for orchestration probes.
 - **Postgres** creates an HNSW cosine index, so vector search is index-accelerated
   rather than a sequential scan.

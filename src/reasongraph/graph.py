@@ -400,6 +400,21 @@ class ReasonGraph:
                 out.append(content)
         return out
 
+    async def supersession_history(self, content: str) -> dict:
+        """Audit trail for a fact from its ``"supersedes"`` edges.
+
+        Returns ``{"supersedes": [...], "superseded_by": [...]}`` -- what this fact
+        replaced, and what (if anything) has since replaced it. A non-empty
+        ``superseded_by`` is why the fact is absent from default recall.
+        """
+        neighbors = await self.backend.get_neighbors(content)
+        return {
+            "supersedes": [n["content"] for n in neighbors
+                           if n.get("label") == "supersedes" and n.get("direction") == "out"],
+            "superseded_by": [n["content"] for n in neighbors
+                              if n.get("label") == "supersedes" and n.get("direction") == "in"],
+        }
+
     async def _resolve_conflicts(self, texts: list[str]) -> None:
         """Add a ``"supersedes"`` edge from each new fact to the facts it contradicts."""
         batch = set(texts)
@@ -632,6 +647,7 @@ class ReasonGraph:
         max_results: int = 10,
         max_visited: int = 1000,
         isolate: bool | None = None,
+        include_superseded: bool = False,
     ) -> list[dict]:
         """Discover connection paths from a query into the graph.
 
@@ -734,6 +750,11 @@ class ReasonGraph:
 
         # Scope lookup for the discovered facts only -- a bounded fetch keyed by
         # the reached contents, so it scales with the result set, not the graph.
+        # Drop soft-superseded facts (gated on a resolver, so non-users pay nothing).
+        if not include_superseded and self.conflict_resolver is not None and order:
+            superseded = set(await self._superseded(order))
+            order = [c for c in order if c not in superseded]
+
         scope_map = await self.backend.get_scopes(order)
 
         def reconstruct(content: str) -> list[dict]:
@@ -993,10 +1014,11 @@ class ReasonGraph:
         recency_weight: float = 0.0,
         scopes: set[str] | list[str] | None = None,
         isolate: bool | None = None,
+        include_superseded: bool = False,
     ) -> list[str]:
         return self._run(self.query(
             query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight,
-            scopes, isolate,
+            scopes, isolate, include_superseded,
         ))
 
     def query_detailed_sync(
@@ -1010,10 +1032,11 @@ class ReasonGraph:
         recency_weight: float = 0.0,
         scopes: set[str] | list[str] | None = None,
         isolate: bool | None = None,
+        include_superseded: bool = False,
     ) -> list[dict]:
         return self._run(self.query_detailed(
             query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight,
-            scopes, isolate,
+            scopes, isolate, include_superseded,
         ))
 
     def discover_sync(
@@ -1027,10 +1050,11 @@ class ReasonGraph:
         max_results: int = 10,
         max_visited: int = 1000,
         isolate: bool | None = None,
+        include_superseded: bool = False,
     ) -> list[dict]:
         return self._run(self.discover(
             query, top_k, hops, search_mode, rrf_k, scopes, max_results,
-            max_visited, isolate,
+            max_visited, isolate, include_superseded,
         ))
 
     def answer_sync(

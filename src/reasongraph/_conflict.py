@@ -70,3 +70,38 @@ class NLIConflictResolver:
         probs = exp / exp.sum(axis=1, keepdims=True)
         contradiction = probs[:, self._CONTRADICTION]
         return [c for c, p in zip(candidates, contradiction) if p >= self.threshold]
+
+
+class LLMConflictResolver:
+    """Detect contradictions with a bring-your-own LLM.
+
+    More accurate than the NLI cross-encoder on complements (an NLI model tends to
+    call "works in Munich" vs "lives in Berlin" a contradiction; an instructed LLM
+    can be told that facts which can both hold are not contradictions). ``generate``
+    is any callable(prompt: str) -> str -- the same pattern as the synthesizers, so
+    the core stays model-free.
+    """
+
+    PROMPT = (
+        "You maintain a memory of facts. A new fact has arrived.\n"
+        "New fact: {new}\n"
+        "Existing fact: {old}\n"
+        "Does the new fact CONTRADICT the existing one -- can they NOT both be true, "
+        "so the existing fact is now outdated? Facts that can both hold "
+        "(complementary) are NOT contradictions. Answer only 'yes' or 'no'."
+    )
+
+    def __init__(self, generate) -> None:
+        if not callable(generate):
+            raise TypeError("generate must be a callable(prompt) -> str")
+        self._generate = generate
+
+    def contradictions(self, new_text: str, candidates: list[str]) -> list[str]:
+        out = []
+        for candidate in candidates:
+            answer = str(self._generate(
+                self.PROMPT.format(new=new_text, old=candidate)
+            )).strip().lower()
+            if answer.startswith("yes"):
+                out.append(candidate)
+        return out

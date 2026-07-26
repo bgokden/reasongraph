@@ -172,6 +172,32 @@ async def test_conflict_resolution_soft_supersedes(graph):
     labels = {(e.from_content, e.to_content): e.label for e in await graph.get_all_edges()}
     assert labels.get(("Alice lives in Berlin.", "Alice lives in Munich.")) == "supersedes"
 
+    # supersession_history gives the audit trail
+    hist_old = await graph.supersession_history("Alice lives in Munich.")
+    assert hist_old["superseded_by"] == ["Alice lives in Berlin."]
+    hist_new = await graph.supersession_history("Alice lives in Berlin.")
+    assert hist_new["supersedes"] == ["Alice lives in Munich."]
+
+
+@pytest.mark.asyncio
+async def test_conflict_resolution_excludes_superseded_from_discover(graph):
+    graph.conflict_resolver = _SubjectResolver()
+    await graph.add_nodes([
+        ("Alice lives in Munich.", "text"), ("Alice lives in Berlin.", "text"),
+        ("Alice", "entity"),
+    ])
+    await graph.add_edges([
+        ("Alice", "Alice lives in Munich."), ("Alice", "Alice lives in Berlin."),
+    ])
+    # mark the old fact superseded via the resolver path
+    await graph._resolve_conflicts(["Alice lives in Berlin."])
+
+    found = {d["content"] for d in await graph.discover("Alice", top_k=5, hops=2)}
+    assert "Alice lives in Munich." not in found  # superseded, excluded from discover
+    all_found = {d["content"]
+                 for d in await graph.discover("Alice", top_k=5, hops=2, include_superseded=True)}
+    assert "Alice lives in Munich." in all_found
+
 
 @pytest.mark.asyncio
 async def test_semantic_dedup_on_write(graph):

@@ -7,7 +7,7 @@ tested deterministically without downloading a model.
 
 import numpy as np
 
-from reasongraph import NLIConflictResolver
+from reasongraph import NLIConflictResolver, LLMConflictResolver
 
 
 class _FakePredict:
@@ -44,3 +44,16 @@ def test_nli_resolver_threshold_gates():
     strict = NLIConflictResolver(model=_Mild(), threshold=0.9)
     assert lenient.contradictions("a", ["b"]) == ["b"]
     assert strict.contradictions("a", ["b"]) == []
+
+
+def test_llm_resolver_parses_yes_no():
+    # A fake LLM that says a fact is a contradiction iff both mention "Munich".
+    def fake_generate(prompt: str) -> str:
+        return "Yes, they contradict." if "Munich" in prompt else "No."
+
+    resolver = LLMConflictResolver(fake_generate)
+    out = resolver.contradictions(
+        "Alice relocated abroad.",
+        ["Alice lives in Munich.", "Bob lives in Berlin."],
+    )
+    assert out == ["Alice lives in Munich."]
