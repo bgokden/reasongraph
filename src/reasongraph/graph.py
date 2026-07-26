@@ -1314,8 +1314,13 @@ class ReasonGraph:
         scopes: set[str] | list[str] | None = None,
         causal_extractor: CausalExtractorFn | None = None,
         causal: bool | None = None,
+        dedup_threshold: float | None = None,
+        resolve_conflicts: bool | None = None,
     ) -> list[str]:
-        return self._run(self.add_text(text, extractor, scopes, causal_extractor, causal))
+        return self._run(self.add_text(
+            text, extractor, scopes, causal_extractor, causal,
+            dedup_threshold=dedup_threshold, resolve_conflicts=resolve_conflicts,
+        ))
 
     def add_texts_sync(
         self,
@@ -1324,8 +1329,13 @@ class ReasonGraph:
         causal_extractor: CausalExtractorFn | None = None,
         scopes: set[str] | list[str] | None = None,
         causal: bool | None = None,
+        dedup_threshold: float | None = None,
+        resolve_conflicts: bool | None = None,
     ) -> list[list[str]]:
-        return self._run(self.add_texts(texts, extractor, causal_extractor, scopes, causal))
+        return self._run(self.add_texts(
+            texts, extractor, causal_extractor, scopes, causal,
+            dedup_threshold=dedup_threshold, resolve_conflicts=resolve_conflicts,
+        ))
 
     def query_sync(
         self,
@@ -1423,13 +1433,25 @@ class ReasonGraph:
     def maybe_forget_sync(self) -> int:
         return self._run(self.maybe_forget())
 
-    def delete_sync(self, content: str) -> bool:
-        return self._run(self.delete(content))
+    def delete_sync(self, content: str, purge_orphans: bool = False) -> bool:
+        return self._run(self.delete(content, purge_orphans=purge_orphans))
 
     def supersede_sync(
         self,
         old_content: str,
         new_text: str,
         extractor: ExtractorFn | None = None,
+        purge_orphans: bool = False,
     ) -> list[str]:
-        return self._run(self.supersede(old_content, new_text, extractor))
+        return self._run(self.supersede(
+            old_content, new_text, extractor, purge_orphans=purge_orphans,
+        ))
+
+    def supersession_history_sync(self, content: str) -> dict:
+        return self._run(self.supersession_history(content))
+
+    def get_all_nodes_sync(self, scopes: set[str] | list[str] | None = None) -> list:
+        return self._run(self.get_all_nodes(scopes=scopes))
+
+    def get_all_edges_sync(self) -> list:
+        return self._run(self.get_all_edges())

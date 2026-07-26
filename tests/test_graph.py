@@ -268,6 +268,26 @@ async def test_semantic_dedup_on_write(graph):
     assert {n.content for n in await graph.get_all_nodes(scopes={"user-a"})} == {"Alice lives in Munich"}
 
 
+def test_add_text_sync_forwards_dedup_param():
+    # The sync wrappers previously dropped dedup_threshold / resolve_conflicts, so
+    # those write-time features were unreachable from the sync API. A marker entity
+    # distinguishes a deduped add (returns []) from a normal add (returns the marker).
+    g = ReasonGraph(backend=MemoryBackend(), causal_extractor=False)
+    g.embeddings.encode = _fake_encode
+    g.embeddings.encode_batch = _fake_encode_batch
+    g.embeddings.rerank = _fake_rerank
+    g.embeddings.score = lambda q, texts: [0.99 for _ in texts]
+    g.initialize_sync()
+    try:
+        g.add_text_sync("Alice lives in Munich", extractor=lambda t: ["Alice"])
+        ents = g.add_text_sync(
+            "Alice resides in Munich", extractor=lambda t: ["Alice"], dedup_threshold=0.95,
+        )
+        assert ents == []  # deduped via the forwarded threshold; would be ["Alice"] without the fix
+    finally:
+        g.close_sync()
+
+
 @pytest.mark.asyncio
 async def test_query_detailed_structured_results(graph):
     graph.embeddings.score = lambda q, texts: [0.5 for _ in texts]
