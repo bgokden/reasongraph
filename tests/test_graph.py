@@ -56,6 +56,49 @@ async def test_add_and_query_nodes(graph):
 
 
 @pytest.mark.asyncio
+async def test_traversal_isolation(graph):
+    # Two tenants share the 'techno' entity bridge (its scopes union to both).
+    await graph.add_nodes([("Alice loves techno", "text"), ("techno", "entity")], scopes={"user-a"})
+    await graph.add_nodes([("Bob avoids techno", "text"), ("techno", "entity")], scopes={"user-b"})
+    await graph.add_edges([
+        ("techno", "Alice loves techno"),
+        ("techno", "Bob avoids techno"),
+    ])
+
+    # Default (shared graph): user-a's query reaches user-b's fact via the bridge.
+    shared = await graph.query("techno", scopes={"user-a"}, hops=3, rerank_top_k=5)
+    assert "Alice loves techno" in shared
+    assert "Bob avoids techno" in shared  # cross-session discovery
+
+    # isolate=True: the walk stays in user-a; user-b's fact is unreachable.
+    isolated = await graph.query("techno", scopes={"user-a"}, hops=3, rerank_top_k=5, isolate=True)
+    assert "Alice loves techno" in isolated
+    assert "Bob avoids techno" not in isolated
+
+
+@pytest.mark.asyncio
+async def test_isolate_traversal_default_from_constructor():
+    g = ReasonGraph(backend=SqliteBackend(":memory:"), causal_extractor=False,
+                    isolate_traversal=True)
+    g.embeddings.encode = _fake_encode
+    g.embeddings.encode_batch = _fake_encode_batch
+    g.embeddings.rerank = _fake_rerank
+    await g.initialize()
+    try:
+        await g.add_nodes([("Alice loves techno", "text"), ("techno", "entity")], scopes={"user-a"})
+        await g.add_nodes([("Bob avoids techno", "text"), ("techno", "entity")], scopes={"user-b"})
+        await g.add_edges([("techno", "Alice loves techno"), ("techno", "Bob avoids techno")])
+        # Graph-level default isolates: user-a's query cannot reach user-b's fact.
+        res = await g.query("techno", scopes={"user-a"}, hops=3, rerank_top_k=5)
+        assert "Bob avoids techno" not in res
+        # A per-query override re-enables cross-session traversal.
+        res2 = await g.query("techno", scopes={"user-a"}, hops=3, rerank_top_k=5, isolate=False)
+        assert "Bob avoids techno" in res2
+    finally:
+        await g.close()
+
+
+@pytest.mark.asyncio
 async def test_context_manager():
     g = ReasonGraph(backend=SqliteBackend(":memory:"), causal_extractor=False)
     g.embeddings.encode = _fake_encode
@@ -99,6 +142,71 @@ async def test_get_all_nodes_and_edges(graph):
     edges = await graph.get_all_edges()
     assert len(nodes) == 2
     assert len(edges) == 1
+
+
+@pytest.mark.asyncio
+async def test_semantic_dedup_on_write(graph):
+    # Simulate an embedder that judges the two phrasings near-identical.
+    graph.embeddings.score = lambda q, texts: [0.99 for _ in texts]
+    await graph.add_text("Alice lives in Munich", extractor=lambda t: [])
+
+    # The near-duplicate is skipped (returns [] entities), scope unioned onto original.
+    ents = await graph.add_text(
+        "Alice resides in Munich", extractor=lambda t: [],
+        dedup_threshold=0.95, scopes={"user-a"},
+    )
+    assert ents == []
+    contents = {n.content for n in await graph.get_all_nodes()}
+    assert "Alice resides in Munich" not in contents
+    assert "Alice lives in Munich" in contents
+    # the new scope landed on the surviving fact
+    assert {n.content for n in await graph.get_all_nodes(scopes={"user-a"})} == {"Alice lives in Munich"}
+
+
+@pytest.mark.asyncio
+async def test_query_detailed_structured_results(graph):
+    graph.embeddings.score = lambda q, texts: [0.5 for _ in texts]
+    await graph.add_nodes([("Alice loves techno", "text")], scopes={"user-a"})
+
+    detailed = await graph.query_detailed("techno", top_k=3, hops=1, scopes={"user-a"})
+    assert detailed and isinstance(detailed[0], dict)
+    row = detailed[0]
+    assert set(row) == {"content", "score", "created_at", "scopes"}
+    assert row["content"] == "Alice loves techno"
+    assert row["score"] == 0.5
+    assert row["scopes"] == ["user-a"]
+    assert row["created_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_purge_orphans(graph):
+    await graph.add_nodes([
+        ("Alice lives in Paris", "text"),
+        ("Bob lives in Paris", "text"),
+        ("Alice", "entity"), ("Bob", "entity"), ("Paris", "entity"),
+    ])
+    await graph.add_edges([
+        ("Alice", "Alice lives in Paris"),
+        ("Paris", "Alice lives in Paris"),
+        ("Bob", "Bob lives in Paris"),
+        ("Paris", "Bob lives in Paris"),
+    ])
+
+    # Default delete leaves orphan entities resident (backward-compatible).
+    await graph.delete("Alice lives in Paris")
+    assert "Alice" in {n.content for n in await graph.get_all_nodes()}
+
+    # Re-add, then delete WITH purge: unique 'Alice' removed, shared 'Paris' kept.
+    await graph.add_nodes([("Alice lives in Paris", "text")])
+    await graph.add_edges([
+        ("Alice", "Alice lives in Paris"),
+        ("Paris", "Alice lives in Paris"),
+    ])
+    assert await graph.delete("Alice lives in Paris", purge_orphans=True) is True
+    contents = {n.content for n in await graph.get_all_nodes()}
+    assert "Alice" not in contents          # orphaned PII entity purged
+    assert "Paris" in contents              # still bridges Bob's fact
+    assert "Bob lives in Paris" in contents
 
 
 @pytest.mark.asyncio

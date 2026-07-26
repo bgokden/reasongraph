@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any, Callable, Protocol, Union, runtime_checkable
 
@@ -143,6 +144,25 @@ class EmbeddingManager:
         else:
             ranked = [r for _, r in sorted(zip(scores, unique), reverse=True)]
         return ranked[:top_k]
+
+    def score(self, query: str, texts: list[str]) -> list[float]:
+        """Embedding cosine similarity of each text to the query, in [-1, 1].
+
+        Used to attach a comparable, bounded relevance score to structured query
+        results (for thresholding / display). Reuses the embedder rather than the
+        cross-encoder so the number is bounded and cheap. Returns one score per
+        input text, in order.
+        """
+        if not texts:
+            return []
+        q = self.encode(query)
+        q_norm = math.sqrt(sum(x * x for x in q)) or 1.0
+        out: list[float] = []
+        for vec in self.encode_batch(texts):
+            v_norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+            dot = sum(a * b for a, b in zip(q, vec))
+            out.append(dot / (q_norm * v_norm))
+        return out
 
     @staticmethod
     def _apply_recency(
