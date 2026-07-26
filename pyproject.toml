@@ -53,16 +53,14 @@ gliner2 = [
 gliner = [
     "gliner>=0.2.27",
 ]
-# Causal extraction (the headline feature): the default hybrid cue + relex model.
-# Same dependency as `gliner`; named for discoverability.
+# Causal extraction (the headline feature). Ships the SOTA span-pointer model
+# (CausalPointerExtractor, ~0.70 F1 on CNC Subtask-2 dev), which the graph prefers
+# whenever `causal_span_model` is importable, plus the model-free hybrid cue + relex
+# fallback (gliner). `pip install reasongraph[causal]` is the SOTA-causal path.
 causal = [
+    "causal-span-model>=0.1.1",
     "gliner>=0.2.27",
 ]
-# The best causal backend is the span-pointer model (CausalPointerExtractor,
-# ~0.70 F1 on CNC Subtask-2 dev), preferred by the graph when its package is
-# importable. It is a custom architecture shipped as its own package
-# (`causal-span-model`, not yet on PyPI), so it is installed directly rather than
-# via an extra -- an unresolvable extra would break dependency resolution here.
 # Fast pure-ONNX embedder + reranker (FastEmbedEmbedder / FastEmbedReranker).
 fastembed = [
     "fastembed>=0.8.0",
@@ -92,6 +90,7 @@ postgres = [
 all = [
     "aiosqlite>=0.19.0",
     "sqlite-vec>=0.1.6",
+    "causal-span-model>=0.1.1",
     "gliner>=0.2.27",
     "gliner2>=1.2.0",
     "urllib3>=2.0.0",

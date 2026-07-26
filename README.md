@@ -14,7 +14,7 @@ When you feed text into `add_texts()`, ReasonGraph automatically extracts **enti
 
 On top of retrieval it works as agent memory: **scopes/sessions** (agents discover into each other's memory through shared entities), **contradiction resolution** (a new fact soft-supersedes what it contradicts), **time-travel** (`query(as_of=...)`), **causal tracing** (`trace_effects` / `root_causes` / `causal_chain`), **counterfactuals** (`what_if`), and a shippable **MemoryService** over HTTP and MCP.
 
-**Zero config, strong defaults.** `ReasonGraph()` picks the best available entity extractor, causal model, embedder, and reranker automatically -- the eval numbers below come from these defaults. For the SOTA causal model (~0.70 F1) add `pip install causal-span-model` and the graph uses it automatically. The configuration sections are optional depth, not required reading.
+**Zero config, strong defaults.** `ReasonGraph()` picks the best available entity extractor, causal model, embedder, and reranker automatically -- the eval numbers below come from these defaults. For the SOTA causal model (~0.70 F1) use `pip install reasongraph[causal]` and the graph uses it automatically. The configuration sections are optional depth, not required reading.
 
 ## Installation
 
@@ -27,6 +27,7 @@ Or install only what you need:
 ```bash
 pip install reasongraph             # core: in-memory backend, NER extraction, embeddings
 pip install reasongraph[gliner]     # + GLiNER entity extraction + hybrid causal (default, recommended)
+pip install reasongraph[causal]     # + SOTA span-pointer causal model (~0.70 F1) + hybrid fallback
 pip install reasongraph[gliner2]    # + GLiNER2 alternative (single model does entities + causal)
 pip install reasongraph[sqlite]     # + SQLite backend with sqlite-vec
 pip install reasongraph[postgres]   # + PostgreSQL + pgvector backend
@@ -332,8 +333,9 @@ ReasonGraph(causal_extractor=GlinerRelexExtractor())   # relex model only
 ReasonGraph(causal_extractor=False)                    # disable causal extraction
 ```
 
-The pointer model needs `pip install causal-span-model`; the hybrid needs
-`pip install reasongraph[causal]` (gliner>=0.2.27). If neither is available the
+`pip install reasongraph[causal]` installs both the pointer model
+(`causal-span-model`) and the hybrid (`gliner`), so the graph uses the SOTA pointer
+by default and falls back to the hybrid automatically. If neither is available the
 default warns once rather than silently dropping causality; `add_text(..., causal=True)`
 raises when no causal extractor can be resolved.
 
