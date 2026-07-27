@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reasongraph"
-version = "0.5.0"
+version = "0.5.1"
 description = "A graph-based reasoning library with embedding search and multi-hop traversal"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -58,7 +58,7 @@ gliner = [
 # whenever `causal_span_model` is importable, plus the model-free hybrid cue + relex
 # fallback (gliner). `pip install reasongraph[causal]` is the SOTA-causal path.
 causal = [
-    "causal-span-model>=0.1.1",
+    "causal-span-model>=0.1.2",
     "gliner>=0.2.27",
 ]
 # Fast pure-ONNX embedder + reranker (FastEmbedEmbedder / FastEmbedReranker).
@@ -90,7 +90,7 @@ postgres = [
 all = [
     "aiosqlite>=0.19.0",
     "sqlite-vec>=0.1.6",
-    "causal-span-model>=0.1.1",
+    "causal-span-model>=0.1.2",
     "gliner>=0.2.27",
     "gliner2>=1.2.0",
     "urllib3>=2.0.0",
