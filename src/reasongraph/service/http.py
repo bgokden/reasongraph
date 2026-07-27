@@ -13,6 +13,7 @@ Requires ``pip install reasongraph[service]``.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 from contextlib import asynccontextmanager
 
@@ -99,7 +100,8 @@ def _api_key_dependency(api_key: str | None):
         provided = x_api_key
         if authorization and authorization.lower().startswith("bearer "):
             provided = authorization[len("bearer "):]
-        if provided != api_key:
+        # Constant-time compare to avoid a timing side-channel on the key.
+        if not provided or not hmac.compare_digest(provided, api_key):
             raise HTTPException(status_code=401, detail="invalid or missing API key")
 
     return check

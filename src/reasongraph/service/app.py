@@ -128,9 +128,20 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
 
 
 def create_app_from_env(env: Mapping[str, str] | None = None):
-    """ASGI factory: ``uvicorn reasongraph.service.app:create_app_from_env --factory``."""
+    """ASGI factory: ``uvicorn reasongraph.service.app:create_app_from_env --factory``.
+
+    Set ``REASONGRAPH_REQUIRE_AUTH=1`` in production so the app refuses to start
+    with authentication disabled (i.e. when ``REASONGRAPH_API_KEY`` is empty) --
+    a fail-closed guard against accidentally exposing an open service.
+    """
     env = env if env is not None else os.environ
-    return create_app(build_service(env), api_key=env.get("REASONGRAPH_API_KEY") or None)
+    api_key = env.get("REASONGRAPH_API_KEY") or None
+    if api_key is None and _bool_env(env, "REASONGRAPH_REQUIRE_AUTH", False):
+        raise RuntimeError(
+            "REASONGRAPH_REQUIRE_AUTH is set but REASONGRAPH_API_KEY is empty; "
+            "refusing to start with authentication disabled."
+        )
+    return create_app(build_service(env), api_key=api_key)
 
 
 def main() -> None:

@@ -73,3 +73,29 @@ def test_int_env_parsing():
     assert service_app._int_env({"K": "45"}, "K", 30) == 45
     assert service_app._int_env({}, "K", 30) == 30
     assert service_app._int_env({"K": ""}, "K", None) is None
+
+
+# -- fail-closed auth guard --
+
+def test_require_auth_without_key_refuses_to_start():
+    # REASONGRAPH_REQUIRE_AUTH set but no API key -> refuse to build the app.
+    with pytest.raises(RuntimeError, match="refusing to start"):
+        service_app.create_app_from_env(
+            {"REASONGRAPH_BACKEND": "memory", "REASONGRAPH_REQUIRE_AUTH": "1"}
+        )
+
+
+def test_require_auth_with_key_starts():
+    # With a key present, the guard is satisfied and the app builds.
+    application = service_app.create_app_from_env({
+        "REASONGRAPH_BACKEND": "memory",
+        "REASONGRAPH_REQUIRE_AUTH": "1",
+        "REASONGRAPH_API_KEY": "secret",
+    })
+    assert application is not None
+
+
+def test_no_require_auth_stays_open_by_default():
+    # Dev default: no guard, builds without a key (auth off).
+    application = service_app.create_app_from_env({"REASONGRAPH_BACKEND": "memory"})
+    assert application is not None
