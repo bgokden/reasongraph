@@ -13,6 +13,10 @@ Environment variables:
     REASONGRAPH_DATABASE_URL   postgres URL, sqlite file path, or memory JSON path
     REASONGRAPH_EMBED_MODEL    embedding model name; prefix 'fastembed:' for ONNX
                                (default: the built-in SentenceTransformer)
+    REASONGRAPH_RERANK_MODEL   reranker model name; prefix 'fastembed:' for a
+                               CPU-fast ONNX cross-encoder, e.g.
+                               'fastembed:Xenova/ms-marco-MiniLM-L-6-v2'
+                               (default: the built-in torch CrossEncoder)
     REASONGRAPH_SYNTHESIZER    none | template | transformers    (default: template)
     REASONGRAPH_SYNTH_MODEL    instruct model for the transformers synthesizer
     REASONGRAPH_FORGET_AFTER   days; facts idle longer are droppable (default: 30)
@@ -74,6 +78,18 @@ def build_embed_model(env: Mapping[str, str] | None = None):
     return name
 
 
+def build_rerank_model(env: Mapping[str, str] | None = None):
+    env = env if env is not None else os.environ
+    name = env.get("REASONGRAPH_RERANK_MODEL")
+    if not name:
+        return None  # ReasonGraph uses its default CrossEncoder reranker
+    prefix = "fastembed:"
+    if name.startswith(prefix):
+        from reasongraph import FastEmbedReranker
+        return FastEmbedReranker(name[len(prefix):])
+    return name
+
+
 def build_synthesizer(env: Mapping[str, str] | None = None):
     env = env if env is not None else os.environ
     kind = env.get("REASONGRAPH_SYNTHESIZER", "template").lower()
@@ -115,6 +131,7 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
     graph = ReasonGraph(
         backend=build_backend(env),
         embed_model=build_embed_model(env),
+        rerank_model=build_rerank_model(env),
         synthesizer=build_synthesizer(env),
         forget_after=_int_env(env, "REASONGRAPH_FORGET_AFTER", 30),
         forget_every=_int_env(env, "REASONGRAPH_FORGET_EVERY", None),
