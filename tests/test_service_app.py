@@ -52,6 +52,26 @@ def test_build_embed_model_plain_name_passthrough():
     ) == "all-MiniLM-L6-v2"
 
 
+# -- reranker selection --
+
+def test_build_rerank_model_default_none():
+    assert service_app.build_rerank_model({}) is None
+
+
+def test_build_rerank_model_plain_name_passthrough():
+    assert service_app.build_rerank_model(
+        {"REASONGRAPH_RERANK_MODEL": "cross-encoder/ms-marco-MiniLM-L-6-v2"}
+    ) == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
+def test_build_rerank_model_fastembed_prefix():
+    from reasongraph import FastEmbedReranker
+    reranker = service_app.build_rerank_model(
+        {"REASONGRAPH_RERANK_MODEL": "fastembed:Xenova/ms-marco-MiniLM-L-6-v2"}
+    )
+    assert isinstance(reranker, FastEmbedReranker)
+
+
 # -- synthesizer selection --
 
 def test_build_synthesizer_default_template():
