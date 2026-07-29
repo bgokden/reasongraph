@@ -69,7 +69,8 @@ fastembed = [
 service = [
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
-    "mcp>=1.0.0",
+    # <2: mcp 2.0 removed mcp.server.fastmcp; the MCP server targets the 1.x API.
+    "mcp>=1.0.0,<2.0.0",
 ]
 # GLiNER v1 zero-shot extractor with ONNX inference (GlinerExtractor); `onnx`
 # is needed to convert the model to ONNX on first use.
