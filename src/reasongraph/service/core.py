@@ -27,6 +27,10 @@ class MemoryService:
             for a real multi-agent service.
         extractor: Optional shared entity extractor (kept warm). Defaults to the
             graph's default (gliner_small-v2.5).
+        canonicalizer: Optional entity canonicalizer (callable or alias Mapping)
+            forwarded to ReasonGraph when ``graph`` is None. Applied to every write
+            path, so surface variants of an entity collapse to one bridge across
+            sessions -- the light stand-in for coreference.
     """
 
     def __init__(
@@ -39,12 +43,13 @@ class MemoryService:
         synthesizer=None,
         extractor: ExtractorFn | None = None,
         causal_extractor=None,
+        canonicalizer=None,
         defer_extraction: bool = False,
     ) -> None:
         self.graph = graph or ReasonGraph(
             backend=backend, embed_model=embed_model,
             rerank_model=rerank_model, synthesizer=synthesizer,
-            causal_extractor=causal_extractor,
+            causal_extractor=causal_extractor, canonicalizer=canonicalizer,
         )
         self.extractor = extractor
         # Writes run a (sync, CPU-bound) extraction model; serialize them so

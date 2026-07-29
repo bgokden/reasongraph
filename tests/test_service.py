@@ -211,3 +211,36 @@ async def test_answer_folds_in_cross_session_facts(world):
     # The synthesized answer names facts pulled from other sessions.
     assert "TSMC manufactures the advanced chips that Nvidia designs." in text
     assert "Export controls restricted Nvidia AI chips from China." in text
+
+
+def _fed_extractor(text):
+    if "hiked" in text:
+        return ["The Fed"]
+    if "warned" in text:
+        return ["Federal Reserve Inc."]
+    return []
+
+
+@pytest.mark.asyncio
+async def test_canonicalizer_bridges_variant_entities_across_sessions():
+    # Two sessions name the same entity differently. A canonicalizer collapses the
+    # variants to one node, so a discover() from one session reaches the other.
+    s = MemoryService(
+        backend=MemoryBackend(), embed_model=_fake_embed,
+        extractor=_fed_extractor, causal_extractor=False,
+        canonicalizer={"the fed": "Federal Reserve"},
+    )
+    await s.initialize()
+    try:
+        await s.push("desk-a", "The Fed hiked rates.")
+        await s.push("desk-b", "Federal Reserve Inc. warned of risk.")
+        # Only one entity node exists despite two surface forms.
+        assert (await s.stats())["entities"] == 1
+        # desk-a discovers desk-b's fact through the shared canonical entity.
+        found = await s.discover("Federal Reserve", session="desk-a", hops=3)
+        contents = {r["content"] for r in found}
+        assert "Federal Reserve Inc. warned of risk." in contents
+        assert any(r["content"] == "Federal Reserve Inc. warned of risk." and r["cross_session"]
+                   for r in found)
+    finally:
+        await s.close()

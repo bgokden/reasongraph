@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from reasongraph._canonical import AliasCanonicalizer
 from reasongraph._extraction import NERExtractor, GLiNER2Extractor, ChatExtractor
 from reasongraph.graph import ReasonGraph
 from reasongraph.backends._sqlite import SqliteBackend
@@ -1020,3 +1021,72 @@ async def test_scopes_isolate_seeds_without_a_bridge(graph):
     results = await graph.query("fact", top_k=5, hops=3, scopes=["user-1"])
     assert "Private A fact." in results
     assert "Private B fact." not in results
+
+
+@pytest.mark.asyncio
+async def test_canonicalizer_collapses_entity_variants_into_one_bridge(graph):
+    # Two facts name the same entity three different ways. Without canonicalization
+    # each surface form is its own node and the facts never bridge; with it, all
+    # three collapse to "Federal Reserve" so the facts reconnect.
+    canon = AliasCanonicalizer({"the fed": "Federal Reserve"})
+
+    ents_a = await graph.add_text(
+        "The Fed raised rates.", extractor=lambda t: ["The Fed"],
+        causal=False, canonicalizer=canon,
+    )
+    ents_b = await graph.add_text(
+        "Federal Reserve Inc. signalled caution.",
+        extractor=lambda t: ["Federal Reserve Inc."],
+        causal=False, canonicalizer=canon,
+    )
+    # Returned entities are the canonical form.
+    assert ents_a == ["Federal Reserve"]
+    assert ents_b == ["Federal Reserve"]
+
+    # Exactly one shared entity node bridges both facts.
+    neighbors = {n["content"] for n in await graph.backend.get_neighbors("Federal Reserve")}
+    assert "The Fed raised rates." in neighbors
+    assert "Federal Reserve Inc. signalled caution." in neighbors
+
+    # The surface-form nodes were never created.
+    all_contents = {n.content for n in await graph.get_all_nodes()}
+    assert "The Fed" not in all_contents
+    assert "Federal Reserve Inc." not in all_contents
+
+
+@pytest.mark.asyncio
+async def test_canonicalizer_dedups_within_a_single_text(graph):
+    canon = AliasCanonicalizer()
+    ents = await graph.add_text(
+        "Apple and Apple Inc. and Apple Corp.",
+        extractor=lambda t: ["Apple", "Apple Inc.", "Apple Corp."],
+        causal=False, canonicalizer=canon,
+    )
+    # All three surface forms canonicalize to one entity, deduped for this text.
+    assert ents == ["Apple"]
+
+
+@pytest.mark.asyncio
+async def test_constructor_canonicalizer_accepts_alias_dict():
+    # A plain dict on the constructor is wrapped as an AliasCanonicalizer and used
+    # as the default for every add_text call.
+    g = ReasonGraph(backend=SqliteBackend(":memory:"), causal_extractor=False,
+                    canonicalizer={"the fed": "Federal Reserve"})
+    g.embeddings.encode = _fake_encode
+    g.embeddings.encode_batch = _fake_encode_batch
+    g.embeddings.rerank = _fake_rerank
+    await g.initialize()
+    try:
+        ents = await g.add_text("The Fed met.", extractor=lambda t: ["the fed"], causal=False)
+        assert ents == ["Federal Reserve"]
+    finally:
+        await g.close()
+
+
+@pytest.mark.asyncio
+async def test_no_canonicalizer_leaves_entities_verbatim(graph):
+    # Default (None) path is byte-for-byte unchanged: no normalization, no dedup.
+    ents = await graph.add_text(
+        "x", extractor=lambda t: ["Apple Inc.", "Apple Inc."], causal=False,
+    )
+    assert ents == ["Apple Inc.", "Apple Inc."]

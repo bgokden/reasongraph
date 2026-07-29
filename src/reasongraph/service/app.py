@@ -28,6 +28,12 @@ Environment variables:
                                background so pushes return fast; default off
     REASONGRAPH_RESOLVE_CONFLICTS  1/true to soft-supersede facts a new push
                                contradicts (loads an NLI model); default off
+    REASONGRAPH_CANONICALIZE   1/true to canonicalize extracted entities
+                               (whitespace/case normalization + corporate-suffix
+                               stripping) so surface variants bridge; default off
+    REASONGRAPH_ALIASES        path to a JSON object of surface form -> canonical
+                               name (e.g. {"the Fed": "Federal Reserve"}); implies
+                               canonicalization on, layered over suffix stripping
     REASONGRAPH_HOST/PORT      bind address for the console script (0.0.0.0 / 8000)
 
 Requires ``pip install reasongraph[service]`` plus the extras for the chosen
@@ -106,6 +112,35 @@ def build_synthesizer(env: Mapping[str, str] | None = None):
     )
 
 
+def build_canonicalizer(env: Mapping[str, str] | None = None):
+    """Build an entity canonicalizer from env, or None when disabled.
+
+    Enabled by ``REASONGRAPH_CANONICALIZE`` (suffix/whitespace normalization) or by
+    providing ``REASONGRAPH_ALIASES`` (a JSON object of surface -> canonical name).
+    An alias file implies canonicalization on, layered over suffix stripping.
+    """
+    env = env if env is not None else os.environ
+    aliases_path = env.get("REASONGRAPH_ALIASES") or None
+    enabled = _bool_env(env, "REASONGRAPH_CANONICALIZE", False)
+    if not enabled and not aliases_path:
+        return None
+    aliases = None
+    if aliases_path:
+        import json
+        with open(aliases_path, encoding="utf-8") as f:
+            aliases = json.load(f)
+        if not isinstance(aliases, dict):
+            raise ValueError(
+                "REASONGRAPH_ALIASES must be a JSON object of surface -> canonical name"
+            )
+        if not all(isinstance(v, str) for v in aliases.values()):
+            raise ValueError(
+                "REASONGRAPH_ALIASES values must be strings (canonical names)"
+            )
+    from reasongraph import AliasCanonicalizer
+    return AliasCanonicalizer(aliases=aliases)
+
+
 def _int_env(env: Mapping[str, str], key: str, default: int | None) -> int | None:
     value = env.get(key)
     return int(value) if value not in (None, "") else default
@@ -137,6 +172,7 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
         forget_every=_int_env(env, "REASONGRAPH_FORGET_EVERY", None),
         isolate_traversal=_bool_env(env, "REASONGRAPH_ISOLATE", False),
         conflict_resolver=resolver,
+        canonicalizer=build_canonicalizer(env),
     )
     return MemoryService(
         graph=graph,

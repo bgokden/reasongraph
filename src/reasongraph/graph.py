@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import warnings
 from collections import deque
+from collections.abc import Mapping
 from datetime import datetime
 
+from reasongraph._canonical import AliasCanonicalizer, CanonicalizerFn
 from reasongraph._embeddings import EmbeddingManager, EmbedderLike
 from reasongraph._extraction import (
     NERExtractor,
@@ -38,6 +40,7 @@ class ReasonGraph:
         causal_extractor: CausalExtractorFn | bool | None = None,
         isolate_traversal: bool = False,
         conflict_resolver=None,
+        canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> None:
         self.backend = backend or MemoryBackend()
         self.embeddings = EmbeddingManager(
@@ -66,6 +69,13 @@ class ReasonGraph:
         # object with a synthesize(query, context) method. Keeps LLMs out of the
         # library core -- bring your own small model.
         self._synthesizer = self._normalize_synthesizer(synthesizer)
+        # Optional entity canonicalizer: a callable(str) -> str, or an alias
+        # Mapping (wrapped in AliasCanonicalizer). Applied to each extracted entity
+        # before its node is created, so surface variants ("Apple Inc." / "Apple",
+        # "the Fed" / "Federal Reserve") collapse to one shared-entity bridge. This
+        # is the light stand-in for coreference; None (default) leaves entities
+        # verbatim. Overridable per add_text/add_texts call.
+        self._canonicalizer = self._normalize_canonicalizer(canonicalizer)
 
     @staticmethod
     def _normalize_synthesizer(synthesizer):
@@ -79,6 +89,47 @@ class ReasonGraph:
             "synthesizer must be None, a callable(query, context) -> str, or an "
             "object with a synthesize(query, context) method"
         )
+
+    @staticmethod
+    def _normalize_canonicalizer(canonicalizer):
+        """Coerce the canonicalizer arg to a callable(str) -> str, or None.
+
+        A Mapping is a convenience for the common case (an alias map): it is
+        wrapped in an ``AliasCanonicalizer`` so callers can pass a plain dict.
+        """
+        if canonicalizer is None:
+            return None
+        if isinstance(canonicalizer, Mapping):
+            return AliasCanonicalizer(canonicalizer)
+        if callable(canonicalizer):
+            return canonicalizer
+        raise TypeError(
+            "canonicalizer must be None, a callable(str) -> str, or a Mapping of "
+            "surface form -> canonical name"
+        )
+
+    def _resolve_canonicalizer(self, canonicalizer):
+        """Per-call canonicalizer wins when given; else the graph default."""
+        if canonicalizer is None:
+            return self._canonicalizer
+        return self._normalize_canonicalizer(canonicalizer)
+
+    @staticmethod
+    def _canonicalize(entities: list[str], canonicalizer: CanonicalizerFn) -> list[str]:
+        """Map each entity to its canonical form, dropping empties and duplicates.
+
+        Order is preserved (first occurrence wins). Two surface forms that map to
+        the same canonical name collapse to a single entity for this text, so only
+        one entity node and one edge are created for the pair.
+        """
+        seen: set[str] = set()
+        canonical: list[str] = []
+        for entity in entities:
+            name = canonicalizer(entity)
+            if name and name not in seen:
+                seen.add(name)
+                canonical.append(name)
+        return canonical
 
     # -- Lifecycle --
 
@@ -220,6 +271,7 @@ class ReasonGraph:
         causal: bool | None = None,
         dedup_threshold: float | None = None,
         resolve_conflicts: bool | None = None,
+        canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[str]:
         """Add text to the graph with automatic entity and causal extraction.
 
@@ -236,14 +288,16 @@ class ReasonGraph:
             causal_extractor: Optional causal extractor override (see ``add_texts``).
             causal: True forces causal extraction (raises if unavailable), False
                 disables it, None (default) runs it when an extractor is available.
+            canonicalizer: Optional per-call entity canonicalizer (see ``add_texts``).
 
         Returns:
-            List of extracted entity strings.
+            List of extracted entity strings (canonical forms when a canonicalizer
+            is in effect).
         """
         result = await self.add_texts(
             [text], extractor=extractor, causal_extractor=causal_extractor,
             scopes=scopes, causal=causal, dedup_threshold=dedup_threshold,
-            resolve_conflicts=resolve_conflicts,
+            resolve_conflicts=resolve_conflicts, canonicalizer=canonicalizer,
         )
         return result[0]
 
@@ -256,6 +310,7 @@ class ReasonGraph:
         causal: bool | None = None,
         dedup_threshold: float | None = None,
         resolve_conflicts: bool | None = None,
+        canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[list[str]]:
         """Add multiple texts with automatic entity and causal extraction.
 
@@ -288,14 +343,23 @@ class ReasonGraph:
                 "supersedes" edge drops them from default recall, keeping them
                 auditable). None (default) resolves iff a resolver is configured;
                 True requires one (raises otherwise); False skips resolution.
+            canonicalizer: A callable(str) -> str (or an alias Mapping) applied to
+                each extracted entity before its node is created, so surface
+                variants collapse to one shared-entity bridge ("Apple Inc." /
+                "Apple", "the Fed" / "Federal Reserve"). Per-call value overrides
+                the graph default; None (default) uses the graph default (also
+                None unless set on the constructor). Canonical entities are also
+                what the returned entity lists contain.
 
         Returns:
-            List of entity lists, one per input text. Skipped duplicates yield [].
+            List of entity lists, one per input text (canonical forms when a
+            canonicalizer is in effect). Skipped duplicates yield [].
         """
         if extractor is None:
             if not hasattr(self, "_default_extractor"):
                 self._default_extractor = self._build_default_extractor()
             extractor = self._default_extractor
+        canonicalizer = self._resolve_canonicalizer(canonicalizer)
 
         # Causal extraction (the headline feature) runs by default. Resolution:
         # an explicit causal_extractor wins; else reuse the entity extractor's own
@@ -339,6 +403,8 @@ class ReasonGraph:
                 all_entities.append([])
                 continue
             entities = extractor(text)
+            if canonicalizer is not None:
+                entities = self._canonicalize(entities, canonicalizer)
             all_entities.append(entities)
             active_texts.append(text)
             all_nodes.append((text, "text"))
@@ -1316,10 +1382,12 @@ class ReasonGraph:
         causal: bool | None = None,
         dedup_threshold: float | None = None,
         resolve_conflicts: bool | None = None,
+        canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[str]:
         return self._run(self.add_text(
             text, extractor, scopes, causal_extractor, causal,
             dedup_threshold=dedup_threshold, resolve_conflicts=resolve_conflicts,
+            canonicalizer=canonicalizer,
         ))
 
     def add_texts_sync(
@@ -1331,10 +1399,12 @@ class ReasonGraph:
         causal: bool | None = None,
         dedup_threshold: float | None = None,
         resolve_conflicts: bool | None = None,
+        canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[list[str]]:
         return self._run(self.add_texts(
             texts, extractor, causal_extractor, scopes, causal,
             dedup_threshold=dedup_threshold, resolve_conflicts=resolve_conflicts,
+            canonicalizer=canonicalizer,
         ))
 
     def query_sync(

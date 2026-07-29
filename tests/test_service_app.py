@@ -87,6 +87,46 @@ def test_build_synthesizer_unknown():
         service_app.build_synthesizer({"REASONGRAPH_SYNTHESIZER": "gpt5"})
 
 
+# -- entity canonicalization --
+
+def test_build_canonicalizer_default_none():
+    assert service_app.build_canonicalizer({}) is None
+
+
+def test_build_canonicalizer_enabled_strips_suffixes():
+    canon = service_app.build_canonicalizer({"REASONGRAPH_CANONICALIZE": "1"})
+    assert canon is not None
+    assert canon("Apple Inc.") == "Apple"
+
+
+def test_build_canonicalizer_alias_file_implies_on(tmp_path):
+    import json
+
+    path = tmp_path / "aliases.json"
+    path.write_text(json.dumps({"the Fed": "Federal Reserve"}))
+    canon = service_app.build_canonicalizer({"REASONGRAPH_ALIASES": str(path)})
+    assert canon("The Fed") == "Federal Reserve"
+    assert canon("Acme Corp.") == "Acme"  # suffix stripping still applies
+
+
+def test_build_canonicalizer_alias_file_must_be_object(tmp_path):
+    import json
+
+    path = tmp_path / "aliases.json"
+    path.write_text(json.dumps(["not", "an", "object"]))
+    with pytest.raises(ValueError, match="JSON object"):
+        service_app.build_canonicalizer({"REASONGRAPH_ALIASES": str(path)})
+
+
+def test_build_canonicalizer_alias_values_must_be_strings(tmp_path):
+    import json
+
+    path = tmp_path / "aliases.json"
+    path.write_text(json.dumps({"the Fed": ["Federal Reserve"]}))
+    with pytest.raises(ValueError, match="values must be strings"):
+        service_app.build_canonicalizer({"REASONGRAPH_ALIASES": str(path)})
+
+
 # -- misc env parsing --
 
 def test_int_env_parsing():
