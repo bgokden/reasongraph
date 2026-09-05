@@ -24,6 +24,9 @@ Environment variables:
     REASONGRAPH_ISOLATE        1/true to confine traversal to the query session
                                (multi-tenant); default off (cross-session discovery)
     REASONGRAPH_API_KEY        when set, data endpoints require it (Bearer/X-API-Key)
+    REASONGRAPH_SPAN_LINK_THRESHOLD  cosine similarity (e.g. 0.85) above which a new
+                               cause/effect span is tied to an existing causal span
+                               so chains can cross facts with different wording
     REASONGRAPH_DEDUP_THRESHOLD  cosine similarity (e.g. 0.95) above which a new
                                fact is treated as a paraphrase of an existing one
                                (scopes are unioned, nothing new is added)
@@ -176,6 +179,8 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
         isolate_traversal=_bool_env(env, "REASONGRAPH_ISOLATE", False),
         conflict_resolver=resolver,
         canonicalizer=build_canonicalizer(env),
+        span_link_threshold=(float(env["REASONGRAPH_SPAN_LINK_THRESHOLD"])
+                             if env.get("REASONGRAPH_SPAN_LINK_THRESHOLD") else None),
     )
     dedup = env.get("REASONGRAPH_DEDUP_THRESHOLD")
     return MemoryService(

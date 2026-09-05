@@ -5,10 +5,17 @@ import pytest
 
 from reasongraph._embeddings import EmbeddingManager, Embedder
 
+def _stable_hash(text):
+    """Process-independent 64-bit hash (Python's hash() is randomized per run,
+    which made fake embeddings and therefore test outcomes flaky)."""
+    import hashlib
+    return int.from_bytes(hashlib.blake2b(text.encode(), digest_size=8).digest(), "big")
+
+
 
 def _fake_vec(text: str) -> list[float]:
     """Deterministic 384-dim vector without loading a real model."""
-    h = hash(text)
+    h = _stable_hash(text)
     return [(h >> i & 0xFF) / 255.0 for i in range(0, 384 * 8, 8)][:384]
 
 

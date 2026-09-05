@@ -8,6 +8,13 @@ from reasongraph._synthesizers import (
 from reasongraph.graph import ReasonGraph
 from reasongraph.backends._memory import MemoryBackend
 
+def _stable_hash(text):
+    """Process-independent 64-bit hash (Python's hash() is randomized per run,
+    which made fake embeddings and therefore test outcomes flaky)."""
+    import hashlib
+    return int.from_bytes(hashlib.blake2b(text.encode(), digest_size=8).digest(), "big")
+
+
 
 # A discover()-shaped context: one seed-session fact and one cross-session fact
 # reached through the shared "Nvidia" entity.
@@ -121,7 +128,7 @@ def test_transformers_extract_reply_plain_string():
 # -- Integration with ReasonGraph.answer --
 
 def _fake_encode(text):
-    h = hash(text)
+    h = _stable_hash(text)
     return [(h >> i & 0xFF) / 255.0 for i in range(0, 384 * 8, 8)][:384]
 
 

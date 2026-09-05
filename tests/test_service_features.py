@@ -167,3 +167,27 @@ def test_mcp_lists_new_tools():
     mcp = create_mcp(_service())
     names = {t.name for t in asyncio.run(mcp.list_tools())}
     assert {"causal_chain_memory", "push_memory", "query_memory"} <= names
+
+
+async def test_span_linking_lets_causal_chains_cross_wording():
+    facts = ["rain~heavy rain -> f1~the river flooded the old town",
+             "flood~f1~the old town flooded -> road closures"]      # f1~ = same embedding key
+    def causal(texts):
+        out = []
+        for t in texts:
+            if "->" in t:
+                cause, effect = [p.strip() for p in t.split("->", 1)]
+                cause = cause.split("~", 1)[1] if cause.count("~") == 2 else cause  # drop fact key only
+                out.append({"causal": True, "relations": [{"cause": cause, "effect": effect}]})
+            else:
+                out.append({"causal": False, "relations": []})
+        return out
+    for threshold, expect in ((None, False), (0.85, True)):
+        svc = MemoryService(backend=MemoryBackend(), embed_model=_Embed(), extractor=_zeus,
+                            causal_extractor=causal)
+        svc.graph.span_link_threshold = threshold
+        async with svc:
+            for f in facts:
+                await svc.push("s", f)
+            res = await svc.causal_chain("rain", "flood")
+            assert bool(res["chain"]) is expect, (threshold, res)

@@ -716,6 +716,7 @@ reasongraph-serve            # or: uvicorn reasongraph.service.app:create_app_fr
 | `REASONGRAPH_RESOLVE_CONFLICTS` | off | Enable contradiction resolution (soft-supersede) with the default NLI resolver. |
 | `REASONGRAPH_API_KEY` | -- | When set, data endpoints require it (`Authorization: Bearer` or `X-API-Key`); `/health` and `/ready` stay open. |
 | `REASONGRAPH_DEFER_EXTRACT` | off | Run entity/causal extraction in a background worker (off the event loop) so pushes return immediately. |
+| `REASONGRAPH_SPAN_LINK_THRESHOLD` | off | Cosine threshold (e.g. `0.85`) above which a new cause/effect span is tied (`same_as`) to an existing causal span, so `trace_*` / `causal_chain` cross facts that phrase the same event differently. |
 | `REASONGRAPH_DEDUP_THRESHOLD` | off | Cosine threshold (e.g. `0.95`) above which a pushed fact is treated as a paraphrase of an existing one: scopes are unioned, nothing new is stored. |
 | `REASONGRAPH_HOST` / `REASONGRAPH_PORT` | `0.0.0.0` / `8000` | Bind address and port for `reasongraph-serve`. |
 

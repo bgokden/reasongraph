@@ -41,6 +41,7 @@ class ReasonGraph:
         isolate_traversal: bool = False,
         conflict_resolver=None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
+        span_link_threshold: float | None = None,
     ) -> None:
         self.backend = backend or MemoryBackend()
         self.embeddings = EmbeddingManager(
@@ -59,6 +60,12 @@ class ReasonGraph:
         # a "supersedes" edge marks the old fact so it drops out of default recall
         # while staying auditable. None (default) disables conflict resolution.
         self.conflict_resolver = conflict_resolver
+        # Causal span linking: when set (e.g. 0.85), a newly extracted cause/effect
+        # span is tied with a ``same_as`` edge to existing causal spans whose
+        # embedding is at least this similar ("the river flooded the old town" ~
+        # "the old town flooded"). The causal walk follows those ties, so chains
+        # can cross facts that phrase the same event differently.
+        self.span_link_threshold = span_link_threshold
         # When a resolver is configured, resolve on every add unless a call says
         # otherwise. Set False to make resolution opt-in per call
         # (``add_texts(..., resolve_conflicts=True)``), e.g. when the resolver
@@ -438,10 +445,14 @@ class ReasonGraph:
                     all_edges.append((cause, text))
                     all_edges.append((effect, text))
 
+        new_spans = [c for c, kind in all_nodes if kind == "entity"
+                     and any(e[0] == c or e[1] == c for e in all_edges if len(e) == 3)]
         if all_nodes:
             await self.add_nodes(all_nodes, scopes=scopes)
         if all_edges:
             await self.add_edges(all_edges)
+        if self.span_link_threshold is not None and new_spans:
+            await self._link_causal_spans(new_spans, self.span_link_threshold)
 
         # Conflict resolution: soft-supersede existing facts the new ones contradict.
         do_resolve = (
@@ -458,6 +469,34 @@ class ReasonGraph:
                 await self._resolve_conflicts(active_texts)
 
         return all_entities
+
+    async def _link_causal_spans(self, spans: list[str], threshold: float) -> None:
+        """Tie each new causal span to existing causal spans it near-duplicates.
+
+        Candidates come from vector search; only entity nodes that already take
+        part in a ``causes`` edge qualify (a named entity like "Arizona" never
+        becomes an alias of a span). The tie is an undirected ``same_as`` edge
+        that :meth:`_causal_reach` crosses at no depth cost.
+        """
+        edges: list[tuple] = []
+        seen: set[tuple[str, str]] = set()
+        for span in dict.fromkeys(spans):
+            hits = await self.backend.knn_search(self.embeddings.encode(span), top_k=6)
+            others = [h["content"] for h in hits
+                      if h.get("type") == "entity" and h["content"] != span]
+            if not others:
+                continue
+            scores = self.embeddings.score(span, others)
+            for other, score in zip(others, scores):
+                if score < threshold or (span, other) in seen or (other, span) in seen:
+                    continue
+                neighbours = await self.backend.get_neighbors(other)
+                if not any(n.get("label") == "causes" for n in neighbours):
+                    continue
+                edges.append((span, other, "same_as"))
+                seen.add((span, other))
+        if edges:
+            await self.add_edges(edges)
 
     async def _superseded(self, contents: list[str]) -> list[str]:
         """Return the subset of ``contents`` that have been retired (soft-superseded).
@@ -955,6 +994,14 @@ class ReasonGraph:
             for n in await self.backend.get_neighbors(span, walk_scopes):
                 if n.get("type") == "text":
                     reached_facts.add(n["content"])
+                    continue
+                if n.get("label") == "same_as":
+                    # An alias of this span (same event, different wording): continue
+                    # the walk from it at the same depth without recording a hop.
+                    alias = n["content"]
+                    if alias not in visited_spans and len(visited_spans) < max_visited:
+                        visited_spans.add(alias)
+                        frontier.append((alias, depth))
                     continue
                 if n.get("label") != "causes" or n.get("direction") != edge_dir:
                     continue
