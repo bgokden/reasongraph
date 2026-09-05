@@ -67,6 +67,18 @@ class Memory:
         r.raise_for_status()
         return r.json()
 
+    def wait_until_enriched(self, timeout: float = 120.0, interval: float = 1.0) -> None:
+        """Block until the service has finished extracting entities/causal links for
+        everything pushed so far (hosted services defer that work). Returns
+        immediately when the service extracts synchronously."""
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.stats().get("pending", 0) == 0:
+                return
+            time.sleep(interval)
+        raise TimeoutError("memory service still extracting after %.0fs" % timeout)
+
 
 def format_connections(connections: list[dict]) -> str:
     """Render discover() output as compact evidence for an LLM prompt."""

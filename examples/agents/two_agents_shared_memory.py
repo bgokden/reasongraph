@@ -35,6 +35,8 @@ def main() -> None:
         "Apple warned investors about component shortages from North American suppliers.",
     ])
 
+    mem.wait_until_enriched()   # hosted services extract entities in the background
+
     q = "Why might Apple face component shortages?"
     print(f"\nanalyst asks: {q}")
     conns = mem.discover(q, session=ANALYST, top_k=5, max_results=8)

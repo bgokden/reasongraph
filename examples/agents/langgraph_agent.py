@@ -47,6 +47,7 @@ def discover(query: str) -> str:
 def main() -> None:
     for facts in SOURCES.values():
         mem.remember_many(SESSION, facts)
+    mem.wait_until_enriched()
     llm = ChatOpenAI(model=LLM_MODEL, base_url=LLM_BASE_URL, api_key=LLM_API_KEY, temperature=0)
     agent = create_react_agent(
         llm, [remember, recall, discover],

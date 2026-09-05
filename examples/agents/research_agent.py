@@ -103,6 +103,7 @@ def main() -> None:
     for name, facts in SOURCES.items():
         mem.remember_many(SESSION, facts)
         print(f"  {name}: {len(facts)} facts")
+    mem.wait_until_enriched()   # let the service finish entity/causal extraction
 
     for q in [
         "How does the Arizona water crisis affect Apple's chip supply?",

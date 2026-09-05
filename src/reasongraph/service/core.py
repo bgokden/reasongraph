@@ -271,4 +271,12 @@ class MemoryService:
             "entities": sum(1 for n in nodes if n.type == "entity"),
             "edges": len(edges),
             "sessions": len(scopes),
+            # Facts still waiting for deferred entity/causal extraction. 0 means
+            # every bridge is in place; clients can poll this after a push.
+            "pending": self.pending_extractions,
         }
+
+    @property
+    def pending_extractions(self) -> int:
+        """Facts queued for deferred extraction (0 when extraction is synchronous)."""
+        return self._enrich_queue.qsize() if self._enrich_queue is not None else 0
