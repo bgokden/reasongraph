@@ -66,6 +66,7 @@ class MemoryService:
         self.dedup_threshold = dedup_threshold
         self._enrich_queue: asyncio.Queue | None = None
         self._enrich_worker_task: asyncio.Task | None = None
+        self._enrich_inflight = 0   # items dequeued but not yet finished
 
     async def initialize(self) -> None:
         await self.graph.initialize()
@@ -90,6 +91,7 @@ class MemoryService:
         assert self._enrich_queue is not None
         while True:
             session, text, *rest = await self._enrich_queue.get()
+            self._enrich_inflight += 1
             resolve = rest[0] if rest else None
             # A queued item carries either one session name or a list of scope
             # tags (callers that tag a fact with several scopes at once).
@@ -108,6 +110,7 @@ class MemoryService:
             except Exception:  # a bad fact must not kill the worker
                 logger.exception("deferred extraction failed for a memory")
             finally:
+                self._enrich_inflight -= 1
                 self._enrich_queue.task_done()
 
     def _entity_extractor(self):
@@ -349,5 +352,9 @@ class MemoryService:
 
     @property
     def pending_extractions(self) -> int:
-        """Facts queued for deferred extraction (0 when extraction is synchronous)."""
-        return self._enrich_queue.qsize() if self._enrich_queue is not None else 0
+        """Facts queued *or in flight* for deferred extraction (0 when extraction is
+        synchronous). Reaches 0 only after the last fact's extraction and any
+        contradiction check have completed, so clients can poll it safely."""
+        if self._enrich_queue is None:
+            return 0
+        return self._enrich_queue.qsize() + self._enrich_inflight

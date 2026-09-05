@@ -211,3 +211,30 @@ async def test_conflict_resolution_never_reaches_other_scopes():
         hist_a = await svc.graph.supersession_history("k1~Zeus lives in Athens.")
         assert hist_b["superseded_by"] == []                          # other tenant untouched
         assert hist_a["superseded_by"] == ["k1~Zeus now lives in Sparta."]
+
+
+async def test_pending_counts_in_flight_work():
+    """stats.pending must stay > 0 while the worker is still processing a fact,
+    not only while it sits in the queue (clients poll it to know when bridges and
+    contradiction checks are done)."""
+    import asyncio as _asyncio
+    started = _asyncio.Event(); release = _asyncio.Event()
+
+    def slow_extractor(text):
+        started.set()
+        # block the worker thread until the test says go
+        import time
+        while not release.is_set():
+            time.sleep(0.01)
+        return _zeus(text)
+
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_Embed(), extractor=slow_extractor,
+                        causal_extractor=False, defer_extraction=True)
+    async with svc:
+        await svc.push("s", "k1~Zeus threw lightning.")
+        await _asyncio.wait_for(started.wait(), 5)
+        await _asyncio.sleep(0.05)                    # item is dequeued and in flight
+        assert svc.pending_extractions == 1
+        release.set()
+        await svc._enrich_queue.join()
+        assert svc.pending_extractions == 0
