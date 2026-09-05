@@ -16,6 +16,51 @@ On top of retrieval it works as agent memory: **scopes/sessions** (agents discov
 
 **Zero config, strong defaults.** `ReasonGraph()` picks the best available entity extractor, causal model, embedder, and reranker automatically -- the eval numbers below come from these defaults. For the SOTA causal model (~0.70 F1) use `pip install reasongraph[causal]` and the graph uses it automatically. The configuration sections are optional depth, not required reading.
 
+## Use it in 60 seconds
+
+**Claude Code / Cursor / any MCP client, hosted (EU, no LLM in the loop):**
+
+```bash
+claude mcp add --transport http memory https://memory.primaxiom.ai/mcp \
+  --header "Authorization: Bearer rgm_YOUR_KEY"
+```
+
+**Python, in-process:**
+
+```bash
+pip install "reasongraph[all]"
+```
+
+```python
+from reasongraph import ReasonGraph
+
+graph = ReasonGraph()
+graph.initialize_sync()
+graph.add_texts_sync(["TSMC is building a chip fab in Phoenix, Arizona.",
+                      "Arizona ordered water cuts for industrial users in Maricopa County."])
+print(graph.discover_sync("water and chips"))   # a path: water cuts -> Arizona -> TSMC fab
+```
+
+**Any language, over HTTP (self-hosted or hosted):**
+
+```bash
+curl -X POST https://memory.primaxiom.ai/sessions/notes/memory \
+  -H "Authorization: Bearer rgm_YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"text": "Apple sources M-series chips from TSMC in Arizona."}'
+```
+
+Ready-to-copy agents (Groq/OpenAI-compatible research agent, two agents sharing one
+memory, Claude Code with persistent memory, LangGraph) live in
+[`examples/agents/`](examples/agents/).
+
+### Hosted: ReasonGraph Cloud
+
+[memory.primaxiom.ai](https://memory.primaxiom.ai) runs this library as a service with
+per-tenant API keys, a remote MCP endpoint, and a browser console. EU-hosted (Helsinki),
+entity and causal extraction on CPU, no data leaves the EU and no LLM touches your facts.
+It is in **alpha**: keys are free and minted by hand. Email `info@primaxiom.ai` with the
+subject "ReasonGraph alpha key" and what you plan to build.
+
 ## Installation
 
 ```bash
