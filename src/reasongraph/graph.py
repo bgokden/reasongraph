@@ -538,6 +538,7 @@ class ReasonGraph:
         isolate: bool | None = None,
         include_superseded: bool = False,
         as_of: datetime | None = None,
+        walk_scopes: set[str] | list[str] | None = None,
     ) -> list[str]:
         """Query the graph with vector similarity and multi-hop traversal.
 
@@ -554,6 +555,11 @@ class ReasonGraph:
             scopes: Optional free-text scope tags. When given, the initial
                 seeds are drawn only from nodes carrying at least one of these
                 scopes.
+            walk_scopes: When given, the multi-hop walk is confined to nodes
+                carrying at least one of these scopes, independently of
+                ``scopes`` (which only picks the seeds). Lets a query seed from
+                one session yet walk a wider boundary (e.g. one tenant's sessions
+                but never another tenant's). Overrides ``isolate``.
             isolate: Controls whether traversal stays within ``scopes``. None
                 (default) uses the graph's ``isolate_traversal`` setting. False
                 lets the walk cross all scopes (shared-graph / cross-session
@@ -578,7 +584,10 @@ class ReasonGraph:
 
         scope_set = set(scopes) if scopes else None
         isolate = self.isolate_traversal if isolate is None else isolate
-        walk_scopes = scope_set if (isolate and scope_set) else None
+        walk_scopes = (
+            set(walk_scopes) if walk_scopes
+            else (scope_set if (isolate and scope_set) else None)
+        )
         embedding = self.embeddings.encode(query)
 
         if search_mode == "embedding":
@@ -699,6 +708,7 @@ class ReasonGraph:
         isolate: bool | None = None,
         include_superseded: bool = False,
         as_of: datetime | None = None,
+        walk_scopes: set[str] | list[str] | None = None,
     ) -> list[dict]:
         """Like :meth:`query` but return structured results instead of bare strings.
 
@@ -712,7 +722,7 @@ class ReasonGraph:
             query, top_k=top_k, hops=hops, rerank_top_k=rerank_top_k,
             search_mode=search_mode, rrf_k=rrf_k, recency_weight=recency_weight,
             scopes=scopes, isolate=isolate, include_superseded=include_superseded,
-            as_of=as_of,
+            as_of=as_of, walk_scopes=walk_scopes,
         )
         if not contents:
             return []
@@ -741,6 +751,7 @@ class ReasonGraph:
         max_visited: int = 1000,
         isolate: bool | None = None,
         include_superseded: bool = False,
+        walk_scopes: set[str] | list[str] | None = None,
     ) -> list[dict]:
         """Discover connection paths from a query into the graph.
 
@@ -772,7 +783,10 @@ class ReasonGraph:
         """
         scope_set = set(scopes) if scopes else None
         isolate = self.isolate_traversal if isolate is None else isolate
-        walk_scopes = scope_set if (isolate and scope_set) else None
+        walk_scopes = (
+            set(walk_scopes) if walk_scopes
+            else (scope_set if (isolate and scope_set) else None)
+        )
         embedding = self.embeddings.encode(query)
         if search_mode == "embedding":
             seeds = await self.backend.knn_search(embedding, top_k, scopes=scope_set)
@@ -948,7 +962,7 @@ class ReasonGraph:
     async def _trace(
         self, content: str, direction: str, *, max_depth: int = 6,
         scopes=None, isolate: bool | None = None, include_superseded: bool = False,
-        max_visited: int = 1000,
+        max_visited: int = 1000, walk_scopes=None,
     ) -> dict:
         """Directional walk over ``causes`` edges from the fact nearest ``content``.
 
@@ -960,7 +974,10 @@ class ReasonGraph:
         """
         scope_set = set(scopes) if scopes else None
         resolved_isolate = self.isolate_traversal if isolate is None else isolate
-        walk_scopes = scope_set if (resolved_isolate and scope_set) else None
+        walk_scopes = (
+            set(walk_scopes) if walk_scopes
+            else (scope_set if (resolved_isolate and scope_set) else None)
+        )
 
         origin = await self._resolve_fact(content, scope_set)
         if origin is None:
@@ -1003,19 +1020,19 @@ class ReasonGraph:
 
     async def trace_effects(self, content: str, *, max_depth: int = 6, scopes=None,
                             isolate: bool | None = None, include_superseded: bool = False,
-                            max_visited: int = 1000) -> dict:
+                            max_visited: int = 1000, walk_scopes=None) -> dict:
         """Forward causal walk: what the fact nearest ``content`` caused downstream."""
         return await self._trace(content, "effects", max_depth=max_depth, scopes=scopes,
                                   isolate=isolate, include_superseded=include_superseded,
-                                  max_visited=max_visited)
+                                  max_visited=max_visited, walk_scopes=walk_scopes)
 
     async def trace_causes(self, content: str, *, max_depth: int = 6, scopes=None,
                            isolate: bool | None = None, include_superseded: bool = False,
-                           max_visited: int = 1000) -> dict:
+                           max_visited: int = 1000, walk_scopes=None) -> dict:
         """Backward causal walk: what led to the fact nearest ``content``."""
         return await self._trace(content, "causes", max_depth=max_depth, scopes=scopes,
                                  isolate=isolate, include_superseded=include_superseded,
-                                 max_visited=max_visited)
+                                 max_visited=max_visited, walk_scopes=walk_scopes)
 
     async def root_causes(self, content: str, **kwargs) -> list[str]:
         """The root cause spans behind ``content`` (backward-walk terminals)."""
@@ -1050,7 +1067,7 @@ class ReasonGraph:
     async def what_if(
         self, content: str, *, origin: str | None = None, direction: str = "effects",
         max_depth: int = 6, scopes=None, isolate: bool | None = None,
-        include_superseded: bool = False, max_visited: int = 1000,
+        include_superseded: bool = False, max_visited: int = 1000, walk_scopes=None,
     ) -> dict:
         """Counterfactual: if the fact nearest ``content`` were false, which downstream
         effects would collapse?
@@ -1077,7 +1094,10 @@ class ReasonGraph:
                  "collapsed": [], "survived": []}
         scope_set = set(scopes) if scopes else None
         resolved_isolate = self.isolate_traversal if isolate is None else isolate
-        walk_scopes = scope_set if (resolved_isolate and scope_set) else None
+        walk_scopes = (
+            set(walk_scopes) if walk_scopes
+            else (scope_set if (resolved_isolate and scope_set) else None)
+        )
 
         pruned = await self._resolve_fact(content, scope_set)
         if pruned is None:
@@ -1191,6 +1211,7 @@ class ReasonGraph:
         search_mode: str = "embedding",
         scopes: set[str] | list[str] | None = None,
         max_results: int = 10,
+        walk_scopes: set[str] | list[str] | None = None,
     ) -> str:
         """Answer a query in logical free text via the configured synthesizer.
 
@@ -1206,11 +1227,12 @@ class ReasonGraph:
         if use_discover:
             context = await self.discover(
                 query, top_k=top_k, hops=hops, search_mode=search_mode,
-                scopes=scopes, max_results=max_results,
+                scopes=scopes, max_results=max_results, walk_scopes=walk_scopes,
             )
         else:
             facts = await self.query(
                 query, top_k=top_k, hops=hops, search_mode=search_mode, scopes=scopes,
+                walk_scopes=walk_scopes,
             )
             context = [{"content": f, "path": [{"content": f}]} for f in facts]
 
@@ -1420,10 +1442,11 @@ class ReasonGraph:
         isolate: bool | None = None,
         include_superseded: bool = False,
         as_of: datetime | None = None,
+        walk_scopes: set[str] | list[str] | None = None,
     ) -> list[str]:
         return self._run(self.query(
             query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight,
-            scopes, isolate, include_superseded, as_of,
+            scopes, isolate, include_superseded, as_of, walk_scopes=walk_scopes,
         ))
 
     def query_detailed_sync(
@@ -1439,10 +1462,11 @@ class ReasonGraph:
         isolate: bool | None = None,
         include_superseded: bool = False,
         as_of: datetime | None = None,
+        walk_scopes: set[str] | list[str] | None = None,
     ) -> list[dict]:
         return self._run(self.query_detailed(
             query, top_k, hops, rerank_top_k, search_mode, rrf_k, recency_weight,
-            scopes, isolate, include_superseded, as_of,
+            scopes, isolate, include_superseded, as_of, walk_scopes=walk_scopes,
         ))
 
     def discover_sync(
@@ -1457,10 +1481,11 @@ class ReasonGraph:
         max_visited: int = 1000,
         isolate: bool | None = None,
         include_superseded: bool = False,
+        walk_scopes: set[str] | list[str] | None = None,
     ) -> list[dict]:
         return self._run(self.discover(
             query, top_k, hops, search_mode, rrf_k, scopes, max_results,
-            max_visited, isolate, include_superseded,
+            max_visited, isolate, include_superseded, walk_scopes=walk_scopes,
         ))
 
     def trace_effects_sync(self, content: str, **kwargs) -> dict:

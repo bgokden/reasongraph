@@ -244,3 +244,29 @@ async def test_canonicalizer_bridges_variant_entities_across_sessions():
                    for r in found)
     finally:
         await s.close()
+
+
+async def test_deferred_enrichment_accepts_multiple_scopes():
+    """A deferred push tagged with several scopes keeps all of them on the
+    extracted entities (the enrichment worker used to assume a single session)."""
+    from reasongraph.backends._memory import MemoryBackend
+    from reasongraph.service import MemoryService
+
+    def _enc(text):
+        h = hash(text)
+        return [(h >> i & 0xFF) / 255.0 for i in range(0, 384 * 8, 8)][:384]
+
+    def _embed(x):
+        return [_enc(t) for t in x] if isinstance(x, list) else _enc(x)
+
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_embed,
+                        extractor=lambda t: ["Zeus"] if "Zeus" in t else [],
+                        causal_extractor=False, defer_extraction=True)
+    async with svc:
+        async with svc._write_lock:
+            await svc.graph.add_text("Zeus threw lightning.", extractor=lambda _t: [], causal=False,
+                                     scopes=["t/s1", "t"])
+        await svc._enrich_queue.put((["t/s1", "t"], "Zeus threw lightning."))
+        await svc._enrich_queue.join()
+        scopes = await svc.graph.backend.get_scopes(["Zeus"])
+        assert scopes.get("Zeus") == {"t/s1", "t"}
