@@ -46,10 +46,14 @@ class NERExtractor:
 
 
 class GLiNER2Extractor:
-    """Entity and relation extractor using GLiNER2.
+    """Entity and relation extractor using GLiNER2 / GLiNER2.5.
 
     Single model that handles both NER and causal relation extraction.
-    Lazy-loads the model on first call.
+    Lazy-loads the model on first call. GLiNER2.5 checkpoints
+    (``fastino/gliner2.5-small-v1`` 74M EN, ``gliner2.5-base-v1`` 194M EN,
+    ``gliner2.5-multi-v1`` 287M multilingual) use the boundary architecture and
+    are loaded through ``gliner2.AutoExtractor`` when the installed ``gliner2``
+    provides it; older span checkpoints fall back to ``GLiNER2.from_pretrained``.
 
     Default model: fastino/gliner2-large-v1 (340M params, DeBERTa-v3-large).
     Requires: pip install reasongraph[gliner2]
@@ -74,12 +78,18 @@ class GLiNER2Extractor:
     def _load(self):
         if self._model is None:
             try:
-                from gliner2 import GLiNER2
+                import gliner2
             except ImportError:
                 raise ImportError(
                     "GLiNER2 not installed. Install with: pip install reasongraph[gliner2]"
                 )
-            self._model = GLiNER2.from_pretrained(self._model_name)
+            auto = getattr(gliner2, "AutoExtractor", None)
+            if auto is not None:
+                # gliner2 >= 2.0: dispatches on the checkpoint's architecture, so
+                # both the 2.5 boundary models and the older span models load.
+                self._model = auto.from_pretrained(self._model_name, map_location="cpu")
+            else:
+                self._model = gliner2.GLiNER2.from_pretrained(self._model_name)
 
     def __call__(self, text: str) -> list[str]:
         """Extract entities from text (compatible with ExtractorFn).

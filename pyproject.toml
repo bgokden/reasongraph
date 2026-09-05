@@ -44,6 +44,8 @@ sqlite = [
 ]
 gliner2 = [
     "gliner2>=1.2.0",
+    # gliner2 2.x imports peft at load time but does not declare it
+    "peft>=0.10",
     "urllib3>=2.0.0",
     "requests>=2.28.0",
 ]

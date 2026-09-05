@@ -1,0 +1,40 @@
+{"new": "Alice moved to the Amsterdam office.", "old": "Alice works from the Berlin office.", "label": true, "kind": "location update"}
+{"new": "Alice moved to the Amsterdam office.", "old": "Alice likes cycling to work.", "label": false, "kind": "complement"}
+{"new": "Bob now reports to Dana.", "old": "Bob reports to Chris.", "label": true, "kind": "role update"}
+{"new": "Bob now reports to Dana.", "old": "Bob joined the company in 2021.", "label": false, "kind": "complement"}
+{"new": "The API rate limit is 100 requests per minute.", "old": "The API rate limit is 60 requests per minute.", "label": true, "kind": "value update"}
+{"new": "The API rate limit is 100 requests per minute.", "old": "The API requires a bearer token.", "label": false, "kind": "complement"}
+{"new": "Checkout now stores carts in Postgres instead of Redis.", "old": "The checkout service stores shopping carts in Redis.", "label": true, "kind": "replacement"}
+{"new": "Checkout now stores carts in Postgres instead of Redis.", "old": "Redis runs on the same node as Elasticsearch.", "label": false, "kind": "complement"}
+{"new": "The meeting was moved to Thursday at 15:00.", "old": "The meeting is on Wednesday at 15:00.", "label": true, "kind": "schedule update"}
+{"new": "The meeting was moved to Thursday at 15:00.", "old": "The meeting is about the Q4 budget.", "label": false, "kind": "complement"}
+{"new": "Maria Lopez cancelled her subscription.", "old": "Maria Lopez is on the Team plan.", "label": true, "kind": "state change"}
+{"new": "Maria Lopez cancelled her subscription.", "old": "Maria Lopez reported an export bug in May.", "label": false, "kind": "complement"}
+{"new": "The export limit was raised to 500 MB.", "old": "The export limit is 50 MB.", "label": true, "kind": "value update"}
+{"new": "The export limit was raised to 500 MB.", "old": "Exports are delivered as ZIP files.", "label": false, "kind": "complement"}
+{"new": "Frankfurt airport staff called off Friday's strike.", "old": "Frankfurt airport staff will strike on Friday.", "label": true, "kind": "reversal"}
+{"new": "Frankfurt airport staff called off Friday's strike.", "old": "Berk flies through Frankfurt on Friday.", "label": false, "kind": "complement"}
+{"new": "TSMC paused construction of the Phoenix plant.", "old": "TSMC is building a plant in Phoenix.", "label": true, "kind": "state change"}
+{"new": "TSMC paused construction of the Phoenix plant.", "old": "TSMC supplies Apple with M-series chips.", "label": false, "kind": "complement"}
+{"new": "The default model is now Qwen 3.8.", "old": "The default model is GPT-OSS 20B.", "label": true, "kind": "replacement"}
+{"new": "The default model is now Qwen 3.8.", "old": "Models are hosted on Groq.", "label": false, "kind": "complement"}
+{"new": "Dana works remotely from Lisbon.", "old": "Dana works from the Amsterdam office.", "label": true, "kind": "location update"}
+{"new": "Dana works remotely from Lisbon.", "old": "Dana leads the platform team.", "label": false, "kind": "complement"}
+{"new": "The project deadline slipped to 30 November.", "old": "The project deadline is 31 October.", "label": true, "kind": "schedule update"}
+{"new": "The project deadline slipped to 30 November.", "old": "The project has three milestones.", "label": false, "kind": "complement"}
+{"new": "Berk prefers window seats.", "old": "Berk prefers aisle seats.", "label": true, "kind": "preference update"}
+{"new": "Berk prefers window seats.", "old": "Berk prefers direct flights.", "label": false, "kind": "complement"}
+{"new": "The database was migrated to Postgres 17.", "old": "The database runs Postgres 16.", "label": true, "kind": "version update"}
+{"new": "The database was migrated to Postgres 17.", "old": "The database is backed up nightly.", "label": false, "kind": "complement"}
+{"new": "Support hours are now 08:00 to 20:00.", "old": "Support hours are 09:00 to 17:00.", "label": true, "kind": "value update"}
+{"new": "Support hours are now 08:00 to 20:00.", "old": "Support is reachable by email.", "label": false, "kind": "complement"}
+{"new": "The office in Rotterdam closed in August.", "old": "Apple opened an office in Rotterdam.", "label": true, "kind": "state change"}
+{"new": "The office in Rotterdam closed in August.", "old": "Apple hired forty engineers in Rotterdam.", "label": false, "kind": "complement (historical)"}
+{"new": "Elasticsearch was moved to its own node.", "old": "Redis runs on the same node as Elasticsearch.", "label": true, "kind": "state change"}
+{"new": "Elasticsearch was moved to its own node.", "old": "Elasticsearch rebuilds its index at 09:00.", "label": false, "kind": "complement"}
+{"new": "Chris left the company.", "old": "Chris is the on-call engineer this week.", "label": true, "kind": "state change"}
+{"new": "Chris left the company.", "old": "Chris wrote the deployment runbook.", "label": false, "kind": "complement (historical)"}
+{"new": "The free plan now includes 20,000 requests a month.", "old": "The free plan includes 10,000 requests a month.", "label": true, "kind": "value update"}
+{"new": "The free plan now includes 20,000 requests a month.", "old": "Paid plans start at 29 euros a month.", "label": false, "kind": "complement"}
+{"new": "Lake Mead rose to its highest level in a decade.", "old": "Lake Mead dropped to its lowest level since the 1930s.", "label": true, "kind": "reversal"}
+{"new": "Lake Mead rose to its highest level in a decade.", "old": "Arizona ordered water cuts for industrial users.", "label": false, "kind": "complement"}
