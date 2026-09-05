@@ -85,10 +85,13 @@ class MemoryService:
         assert self._enrich_queue is not None
         while True:
             session, text = await self._enrich_queue.get()
+            # A queued item carries either one session name or a list of scope
+            # tags (callers that tag a fact with several scopes at once).
+            scopes = [session] if isinstance(session, str) else list(session)
             try:
                 async with self._write_lock:
                     await self.graph.add_texts(
-                        [text], extractor=self.extractor, scopes=[session]
+                        [text], extractor=self.extractor, scopes=scopes
                     )
             except Exception:  # a bad fact must not kill the worker
                 logger.exception("deferred extraction failed for a memory")

@@ -15,6 +15,18 @@ except ImportError:
     _HAS_POSTGRES = False
 
 
+def _as_list(emb) -> list[float]:
+    """pgvector returns a ``Vector`` (not iterable) when its adapters are registered
+    on the connection, and a plain list/array otherwise. Normalise both."""
+    to_list = getattr(emb, "to_list", None)
+    if callable(to_list):
+        return list(to_list())
+    tolist = getattr(emb, "tolist", None)
+    if callable(tolist):
+        return list(tolist())
+    return list(emb)
+
+
 class PostgresBackend(Backend):
     """PostgreSQL + pgvector backend for scalable vector search.
 
@@ -443,7 +455,7 @@ class PostgresBackend(Backend):
                     nodes.append(Node(
                         content=content,
                         type=node_type,
-                        embedding=list(emb) if emb is not None else None,
+                        embedding=_as_list(emb) if emb is not None else None,
                         created_at=created_at,
                         last_accessed=last_accessed,
                         scopes=scope_map.get(content, set()),
