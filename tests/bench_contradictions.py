@@ -18,6 +18,7 @@ from pathlib import Path
 DATA = Path(__file__).parent / "data" / "contradictions.jsonl"
 
 
+
 def load():
     return [json.loads(l) for l in DATA.read_text().splitlines() if l.strip()]
 
@@ -34,12 +35,17 @@ def build(which: str, model: str | None):
         client = httpx.Client(base_url=base, headers={"Authorization": f"Bearer {key}"}, timeout=60)
 
         def generate(prompt: str) -> str:
-            r = client.post("/chat/completions", json={"model": model or "qwen/qwen3.8-27b",
-                                                       "temperature": 0, "max_tokens": 200,
-                                                       "messages": [{"role": "user", "content": prompt}]})
-            r.raise_for_status()
-            text = r.json()["choices"][0]["message"].get("content") or ""
-            return text.split("</think>", 1)[1] if "</think>" in text else text
+            for attempt in range(6):   # free-tier rate limits: back off and retry
+                r = client.post("/chat/completions", json={"model": model or "qwen/qwen3.8-27b",
+                                                           "temperature": 0, "max_tokens": 200,
+                                                           "messages": [{"role": "user", "content": prompt}]})
+                if r.status_code == 429:
+                    time.sleep(float(r.headers.get("retry-after", 2 * (attempt + 1))))
+                    continue
+                r.raise_for_status()
+                text = r.json()["choices"][0]["message"].get("content") or ""
+                return text.split("</think>", 1)[1] if "</think>" in text else text
+            raise RuntimeError("rate limited repeatedly")
         return LLMConflictResolver(generate)
     raise SystemExit(which)
 
@@ -48,7 +54,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--which", required=True, choices=["nli", "llm"])
     ap.add_argument("--model", default=None)
+    ap.add_argument("--prompt", default="default", choices=["default", "legacy"],
+                    help="'legacy' = the older 'do they contradict' phrasing")
     args = ap.parse_args()
+    if args.prompt == "legacy":
+        from reasongraph import LLMConflictResolver
+        LLMConflictResolver.PROMPT = LLMConflictResolver.PROMPT_LEGACY
     rows = load()
     resolver = build(args.which, args.model)
     tp = fp = fn = tn = 0

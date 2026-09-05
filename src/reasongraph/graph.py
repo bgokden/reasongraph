@@ -680,12 +680,16 @@ class ReasonGraph:
             chain_pool = [s for s in text_seeds if s.get("_source", "chain") == "chain"]
             bridge_pool = [s for s in text_seeds if s.get("_source") == "bridge"]
 
-            ranked_chain = self.embeddings.rerank(query, chain_pool, rerank_top_k, recency_weight)
+            # One reranker call for both pools (scores are per query/doc pair, so
+            # the order within each pool is the same as ranking them separately);
+            # then apply the budget: chain continuations first, bridges fill up.
+            pooled = self.embeddings.rerank(
+                query, chain_pool + bridge_pool, len(chain_pool) + len(bridge_pool), recency_weight,
+            )
+            bridge_contents = {s["content"] for s in bridge_pool} - {s["content"] for s in chain_pool}
+            ranked_chain = [s for s in pooled if s["content"] not in bridge_contents][:rerank_top_k]
             remaining_budget = max(0, rerank_top_k - len(ranked_chain))
-            if remaining_budget > 0 and bridge_pool:
-                ranked_bridge = self.embeddings.rerank(query, bridge_pool, remaining_budget, recency_weight)
-            else:
-                ranked_bridge = []
+            ranked_bridge = [s for s in pooled if s["content"] in bridge_contents][:remaining_budget]
             ranked = ranked_chain + ranked_bridge
 
             chain_next: list[dict[str, str]] = []

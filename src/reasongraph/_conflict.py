@@ -82,7 +82,20 @@ class LLMConflictResolver:
     the core stays model-free.
     """
 
+    # Asks whether the OLD fact is no longer true given the NEW one. On the 40-pair
+    # benchmark (tests/bench_contradictions.py) this phrasing scores F1 0.97 with
+    # qwen3.8-27b (precision 1.0) vs 0.86 for the "do they contradict" phrasing,
+    # which missed state changes ("cancelled", "paused", "left").
     PROMPT = (
+        "You maintain a memory of facts about the current state of the world.\n"
+        "Existing fact: {old}\n"
+        "New fact (more recent): {new}\n"
+        "Given the new fact, is the existing fact NO LONGER TRUE as a statement about the "
+        "present (it has been replaced, reversed, ended, or its value changed)? Facts about "
+        "different things, or past events that still happened, do not count. "
+        "Answer only 'yes' or 'no'."
+    )
+    PROMPT_LEGACY = (
         "You maintain a memory of facts. A new fact has arrived.\n"
         "New fact: {new}\n"
         "Existing fact: {old}\n"
@@ -91,10 +104,12 @@ class LLMConflictResolver:
         "(complementary) are NOT contradictions. Answer only 'yes' or 'no'."
     )
 
-    def __init__(self, generate) -> None:
+    def __init__(self, generate, prompt: str | None = None) -> None:
         if not callable(generate):
             raise TypeError("generate must be a callable(prompt) -> str")
         self._generate = generate
+        if prompt is not None:
+            self.PROMPT = prompt
 
     def contradictions(self, new_text: str, candidates: list[str]) -> list[str]:
         out = []
