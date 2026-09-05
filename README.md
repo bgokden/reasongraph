@@ -655,13 +655,15 @@ endpoints take a `synthesize` flag that adds the free-text `answer`. The demo
 / energy / health / policy world across five agent sessions and shows a markets
 query reaching a Taiwan drought and a chip fab recorded by other agents.
 
-**HTTP endpoints**: `POST /sessions/{session}/memory` (and `/batch`), `/query`,
-`/discover`, `/supersede`, `/delete`, `/history`, `/trace`, `/what_if`, `/forget`,
-`GET /sessions`, `/stats`, plus `/health` and `/ready` probes.
+**HTTP endpoints**: `POST /sessions/{session}/memory` (and `/batch`; pass
+`resolve_conflicts: true` to check nearby facts for contradictions), `/query` (supports
+`as_of` and `include_superseded` for time-travel), `/discover`, `/causal_chain`,
+`/supersede`, `/delete`, `/history`, `/trace`, `/what_if`, `/forget`, `GET /sessions`,
+`/stats`, plus `/health` and `/ready` probes.
 
 **MCP tools**: `push_memory`, `query_memory`, `query_memory_detailed`,
-`discover_connections`, `trace_memory`, `what_if_memory`, `answer`, `update_memory`,
-`delete_memory`, `memory_history`, `forget_stale`, `list_sessions`.
+`discover_connections`, `causal_chain_memory`, `trace_memory`, `what_if_memory`, `answer`,
+`update_memory`, `delete_memory`, `memory_history`, `forget_stale`, `list_sessions`.
 
 ### Synthesizers
 
@@ -713,7 +715,8 @@ reasongraph-serve            # or: uvicorn reasongraph.service.app:create_app_fr
 | `REASONGRAPH_ISOLATE` | off | Confine traversal to the query session (multi-tenant). Off keeps cross-session discovery. |
 | `REASONGRAPH_RESOLVE_CONFLICTS` | off | Enable contradiction resolution (soft-supersede) with the default NLI resolver. |
 | `REASONGRAPH_API_KEY` | -- | When set, data endpoints require it (`Authorization: Bearer` or `X-API-Key`); `/health` and `/ready` stay open. |
-| `REASONGRAPH_DEFER_EXTRACT` | off | Run entity/causal extraction in a background worker so pushes return immediately. |
+| `REASONGRAPH_DEFER_EXTRACT` | off | Run entity/causal extraction in a background worker (off the event loop) so pushes return immediately. |
+| `REASONGRAPH_DEDUP_THRESHOLD` | off | Cosine threshold (e.g. `0.95`) above which a pushed fact is treated as a paraphrase of an existing one: scopes are unioned, nothing new is stored. |
 | `REASONGRAPH_HOST` / `REASONGRAPH_PORT` | `0.0.0.0` / `8000` | Bind address and port for `reasongraph-serve`. |
 
 Use a persistent backend (PostgresBackend) for real multi-agent concurrency.
