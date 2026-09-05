@@ -55,11 +55,10 @@ memory, Claude Code with persistent memory, LangGraph) live in
 
 ### Hosted: ReasonGraph Cloud
 
-[memory.primaxiom.ai](https://memory.primaxiom.ai) runs this library as a service with
-per-tenant API keys, a remote MCP endpoint, and a browser console. EU-hosted (Helsinki),
-entity and causal extraction on CPU, no data leaves the EU and no LLM touches your facts.
-It is in **alpha**: keys are free and minted by hand. Email `info@primaxiom.ai` with the
-subject "ReasonGraph alpha key" and what you plan to build.
+[memory.primaxiom.ai](https://memory.primaxiom.ai) runs this library as a service: sign in,
+get a free key (10k requests a month), remote MCP endpoint, browser console and playground.
+Extraction runs with small models on servers PrimAxiom operates (currently in the EU); facts are
+only sent to an LLM provider if you ask for a synthesized answer. Early access.
 
 ## Installation
 
