@@ -31,34 +31,55 @@ def create_mcp(service: MemoryService):
     mcp = FastMCP("reasongraph-memory")
 
     @mcp.tool()
-    async def push_memory(session: str, text: str) -> dict:
-        """Store a memory in a knowledge session; returns the extracted entities."""
-        return await service.push(session, text)
+    async def push_memory(session: str, text: str, resolve_conflicts: bool | None = None) -> dict:
+        """Store a memory in a knowledge session; returns the extracted entities.
+        `resolve_conflicts=true` also checks nearby facts for contradictions and
+        retires the ones this fact supersedes."""
+        return await service.push(session, text, resolve_conflicts=resolve_conflicts)
 
     @mcp.tool()
     async def query_memory(
         query: str, session: str | None = None, hops: int = 4, top_k: int = 5,
-        recency_weight: float = 0.0, isolate: bool = False,
+        recency_weight: float = 0.0, isolate: bool = False, as_of: str | None = None,
+        include_superseded: bool = False,
     ) -> list[str]:
         """Retrieve ranked facts. Seeds from `session`; reasoning crosses sessions
         unless `isolate` is true (then it stays within `session`). `recency_weight`
-        (0-1) favours newer facts over older contradicting ones."""
+        (0-1) favours newer facts over older contradicting ones. `as_of` (ISO
+        timestamp) returns what was current at that moment; `include_superseded`
+        also returns facts that have since been corrected."""
+        from reasongraph.service.http import parse_as_of
         return await service.query(
             query, session=session, hops=hops, top_k=top_k,
             recency_weight=recency_weight, isolate=isolate,
+            as_of=parse_as_of(as_of), include_superseded=include_superseded,
         )
 
     @mcp.tool()
     async def query_memory_detailed(
         query: str, session: str | None = None, hops: int = 4, top_k: int = 5,
-        recency_weight: float = 0.0, isolate: bool = False,
+        recency_weight: float = 0.0, isolate: bool = False, as_of: str | None = None,
+        include_superseded: bool = False,
     ) -> list[dict]:
         """Like query_memory but each fact comes with a relevance score, its
         created_at timestamp, and its scopes -- so you can threshold on confidence,
         dedupe, or say when something was remembered."""
+        from reasongraph.service.http import parse_as_of
         return await service.query(
             query, session=session, hops=hops, top_k=top_k,
             recency_weight=recency_weight, isolate=isolate, detailed=True,
+            as_of=parse_as_of(as_of), include_superseded=include_superseded,
+        )
+
+    @mcp.tool()
+    async def causal_chain_memory(
+        from_text: str, to_text: str, session: str | None = None, max_depth: int = 6,
+        isolate: bool = False,
+    ) -> dict:
+        """The directed cause->effect path from the fact nearest `from_text` to the
+        fact nearest `to_text`, hop by hop, or an empty chain if none exists."""
+        return await service.causal_chain(
+            from_text, to_text, session=session, max_depth=max_depth, isolate=isolate,
         )
 
     @mcp.tool()

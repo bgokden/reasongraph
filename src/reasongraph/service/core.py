@@ -45,6 +45,7 @@ class MemoryService:
         causal_extractor=None,
         canonicalizer=None,
         defer_extraction: bool = False,
+        dedup_threshold: float | None = None,
     ) -> None:
         self.graph = graph or ReasonGraph(
             backend=backend, embed_model=embed_model,
@@ -59,6 +60,10 @@ class MemoryService:
         # embedding) and a background worker runs the heavy entity/causal
         # extraction afterward, so the write path isn't gated on the model.
         self.defer_extraction = defer_extraction
+        # Semantic dedup on write: a push whose embedding is at least this similar
+        # to an existing fact unions its scopes onto that fact instead of adding a
+        # paraphrase. None = off (exact duplicates still merge via upsert).
+        self.dedup_threshold = dedup_threshold
         self._enrich_queue: asyncio.Queue | None = None
         self._enrich_worker_task: asyncio.Task | None = None
 
@@ -84,19 +89,58 @@ class MemoryService:
         """Drain the enrichment queue, running full extraction on each deferred fact."""
         assert self._enrich_queue is not None
         while True:
-            session, text = await self._enrich_queue.get()
+            session, text, *rest = await self._enrich_queue.get()
+            resolve = rest[0] if rest else None
             # A queued item carries either one session name or a list of scope
             # tags (callers that tag a fact with several scopes at once).
             scopes = [session] if isinstance(session, str) else list(session)
             try:
+                # The models are synchronous CPU work; run them in a worker thread
+                # so the event loop keeps serving reads while a fact is enriched.
+                entities, causal_results, causal_fn = await self._extract_off_loop(text)
                 async with self._write_lock:
                     await self.graph.add_texts(
-                        [text], extractor=self.extractor, scopes=scopes
+                        [text], extractor=lambda _t: entities, scopes=scopes,
+                        causal_extractor=(lambda _ts: causal_results) if causal_fn else None,
+                        causal=None if causal_fn else False,
+                        resolve_conflicts=resolve,
                     )
             except Exception:  # a bad fact must not kill the worker
                 logger.exception("deferred extraction failed for a memory")
             finally:
                 self._enrich_queue.task_done()
+
+    def _entity_extractor(self):
+        if self.extractor is not None:
+            return self.extractor
+        g = self.graph
+        if not hasattr(g, "_default_extractor"):
+            g._default_extractor = g._build_default_extractor()
+        return g._default_extractor
+
+    async def _extract_off_loop(self, text: str):
+        """Run entity + causal extraction for one text in a thread. Returns
+        ``(entities, causal_results, causal_fn)``; ``causal_fn`` is None when
+        causal extraction is disabled or unavailable."""
+        ext = self._entity_extractor()
+        causal_fn = None
+        if self.graph._causal_extractor_arg is not False:
+            causal_fn = getattr(ext, "extract_causal", None) or self.graph._resolve_causal_extractor()
+        entities = await asyncio.to_thread(ext, text)
+        causal_results = await asyncio.to_thread(causal_fn, [text]) if causal_fn else None
+        return entities, causal_results, causal_fn
+
+    async def _dedup(self, text: str, scopes: list[str]) -> bool:
+        """True when ``text`` near-duplicates an existing fact (scopes were unioned
+        onto it); the caller must then skip adding/enriching it."""
+        if self.dedup_threshold is None:
+            return False
+        dup = await self.graph._find_duplicate(text, self.dedup_threshold)
+        if dup is None:
+            return False
+        if scopes:
+            await self.graph.add_nodes([(dup, "text")], scopes=scopes)
+        return True
 
     async def __aenter__(self) -> "MemoryService":
         await self.initialize()
@@ -107,7 +151,7 @@ class MemoryService:
 
     # -- write path (an agent pushes memory) --
 
-    async def push(self, session: str, text: str) -> dict:
+    async def push(self, session: str, text: str, *, resolve_conflicts: bool | None = None) -> dict:
         """Store one memory in a session; returns the extracted entities.
 
         With ``defer_extraction`` the fact is stored immediately and its entities
@@ -116,31 +160,40 @@ class MemoryService:
         """
         if self._enrich_queue is not None:
             async with self._write_lock:
+                if await self._dedup(text, [session]):
+                    return {"session": session, "entities": [], "deferred": False, "duplicate": True}
                 await self.graph.add_text(
                     text, extractor=lambda _t: [], causal=False, scopes=[session]
                 )
-            await self._enrich_queue.put((session, text))
+            await self._enrich_queue.put((session, text, resolve_conflicts))
             return {"session": session, "entities": [], "deferred": True}
         async with self._write_lock:
             entities = await self.graph.add_text(
-                text, extractor=self.extractor, scopes=[session]
+                text, extractor=self.extractor, scopes=[session],
+                dedup_threshold=self.dedup_threshold, resolve_conflicts=resolve_conflicts,
             )
         return {"session": session, "entities": entities}
 
-    async def push_many(self, session: str, texts: list[str]) -> dict:
+    async def push_many(self, session: str, texts: list[str], *,
+                        resolve_conflicts: bool | None = None) -> dict:
         if self._enrich_queue is not None:
+            fresh: list[str] = []
             async with self._write_lock:
                 for text in texts:
+                    if await self._dedup(text, [session]):
+                        continue
                     await self.graph.add_text(
                         text, extractor=lambda _t: [], causal=False, scopes=[session]
                     )
-            for text in texts:
-                await self._enrich_queue.put((session, text))
-            return {"session": session, "count": len(texts),
-                    "entities": [[] for _ in texts], "deferred": True}
+                    fresh.append(text)
+            for text in fresh:
+                await self._enrich_queue.put((session, text, resolve_conflicts))
+            return {"session": session, "count": len(texts), "deferred": True,
+                    "entities": [[] for _ in texts], "duplicates": len(texts) - len(fresh)}
         async with self._write_lock:
             per_text = await self.graph.add_texts(
-                texts, extractor=self.extractor, scopes=[session]
+                texts, extractor=self.extractor, scopes=[session],
+                dedup_threshold=self.dedup_threshold, resolve_conflicts=resolve_conflicts,
             )
         return {"session": session, "count": len(texts), "entities": per_text}
 
@@ -217,22 +270,39 @@ class MemoryService:
         self, query: str, *, session: str | None = None,
         hops: int = 4, top_k: int = 5, search_mode: str = "embedding",
         recency_weight: float = 0.0, isolate: bool | None = None,
-        detailed: bool = False,
+        detailed: bool = False, as_of=None, include_superseded: bool = False,
+        walk_scopes=None,
     ) -> list:
         """Ranked facts. Seeds from ``session`` (or everywhere if None). Traversal
         crosses sessions by default; ``isolate=True`` confines it to ``session``
         (multi-tenant). ``recency_weight`` (0-1) favours newer facts. With
-        ``detailed`` each result is a dict with score/created_at/scopes."""
+        ``detailed`` each result is a dict with score/created_at/scopes.
+        ``as_of`` (datetime) time-travels to what was current then;
+        ``include_superseded`` also returns retired facts."""
         method = self.graph.query_detailed if detailed else self.graph.query
         return await method(
             query, scopes=self._scopes(session), hops=hops, top_k=top_k,
             search_mode=search_mode, recency_weight=recency_weight, isolate=isolate,
+            as_of=as_of, include_superseded=include_superseded, walk_scopes=walk_scopes,
         )
+
+    async def causal_chain(
+        self, from_content: str, to_content: str, *, session: str | None = None,
+        max_depth: int = 6, isolate: bool | None = None, walk_scopes=None,
+    ) -> dict:
+        """Directed causal path from the fact nearest ``from_content`` to the one
+        nearest ``to_content`` (or ``{"chain": None}`` when none exists)."""
+        chain = await self.graph.causal_chain(
+            from_content, to_content, scopes=self._scopes(session),
+            max_depth=max_depth, isolate=isolate, walk_scopes=walk_scopes,
+        )
+        return {"from": from_content, "to": to_content, "chain": chain}
 
     async def discover(
         self, query: str, *, session: str | None = None,
         hops: int = 4, top_k: int = 5, max_results: int = 10,
         search_mode: str = "embedding", isolate: bool | None = None,
+        include_superseded: bool = False, walk_scopes=None,
     ) -> list[dict]:
         """Connection paths: how each reached fact links back to a seed, with
         cross-session discoveries flagged. ``isolate=True`` confines the walk to
@@ -240,6 +310,7 @@ class MemoryService:
         return await self.graph.discover(
             query, scopes=self._scopes(session), hops=hops, top_k=top_k,
             max_results=max_results, search_mode=search_mode, isolate=isolate,
+            include_superseded=include_superseded, walk_scopes=walk_scopes,
         )
 
     async def answer(

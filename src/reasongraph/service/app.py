@@ -24,6 +24,9 @@ Environment variables:
     REASONGRAPH_ISOLATE        1/true to confine traversal to the query session
                                (multi-tenant); default off (cross-session discovery)
     REASONGRAPH_API_KEY        when set, data endpoints require it (Bearer/X-API-Key)
+    REASONGRAPH_DEDUP_THRESHOLD  cosine similarity (e.g. 0.95) above which a new
+                               fact is treated as a paraphrase of an existing one
+                               (scopes are unioned, nothing new is added)
     REASONGRAPH_DEFER_EXTRACT  1/true to run entity/causal extraction in the
                                background so pushes return fast; default off
     REASONGRAPH_RESOLVE_CONFLICTS  1/true to soft-supersede facts a new push
@@ -174,9 +177,11 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
         conflict_resolver=resolver,
         canonicalizer=build_canonicalizer(env),
     )
+    dedup = env.get("REASONGRAPH_DEDUP_THRESHOLD")
     return MemoryService(
         graph=graph,
         defer_extraction=_bool_env(env, "REASONGRAPH_DEFER_EXTRACT", False),
+        dedup_threshold=float(dedup) if dedup not in (None, "") else None,
     )
 
 

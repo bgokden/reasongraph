@@ -14,6 +14,24 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
 
+    # Real Postgres + pgvector so the Postgres backend tests run instead of skipping
+    # (a pgvector-specific bug shipped once because they were always skipped).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+
+    env:
+      REASONGRAPH_TEST_PG_ADMIN: postgresql://postgres:postgres@localhost:5432/postgres
+      CUDA_VISIBLE_DEVICES: ""
+
     steps:
       - uses: actions/checkout@v4
 
@@ -45,3 +63,6 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -v
+
+      - name: Postgres backend tests ran (not skipped)
+        run: uv run pytest tests/test_postgres_backend.py -q -rs 2>&1 | tee /tmp/pg.txt; ! grep -q "SKIPPED" /tmp/pg.txt

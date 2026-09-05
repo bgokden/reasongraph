@@ -16,6 +16,7 @@ import asyncio
 import hmac
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -25,12 +26,26 @@ from reasongraph.service.core import MemoryService
 logger = logging.getLogger(__name__)
 
 
+def parse_as_of(value) -> datetime | None:
+    """ISO-8601 string (or datetime / None) -> datetime for time-travel queries."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"as_of must be an ISO-8601 timestamp, got {value!r}")
+
+
 class PushIn(BaseModel):
     text: str
+    resolve_conflicts: bool | None = None   # True = check nearby facts for contradictions
 
 
 class PushManyIn(BaseModel):
     texts: list[str]
+    resolve_conflicts: bool | None = None
 
 
 class QueryIn(BaseModel):
@@ -43,6 +58,8 @@ class QueryIn(BaseModel):
     isolate: bool | None = None
     detailed: bool = False
     synthesize: bool = False
+    as_of: str | None = None                # ISO-8601: what was current at that moment
+    include_superseded: bool = False        # also return retired (corrected) facts
 
 
 class DiscoverIn(BaseModel):
@@ -54,6 +71,15 @@ class DiscoverIn(BaseModel):
     search_mode: str = "embedding"
     isolate: bool | None = None
     synthesize: bool = False
+    include_superseded: bool = False
+
+
+class CausalChainIn(BaseModel):
+    from_content: str
+    to_content: str
+    session: str | None = None
+    max_depth: int = 6
+    isolate: bool | None = None
 
 
 class SupersedeIn(BaseModel):
@@ -171,11 +197,11 @@ def create_app(service: MemoryService, api_key: str | None = None) -> FastAPI:
 
     @router.post("/sessions/{session}/memory")
     async def push(session: str, body: PushIn):
-        return await service.push(session, body.text)
+        return await service.push(session, body.text, resolve_conflicts=body.resolve_conflicts)
 
     @router.post("/sessions/{session}/memory/batch")
     async def push_many(session: str, body: PushManyIn):
-        return await service.push_many(session, body.texts)
+        return await service.push_many(session, body.texts, resolve_conflicts=body.resolve_conflicts)
 
     @router.post("/query")
     async def query(body: QueryIn):
@@ -183,7 +209,8 @@ def create_app(service: MemoryService, api_key: str | None = None) -> FastAPI:
             body.query, session=body.session, hops=body.hops,
             top_k=body.top_k, search_mode=body.search_mode,
             recency_weight=body.recency_weight, isolate=body.isolate,
-            detailed=body.detailed,
+            detailed=body.detailed, as_of=parse_as_of(body.as_of),
+            include_superseded=body.include_superseded,
         )
         resp: dict = {"facts": facts}
         if body.synthesize:
@@ -199,6 +226,7 @@ def create_app(service: MemoryService, api_key: str | None = None) -> FastAPI:
             body.query, session=body.session, hops=body.hops,
             top_k=body.top_k, max_results=body.max_results,
             search_mode=body.search_mode, isolate=body.isolate,
+            include_superseded=body.include_superseded,
         )
         resp: dict = {"connections": connections}
         if body.synthesize:
@@ -227,6 +255,13 @@ def create_app(service: MemoryService, api_key: str | None = None) -> FastAPI:
     async def trace(body: TraceIn):
         return await service.trace(
             body.content, direction=body.direction, session=body.session,
+            max_depth=body.max_depth, isolate=body.isolate,
+        )
+
+    @router.post("/causal_chain")
+    async def causal_chain(body: CausalChainIn):
+        return await service.causal_chain(
+            body.from_content, body.to_content, session=body.session,
             max_depth=body.max_depth, isolate=body.isolate,
         )
 

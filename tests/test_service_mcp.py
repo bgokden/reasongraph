@@ -59,7 +59,7 @@ async def test_mcp_lists_all_tools():
             "push_memory", "query_memory", "query_memory_detailed",
             "discover_connections", "trace_memory", "what_if_memory", "answer",
             "update_memory", "delete_memory", "memory_history", "forget_stale",
-            "list_sessions",
+            "list_sessions", "causal_chain_memory",
         }
     finally:
         await svc.close()

@@ -5,6 +5,8 @@ Skipped automatically when psycopg / pgvector / a reachable server with the
 runs anywhere. When a local server is present it exercises the real SQL.
 """
 
+import os
+
 import pytest
 
 from reasongraph._types import Node, Edge
@@ -15,8 +17,16 @@ pytest.importorskip("pgvector")
 
 from reasongraph.backends._postgres import PostgresBackend
 
-ADMIN_DSN = "postgresql:///postgres"
+# Local default: a Unix-socket superuser connection. CI sets REASONGRAPH_TEST_PG_ADMIN
+# to the service container; the test database is created next to the admin one.
+ADMIN_DSN = os.environ.get("REASONGRAPH_TEST_PG_ADMIN", "postgresql:///postgres")
 TEST_DB = "reasongraph_pytest"
+
+
+def _test_dsn() -> str:
+    """ADMIN_DSN with the database name swapped for TEST_DB."""
+    base, _, _db = ADMIN_DSN.rpartition("/")
+    return f"{base}/{TEST_DB}"
 
 
 def _make_node(content: str, node_type: str = "text", scopes: set[str] | None = None) -> Node:
@@ -60,7 +70,7 @@ async def backend():
         pytest.skip(f"cannot provision test db: {e}")
     await conn.close()
 
-    b = PostgresBackend(f"postgresql:///{TEST_DB}")
+    b = PostgresBackend(_test_dsn())
     try:
         await b.initialize()
     except Exception as e:  # noqa: BLE001

@@ -59,6 +59,11 @@ class ReasonGraph:
         # a "supersedes" edge marks the old fact so it drops out of default recall
         # while staying auditable. None (default) disables conflict resolution.
         self.conflict_resolver = conflict_resolver
+        # When a resolver is configured, resolve on every add unless a call says
+        # otherwise. Set False to make resolution opt-in per call
+        # (``add_texts(..., resolve_conflicts=True)``), e.g. when the resolver
+        # calls an LLM and callers should decide per write.
+        self.resolve_conflicts_by_default = True
         # Causal extraction (the headline feature) is ON by default. This holds
         # the caller's choice: None -> build the default hybrid causal extractor
         # lazily on first use; False -> disable causal extraction; a
@@ -439,8 +444,10 @@ class ReasonGraph:
             await self.add_edges(all_edges)
 
         # Conflict resolution: soft-supersede existing facts the new ones contradict.
-        do_resolve = (self.conflict_resolver is not None
-                      if resolve_conflicts is None else resolve_conflicts)
+        do_resolve = (
+            (self.conflict_resolver is not None and self.resolve_conflicts_by_default)
+            if resolve_conflicts is None else resolve_conflicts
+        )
         if do_resolve:
             if self.conflict_resolver is None:
                 raise ValueError(
@@ -498,7 +505,12 @@ class ReasonGraph:
             pool = [c for c in pool if c not in already]
             if not pool:
                 continue
-            for old in self.conflict_resolver.contradictions(text, pool):
+            resolver = self.conflict_resolver
+            if hasattr(resolver, "acontradictions"):
+                found = await resolver.acontradictions(text, pool)
+            else:  # sync resolvers (cross-encoder, blocking LLM call) run off the loop
+                found = await asyncio.to_thread(resolver.contradictions, text, pool)
+            for old in found:
                 edges.append((text, old, "supersedes"))
                 retired.append(old)
         if edges:
@@ -1040,7 +1052,7 @@ class ReasonGraph:
 
     async def causal_chain(self, from_content: str, to_content: str, *, max_depth: int = 6,
                            scopes=None, isolate: bool | None = None,
-                           include_superseded: bool = False) -> list[dict] | None:
+                           include_superseded: bool = False, walk_scopes=None) -> list[dict] | None:
         """Directed causal hops linking ``from_content`` to ``to_content``, or None.
 
         Returns the ordered list of causal hops (as in ``trace_effects``' chain) if
@@ -1056,11 +1068,14 @@ class ReasonGraph:
             return None
         traced = await self.trace_effects(
             from_content, max_depth=max_depth, scopes=scopes, isolate=isolate,
-            include_superseded=include_superseded,
+            include_superseded=include_superseded, walk_scopes=walk_scopes,
         )
-        # A chain exists if the forward walk reached any span of the target fact.
+        # A chain exists if the forward walk *arrived at* a span of the target fact,
+        # i.e. some hop's effect is one of its spans. Checking the hop's cause too
+        # would count the origin's own spans (a fact whose cause is the target's
+        # effect would wrongly "lead to" it, reversing the direction).
         for hop in traced["chain"]:
-            if hop["effect"] in target_spans or hop["cause"] in target_spans:
+            if hop["effect"] in target_spans:
                 return traced["chain"]
         return None
 
