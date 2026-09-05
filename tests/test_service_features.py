@@ -191,3 +191,23 @@ async def test_span_linking_lets_causal_chains_cross_wording():
                 await svc.push("s", f)
             res = await svc.causal_chain("rain", "flood")
             assert bool(res["chain"]) is expect, (threshold, res)
+
+
+async def test_conflict_resolution_never_reaches_other_scopes():
+    """A push tagged with tenant A's scopes must not retire tenant B's fact even when
+    the resolver would call it a contradiction and it is the nearest neighbour."""
+    class AlwaysYes:
+        def contradictions(self, new_text, candidates):
+            return list(candidates)
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_Embed(), extractor=_zeus,
+                        causal_extractor=False)
+    svc.graph.conflict_resolver = AlwaysYes()
+    async with svc:
+        await svc.graph.add_texts(["k1~Zeus lives on Olympus."], extractor=_zeus, scopes=["b/s", "b"])
+        await svc.graph.add_texts(["k1~Zeus lives in Athens."], extractor=_zeus, scopes=["a/s", "a"])
+        await svc.graph.add_texts(["k1~Zeus now lives in Sparta."], extractor=_zeus, scopes=["a/s", "a"],
+                                  resolve_conflicts=True)
+        hist_b = await svc.graph.supersession_history("k1~Zeus lives on Olympus.")
+        hist_a = await svc.graph.supersession_history("k1~Zeus lives in Athens.")
+        assert hist_b["superseded_by"] == []                          # other tenant untouched
+        assert hist_a["superseded_by"] == ["k1~Zeus now lives in Sparta."]

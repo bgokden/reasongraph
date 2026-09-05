@@ -466,7 +466,7 @@ class ReasonGraph:
                     "Pass conflict_resolver=NLIConflictResolver() to ReasonGraph."
                 )
             if active_texts:
-                await self._resolve_conflicts(active_texts)
+                await self._resolve_conflicts(active_texts, scopes=scopes)
 
         return all_entities
 
@@ -523,19 +523,25 @@ class ReasonGraph:
                               if n.get("label") == "supersedes" and n.get("direction") == "in"],
         }
 
-    async def _resolve_conflicts(self, texts: list[str]) -> None:
+    async def _resolve_conflicts(self, texts: list[str], scopes=None,
+                                 candidates_k: int = 10) -> None:
         """Soft-supersede facts each new fact contradicts.
 
         Records a ``"supersedes"`` edge (provenance: which fact replaced which) and
         stamps the old fact's ``invalid_at`` (validity state: dropped from default
         recall, still time-travellable).
+
+        Candidates are the ``candidates_k`` nearest facts that share at least one
+        of the new fact's ``scopes`` (when given). Scoping matters in a shared
+        graph: a tenant's write must never retire another tenant's fact.
         """
         batch = set(texts)
+        scope_set = set(scopes) if scopes else None
         edges: list[tuple] = []
         retired: list[str] = []
         for text in texts:
             embedding = self.embeddings.encode(text)
-            candidates = await self.backend.knn_search(embedding, top_k=5)
+            candidates = await self.backend.knn_search(embedding, top_k=candidates_k, scopes=scope_set)
             pool = [c["content"] for c in candidates
                     if c.get("type") == "text" and c["content"] not in batch]
             if not pool:
