@@ -238,3 +238,13 @@ async def test_pending_counts_in_flight_work():
         release.set()
         await svc._enrich_queue.join()
         assert svc.pending_extractions == 0
+
+
+async def test_knn_search_returns_cosine_scores_memory_backend():
+    svc = _service()
+    async with svc:
+        await svc.push("s", "k1~Zeus threw lightning.")
+        await svc.push("s", "k2~Zeus slept.")
+        hits = await svc.graph.backend.knn_search(_Embed()("k1"), top_k=2)
+        assert hits[0]["content"] == "k1~Zeus threw lightning."
+        assert hits[0]["score"] > 0.99 and hits[1]["score"] < 0.5

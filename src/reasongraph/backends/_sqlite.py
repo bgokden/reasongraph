@@ -226,18 +226,18 @@ class SqliteBackend(Backend):
             scope_ph = ",".join("?" for _ in scopes)
             cursor = await db.execute(
                 f"""
-                SELECT n.content, n.type
+                SELECT n.content, n.type, 1 - vec_distance_cosine(n.embedding, ?) AS score
                 FROM nodes n
                 WHERE n.id IN (SELECT node_id FROM node_scopes WHERE scope IN ({scope_ph}))
                 ORDER BY vec_distance_cosine(n.embedding, ?)
                 LIMIT ?
                 """,
-                [*scopes, query_blob, top_k],
+                [query_blob, *scopes, query_blob, top_k],
             )
         else:
             cursor = await db.execute(
                 """
-                SELECT n.content, n.type
+                SELECT n.content, n.type, 1 - v.distance AS score
                 FROM vec_nodes v
                 JOIN nodes n ON n.id = v.node_id
                 WHERE v.embedding MATCH ? AND k = ?
@@ -249,12 +249,12 @@ class SqliteBackend(Backend):
 
         now = datetime.now().isoformat()
         results = []
-        for content, node_type in rows:
+        for content, node_type, score in rows:
             await db.execute(
                 "UPDATE nodes SET last_accessed = ? WHERE content = ?",
                 (now, content),
             )
-            results.append({"content": content, "type": node_type})
+            results.append({"content": content, "type": node_type, "score": float(score)})
         await db.commit()
         return results
 

@@ -259,7 +259,10 @@ async def test_conflict_resolution_excludes_superseded_from_discover(graph):
 
 @pytest.mark.asyncio
 async def test_semantic_dedup_on_write(graph):
-    # Simulate an embedder that judges the two phrasings near-identical.
+    # Simulate an embedder that judges the two phrasings near-identical: a constant
+    # vector makes the backend's cosine similarity 1.0 (dedup reads that score).
+    graph.embeddings.encode = lambda t: [1.0] * 384
+    graph.embeddings.encode_batch = lambda ts: [[1.0] * 384 for _ in ts]
     graph.embeddings.score = lambda q, texts: [0.99 for _ in texts]
     await graph.add_text("Alice lives in Munich", extractor=lambda t: [])
 
@@ -281,8 +284,9 @@ def test_add_text_sync_forwards_dedup_param():
     # those write-time features were unreachable from the sync API. A marker entity
     # distinguishes a deduped add (returns []) from a normal add (returns the marker).
     g = ReasonGraph(backend=MemoryBackend(), causal_extractor=False)
-    g.embeddings.encode = _fake_encode
-    g.embeddings.encode_batch = _fake_encode_batch
+    # constant vectors: every text is a perfect near-duplicate of every other
+    g.embeddings.encode = lambda t: [1.0] * 384
+    g.embeddings.encode_batch = lambda ts: [[1.0] * 384 for _ in ts]
     g.embeddings.rerank = _fake_rerank
     g.embeddings.score = lambda q, texts: [0.99 for _ in texts]
     g.initialize_sync()

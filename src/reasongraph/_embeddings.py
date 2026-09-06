@@ -85,9 +85,24 @@ class EmbeddingManager:
             return tolist()
         return list(vec)
 
+    _CACHE_SIZE = 256
+
     def encode(self, text: str) -> list[float]:
-        """Encode a single text string to a float vector."""
-        return self._to_vector(self._encode(text))
+        """Encode a single text string to a float vector.
+
+        A small LRU cache: a write path encodes the same text several times
+        (dedup check, node insert, conflict candidates) and agents often re-ask
+        the same question; caching avoids the repeated model call."""
+        cache = self.__dict__.setdefault("_encode_cache", {})
+        vec = cache.get(text)
+        if vec is None:
+            vec = self._to_vector(self._encode(text))
+            if len(cache) >= self._CACHE_SIZE:
+                cache.pop(next(iter(cache)))
+            cache[text] = vec
+        else:
+            cache.pop(text); cache[text] = vec   # refresh LRU order
+        return list(vec)
 
     def encode_batch(self, texts: list[str]) -> list[list[float]]:
         """Encode multiple texts at once."""

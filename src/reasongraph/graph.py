@@ -572,15 +572,16 @@ class ReasonGraph:
         """
         embedding = self.embeddings.encode(text)
         candidates = await self.backend.knn_search(embedding, top_k=5)
-        others = [
-            c["content"] for c in candidates
-            if c.get("type") == "text" and c["content"] != text
-        ]
-        if not others:
+        hits = [c for c in candidates if c.get("type") == "text" and c["content"] != text]
+        if not hits:
             return None
-        scores = self.embeddings.score(text, others)
-        best = max(range(len(others)), key=lambda i: scores[i])
-        return others[best] if scores[best] >= threshold else None
+        if all(isinstance(c.get("score"), (int, float)) for c in hits):
+            # The backend already computed the cosine similarity; no re-encoding.
+            scores = [float(c["score"]) for c in hits]
+        else:
+            scores = self.embeddings.score(text, [c["content"] for c in hits])
+        best = max(range(len(hits)), key=lambda i: scores[i])
+        return hits[best]["content"] if scores[best] >= threshold else None
 
     async def query(
         self,

@@ -199,7 +199,7 @@ class PostgresBackend(Backend):
                 if scopes:
                     await cur.execute(
                         f"""
-                        SELECT content, type
+                        SELECT content, type, 1 - (embedding <=> '{vec_str}') AS score
                         FROM nodes
                         WHERE content IN (
                             SELECT node_content FROM node_scopes WHERE scope = ANY(%s)
@@ -212,14 +212,16 @@ class PostgresBackend(Backend):
                 else:
                     await cur.execute(
                         f"""
-                        SELECT content, type
+                        SELECT content, type, 1 - (embedding <=> '{vec_str}') AS score
                         FROM nodes
                         ORDER BY embedding <=> '{vec_str}'
                         LIMIT {top_k}
                         """
                     )
                 rows = await cur.fetchall()
-                return [{"content": row[0], "type": row[1]} for row in rows]
+                # "score" is the cosine similarity the index already computed, so
+                # callers (dedup, conflict candidates) need not re-encode the hits.
+                return [{"content": row[0], "type": row[1], "score": float(row[2])} for row in rows]
 
     async def hybrid_search(
         self, embedding: list[float], query_text: str, top_k: int,

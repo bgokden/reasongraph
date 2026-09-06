@@ -147,7 +147,8 @@ class MemoryBackend(Backend):
         for idx in top_indices:
             content = contents[idx]
             self._nodes[content].last_accessed = now
-            results.append({"content": content, "type": types[idx]})
+            results.append({"content": content, "type": types[idx],
+                            "score": float(similarities[idx])})
         return results
 
     async def hybrid_search(
