@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Callable
+
 import json
 import os
 import re
@@ -664,6 +666,9 @@ class CausalPointerExtractor:
         max_len: int = 256,
         device: str | None = None,
         gate_threshold: float = 0.5,
+        embed_gate: "str | dict | None" = None,
+        embed_gate_threshold: float = 0.9,
+        embed_gate_encoder: "Callable[[list[str]], Any] | None" = None,
     ) -> None:
         self.model = model
         self.topk = topk
@@ -672,6 +677,16 @@ class CausalPointerExtractor:
         # probability of "non-causal" above which the model abstains; 0.5 = argmax gate,
         # 1.0 = gate off. Needs causal-span-model >= 0.1.3; older versions ignore it.
         self.gate_threshold = gate_threshold
+        # Optional external causal/non-causal gate: a classifier on sentence embeddings
+        # (``scripts/train_embed_gate.py`` in causal-span-model saves
+        # ``{"embed_model": name, "kind": ..., "clf": sklearn estimator}`` as .joblib).
+        # ``embed_gate`` is a local path, ``hf://<repo>/<file>`` or that dict; texts whose
+        # P(causal) < ``embed_gate_threshold`` get no relations. Decoupled from the span
+        # heads, so it can be retrained on any negative mix without touching the spans.
+        self.embed_gate = embed_gate
+        self.embed_gate_threshold = embed_gate_threshold
+        self._embed_gate_encoder = embed_gate_encoder
+        self._gate_clf = None
         self._model = None
         self._tok = None
 
@@ -696,6 +711,42 @@ class CausalPointerExtractor:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self._model.to(self.device)
 
+    def _load_gate(self) -> None:
+        if self._gate_clf is not None or self.embed_gate is None:
+            return
+        payload = self.embed_gate
+        if isinstance(payload, str):
+            import joblib
+            path = payload
+            if path.startswith("hf://"):   # hf://<owner>/<repo>/<file within the repo>
+                from huggingface_hub import hf_hub_download
+                parts = path[5:].split("/")
+                if len(parts) < 3:
+                    raise ValueError("hf:// gate refs look like hf://owner/repo/file.joblib")
+                path = hf_hub_download("/".join(parts[:2]), "/".join(parts[2:]))
+            payload = joblib.load(path)
+        if not isinstance(payload, dict) or "clf" not in payload:
+            raise ValueError("embed_gate must be a path/hf:// ref or a dict with 'clf' and 'embed_model'")
+        self._gate_clf = payload["clf"]
+        if self._embed_gate_encoder is None:
+            from sentence_transformers import SentenceTransformer
+            st = SentenceTransformer(payload["embed_model"], device=self.device or "cpu")
+            self._embed_gate_encoder = lambda texts: st.encode(
+                texts, batch_size=64, normalize_embeddings=True, show_progress_bar=False)
+
+    def causal_probs(self, texts: list[str]) -> "list[float] | None":
+        """P(causal) per text from the embedding gate, or None when no gate is set."""
+        if self.embed_gate is None:
+            return None
+        self._load_gate()
+        if not texts:
+            return []
+        feats = self._embed_gate_encoder(texts)
+        probs = self._gate_clf.predict_proba(feats)
+        classes = list(getattr(self._gate_clf, "classes_", [0, 1]))
+        idx = classes.index(1) if 1 in classes else len(classes) - 1
+        return [float(p[idx]) for p in probs]
+
     def relations_for(self, text: str) -> list[dict]:
         """Return deduplicated cause->effect pairs for a single text (any language).
 
@@ -718,15 +769,23 @@ class CausalPointerExtractor:
         return [{"cause": r["cause"], "effect": r["effect"]} for r in relations]
 
     def extract_causal(self, texts: list[str]) -> list[dict]:
-        """Extract cause-effect relations (compatible with CausalExtractorFn)."""
+        """Extract cause-effect relations (compatible with CausalExtractorFn).
+
+        With an embedding gate set, texts scoring under ``embed_gate_threshold`` are
+        reported as non-causal without running the span model.
+        """
+        probs = self.causal_probs(texts)
         results = []
-        for text in texts:
+        for i, text in enumerate(texts):
+            if probs is not None and probs[i] < self.embed_gate_threshold:
+                results.append({"text": text, "causal": False, "relations": [],
+                                "causal_prob": probs[i]})
+                continue
             relations = self.relations_for(text)
-            results.append({
-                "text": text,
-                "causal": len(relations) > 0,
-                "relations": relations,
-            })
+            row = {"text": text, "causal": len(relations) > 0, "relations": relations}
+            if probs is not None:
+                row["causal_prob"] = probs[i]
+            results.append(row)
         return results
 
     __call__ = extract_causal

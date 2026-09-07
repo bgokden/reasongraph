@@ -252,3 +252,54 @@ def test_pointer_extractor_is_exported_and_constructible():
     assert ext.model == "some/local-or-repo"
     # lazy: no model loaded on construction
     assert ext.topk == 5 and ext._model is None
+
+
+# --- embedding gate on the pointer extractor (no model download: stubs) ---
+class _StubClf:
+    classes_ = [0, 1]
+
+    def predict_proba(self, feats):
+        # feature = [is_causal_hint]; P(causal) = that value
+        return [[1.0 - f[0], f[0]] for f in feats]
+
+
+def _stub_encoder(texts):
+    return [[0.95 if "because" in t else 0.2] for t in texts]
+
+
+def test_pointer_extractor_embed_gate_skips_low_probability_texts(monkeypatch):
+    from reasongraph._extraction import CausalPointerExtractor
+
+    ex = CausalPointerExtractor(embed_gate={"embed_model": "stub", "kind": "stub", "clf": _StubClf()},
+                                embed_gate_threshold=0.9, embed_gate_encoder=_stub_encoder)
+    calls = []
+    monkeypatch.setattr(ex, "relations_for", lambda text: (calls.append(text) or
+                                                          [{"cause": "rain", "effect": "floods"}]))
+    out = ex.extract_causal(["It flooded because it rained.", "The river is 200 km long."])
+    assert out[0]["causal"] is True and out[0]["relations"] == [{"cause": "rain", "effect": "floods"}]
+    assert out[0]["causal_prob"] == 0.95
+    assert out[1] == {"text": "The river is 200 km long.", "causal": False, "relations": [],
+                      "causal_prob": 0.2}
+    assert calls == ["It flooded because it rained."]     # the span model never ran on the gated text
+    assert ex.causal_probs([]) == []
+
+
+def test_pointer_extractor_without_gate_reports_no_probs(monkeypatch):
+    from reasongraph._extraction import CausalPointerExtractor
+
+    ex = CausalPointerExtractor()
+    monkeypatch.setattr(ex, "relations_for", lambda text: [])
+    assert ex.causal_probs(["x"]) is None
+    assert ex.extract_causal(["x"]) == [{"text": "x", "causal": False, "relations": []}]
+
+
+def test_embed_gate_env_wiring(monkeypatch):
+    from reasongraph._extraction import CausalPointerExtractor
+    monkeypatch.setenv("REASONGRAPH_CAUSAL_EMBED_GATE", "/tmp/gate.joblib")
+    monkeypatch.setenv("REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD", "0.7")
+    monkeypatch.setenv("REASONGRAPH_CAUSAL_MODEL", "some/model")
+    pytest.importorskip("causal_span_model")
+    ex = ReasonGraph._build_default_causal_extractor()
+    assert isinstance(ex, CausalPointerExtractor)
+    assert ex.model == "some/model" and ex.embed_gate == "/tmp/gate.joblib"
+    assert ex.embed_gate_threshold == 0.7

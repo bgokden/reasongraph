@@ -27,6 +27,10 @@ Environment variables:
     REASONGRAPH_SPAN_LINK_THRESHOLD  cosine similarity (e.g. 0.85) above which a new
                                cause/effect span is tied to an existing causal span
                                so chains can cross facts with different wording
+    REASONGRAPH_CAUSAL_MODEL / REASONGRAPH_CAUSAL_GATE_THRESHOLD /
+    REASONGRAPH_CAUSAL_EMBED_GATE / REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD  span-pointer
+        model id, built-in gate threshold (1.0 = off), optional embedding-gate .joblib
+        (path or hf://owner/repo/file) and its P(causal) cutoff (default 0.9).
     REASONGRAPH_DEDUP_THRESHOLD  cosine similarity (e.g. 0.95) above which a new
                                fact is treated as a paraphrase of an existing one
                                (scopes are unioned, nothing new is added)

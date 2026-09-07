@@ -237,8 +237,10 @@ class ReasonGraph:
         cheap. Returns ``None`` and warns once when neither backend is installed,
         so the drop is visible rather than silent.
 
-        Environment: ``REASONGRAPH_CAUSAL_MODEL`` (HF repo id or local dir) and
-        ``REASONGRAPH_CAUSAL_GATE_THRESHOLD`` (0.5 = argmax gate, 1.0 = off).
+        Environment: ``REASONGRAPH_CAUSAL_MODEL`` (HF repo id or local dir),
+        ``REASONGRAPH_CAUSAL_GATE_THRESHOLD`` (0.5 = argmax gate, 1.0 = off),
+        ``REASONGRAPH_CAUSAL_EMBED_GATE`` (path or ``hf://repo/file`` of an embedding-gate
+        .joblib) and ``REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD`` (default 0.9).
         """
         try:
             import causal_span_model as _pointer_check  # noqa: F401
@@ -248,6 +250,10 @@ class ReasonGraph:
                 kwargs["model"] = os.environ["REASONGRAPH_CAUSAL_MODEL"]
             if os.environ.get("REASONGRAPH_CAUSAL_GATE_THRESHOLD"):
                 kwargs["gate_threshold"] = float(os.environ["REASONGRAPH_CAUSAL_GATE_THRESHOLD"])
+            if os.environ.get("REASONGRAPH_CAUSAL_EMBED_GATE"):
+                kwargs["embed_gate"] = os.environ["REASONGRAPH_CAUSAL_EMBED_GATE"]
+                if os.environ.get("REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD"):
+                    kwargs["embed_gate_threshold"] = float(os.environ["REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD"])
             return CausalPointerExtractor(**kwargs)
         except ImportError:
             pass

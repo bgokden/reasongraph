@@ -358,6 +358,25 @@ the hybrid, and a few-shot LLM baseline (~0.24-0.41). It is trained on English b
 multilingual at inference (script-aware segmentation, verified on es/fr/de/pt/tr/ru/ar
 and zh/ja) and has a built-in causal gate, so it returns nothing on non-causal text.
 
+The built-in gate can be replaced by a **decoupled embedding gate**: a small
+classifier on sentence embeddings (train one with `scripts/train_embed_gate.py` in
+causal-span-model; it saves a `.joblib`). It costs a millisecond per sentence, is
+retrained on any negative mix without touching the span heads, and on our causal
+eval it gave fewer, more precise edges than the built-in gate. Pass a local path or
+an `hf://owner/repo/file.joblib` reference:
+
+```python
+ReasonGraph(causal_extractor=CausalPointerExtractor(
+    model="Berk/causal-span-pointer-v2", gate_threshold=1.0,          # built-in gate off
+    embed_gate="hf://Berk/causal-span-pointer-v2/embed_gate_mlp.joblib",
+    embed_gate_threshold=0.9))                                        # keep P(causal) >= 0.9
+```
+
+`causal_chain` also bridges facts that phrase one event differently ("the system
+throttles performance" -> "Throttling performance", or a plain root fact whose
+words reappear in the next cause span), so directed chains survive wording changes
+even without `span_link_threshold`.
+
 Otherwise it falls back to the **hybrid** (`HybridCausalExtractor`): a fast,
 model-free multilingual **cue pass** handles explicit and reversed phrasing with
 correct direction, and sentences with no causal connective (implicit causality)
@@ -717,6 +736,9 @@ reasongraph-serve            # or: uvicorn reasongraph.service.app:create_app_fr
 | `REASONGRAPH_API_KEY` | -- | When set, data endpoints require it (`Authorization: Bearer` or `X-API-Key`); `/health` and `/ready` stay open. |
 | `REASONGRAPH_DEFER_EXTRACT` | off | Run entity/causal extraction in a background worker (off the event loop) so pushes return immediately. |
 | `REASONGRAPH_SPAN_LINK_THRESHOLD` | off | Cosine threshold (e.g. `0.85`) above which a new cause/effect span is tied (`same_as`) to an existing causal span, so `trace_*` / `causal_chain` cross facts that phrase the same event differently. |
+| `REASONGRAPH_CAUSAL_MODEL` | `berk/causal-span-pointer-mdeberta` | HF repo id or local dir of the span-pointer model. |
+| `REASONGRAPH_CAUSAL_GATE_THRESHOLD` | `0.5` | Built-in gate: P(non-causal) above which the pointer abstains; `1.0` turns it off. |
+| `REASONGRAPH_CAUSAL_EMBED_GATE` | off | Path or `hf://owner/repo/file.joblib` of an embedding-gate classifier; texts under `REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD` (default `0.9`) get no relations. |
 | `REASONGRAPH_DEDUP_THRESHOLD` | off | Cosine threshold (e.g. `0.95`) above which a pushed fact is treated as a paraphrase of an existing one: scopes are unioned, nothing new is stored. |
 | `REASONGRAPH_HOST` / `REASONGRAPH_PORT` | `0.0.0.0` / `8000` | Bind address and port for `reasongraph-serve`. |
 
