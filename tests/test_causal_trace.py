@@ -112,3 +112,50 @@ async def test_trace_drops_superseded_hop():
         assert "Flooding caused power outages." in {h["fact"] for h in full["chain"]}
     finally:
         await g.close()
+
+
+# --- causal_chain bridges: plain root fact -> next fact's cause span mentions its entity ---
+_BRIDGE_RELS = {
+    "When the CPU temperature rises, the system throttles performance.":
+        {"cause": "the CPU temperature rises", "effect": "the system throttles performance"},
+    "Throttling performance causes application latency to increase.":
+        {"cause": "Throttling performance", "effect": "application latency to increase"},
+}
+_BRIDGE_ENTS = {
+    "The server's CPU temperature exceeded 85°C.": ["CPU temperature", "server"],
+    "The CPU temperature was monitored by a sensor.": ["CPU temperature", "sensor"],
+    "When the CPU temperature rises, the system throttles performance.": ["CPU temperature"],
+    "Throttling performance causes application latency to increase.": ["application latency"],
+}
+
+
+def _bridge_causal(texts):
+    return [{"causal": t in _BRIDGE_RELS, "relations": [_BRIDGE_RELS[t]] if t in _BRIDGE_RELS else []}
+            for t in texts]
+
+
+@pytest.mark.asyncio
+async def test_causal_chain_bridges_plain_root_fact_via_entity():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=_bridge_causal,
+                    span_link_threshold=0.99)
+    g.embeddings.rerank = _no_rerank
+    g.bridge_min_score = -1.0   # fake embeddings: rely on the shared-word rule only
+    await g.initialize()
+    await g.add_texts(list(_BRIDGE_ENTS), extractor=lambda t: _BRIDGE_ENTS[t])
+    try:
+        # the root fact has no causal relation of its own; its entity "CPU temperature" is
+        # mentioned by the next fact's cause span, which the effect of links onward.
+        chain = await g.causal_chain("The server's CPU temperature exceeded 85°C.",
+                                     "Throttling performance causes application latency to increase.")
+        assert chain is not None
+        assert [(h["cause"], h["effect"]) for h in chain][0] == (
+            "the CPU temperature rises", "the system throttles performance")
+        assert chain[-1]["effect"] == "application latency to increase"
+        # direction still matters: the last fact does not lead back to the root
+        assert await g.causal_chain("Throttling performance causes application latency to increase.",
+                                    "The server's CPU temperature exceeded 85°C.") is None
+        # a distractor that shares the entity but has no causal role is not a bridge target
+        assert await g.causal_chain("The server's CPU temperature exceeded 85°C.",
+                                    "The CPU temperature was monitored by a sensor.") is None
+    finally:
+        await g.close()

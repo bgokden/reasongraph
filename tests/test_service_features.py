@@ -170,8 +170,10 @@ def test_mcp_lists_new_tools():
 
 
 async def test_span_linking_lets_causal_chains_cross_wording():
-    facts = ["rain~heavy rain -> f1~the river flooded the old town",
-             "flood~f1~the old town flooded -> road closures"]      # f1~ = same embedding key
+    # f1~ = same embedding key, but no shared content word: only a same_as span link
+    # (not the lexical bridge used by causal_chain) can connect the two wordings.
+    facts = ["rain~heavy rain -> f1~the river overflowed its banks",
+             "flood~f1~the old town was inundated -> road closures"]
     def causal(texts):
         out = []
         for t in texts:

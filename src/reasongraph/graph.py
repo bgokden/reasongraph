@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import warnings
 from collections import deque
 from collections.abc import Mapping
@@ -989,7 +990,7 @@ class ReasonGraph:
     async def _causal_reach(
         self, start: list[str], edge_dir: str, *,
         blocked_edges: frozenset = frozenset(), max_depth: int,
-        walk_scopes: set[str] | None, max_visited: int,
+        walk_scopes: set[str] | None, max_visited: int, bridge: bool = False,
     ) -> tuple[list[dict], set[str], set[str], set[str]]:
         """BFS over ``causes`` edges from ``start`` spans in ``edge_dir`` (``'out'``
         forward / ``'in'`` backward).
@@ -1035,13 +1036,21 @@ class ReasonGraph:
                 if other not in visited_spans and len(visited_spans) < max_visited:
                     visited_spans.add(other)
                     frontier.append((other, depth + 1))
+                    if bridge and edge_dir == "out":
+                        # Same event, different wording, no same_as edge: continue from
+                        # cause spans that share a content word with this effect.
+                        for alias in await self._lexical_bridges(other, exclude=visited_spans):
+                            if alias not in visited_spans and len(visited_spans) < max_visited:
+                                visited_spans.add(alias)
+                                frontier.append((alias, depth + 1))
 
         return chain, reached_facts, reached_targets, has_next
 
     async def _trace(
         self, content: str, direction: str, *, max_depth: int = 6,
         scopes=None, isolate: bool | None = None, include_superseded: bool = False,
-        max_visited: int = 1000, walk_scopes=None,
+        max_visited: int = 1000, walk_scopes=None, extra_start: list[str] | None = None,
+        bridge: bool = False,
     ) -> dict:
         """Directional walk over ``causes`` edges from the fact nearest ``content``.
 
@@ -1065,10 +1074,12 @@ class ReasonGraph:
         pairs = (await self.backend.get_causal_relations([origin])).get(origin, [])
         edge_dir = "out" if direction == "effects" else "in"
         start = [p["cause"] for p in pairs] if direction == "effects" else [p["effect"] for p in pairs]
+        if extra_start:
+            start = list(dict.fromkeys(start + [x for x in extra_start]))
 
         chain, reached_facts, reached_targets, has_next = await self._causal_reach(
             start, edge_dir, max_depth=max_depth, walk_scopes=walk_scopes,
-            max_visited=max_visited,
+            max_visited=max_visited, bridge=bridge,
         )
         terminals = sorted(reached_targets - has_next)
 
@@ -1117,6 +1128,67 @@ class ReasonGraph:
         """The root cause spans behind ``content`` (backward-walk terminals)."""
         return (await self.trace_causes(content, **kwargs))["terminals"]
 
+    async def _entity_names(self, fact: str) -> list[str]:
+        """Entity-type neighbours of a fact (extracted entities and causal spans)."""
+        names = []
+        for n in await self.backend.get_neighbors(fact):
+            if n.get("type") == "entity" and len(n["content"]) >= 3:
+                names.append(n["content"])
+        return names
+
+    _BRIDGE_STOP = frozenset("""the a an and or but of to in on at for with by from as is are was were be been
+    being this that these those it its into over under than then there their they them his her our your
+    which while when where who whom whose what because since after before during also very more most
+    such into onto about against between through above below each other some any all both few many
+    much no nor not only own same so too can will just don should now der die das und oder den dem des
+    ein eine einer eines einem einen ist sind war waren wird werden nicht auch mit von zu auf für aus
+    bei nach über unter het een van en dat dit die deze niet ook met voor door naar bij uit over el la
+    los las un una unos unas y o de del al que en con por para sin sobre es son fue fueron le les des
+    du un une et ou que qui dans sur avec pour par sans est sont ve bir bu şu o ile için gibi da de
+    ama veya değil""".split())
+
+    bridge_min_score: float = 0.45
+
+    @classmethod
+    def _bridge_tokens(cls, text: str) -> set[str]:
+        """Crude language-agnostic content tokens: lowercase words of 4+ letters minus
+        stopwords, cut to a 5-char prefix so ``resolved``/``resolution`` match."""
+        out = set()
+        for w in re.findall(r"[^\W\d_]+", text):
+            low = w.lower()
+            if low in cls._BRIDGE_STOP:
+                continue
+            if len(low) >= 4 or (len(low) == 3 and w.isupper()):   # keep acronyms: UDP, CPU, GPU
+                out.add(low[:5])
+        return out
+
+    async def _lexical_bridges(self, text: str, *, exclude: set[str] = frozenset(),
+                               top_k: int = 15) -> list[str]:
+        """Cause spans (of any fact) that share a content word with ``text`` and are
+        semantically close to it. Used by :meth:`causal_chain` to continue a walk
+        across facts that describe one event with different span boundaries, e.g.
+        effect "the system throttles performance" -> cause "Throttling performance",
+        or a plain root fact "CPU temperature exceeded 85°C" -> cause "the CPU
+        temperature rises". Paraphrases without a shared word still need ``same_as``."""
+        toks = self._bridge_tokens(text)
+        if not toks:
+            return []
+        hits = await self.backend.knn_search(self.embeddings.encode(text), top_k=top_k)
+        cands = [h for h in hits if h.get("type") == "entity" and h["content"] != text
+                 and h["content"] not in exclude]
+        if not cands:
+            return []
+        scores = self.embeddings.score(text, [h["content"] for h in cands])
+        out: list[str] = []
+        for h, score in zip(cands, scores):
+            cand = h["content"]
+            if score < self.bridge_min_score or not (toks & self._bridge_tokens(cand)):
+                continue
+            neighbours = await self.backend.get_neighbors(cand)
+            if any(n.get("label") == "causes" and n.get("direction") == "out" for n in neighbours):
+                out.append(cand)
+        return out
+
     async def causal_chain(self, from_content: str, to_content: str, *, max_depth: int = 6,
                            scopes=None, isolate: bool | None = None,
                            include_superseded: bool = False, walk_scopes=None) -> list[dict] | None:
@@ -1125,25 +1197,55 @@ class ReasonGraph:
         Returns the ordered list of causal hops (as in ``trace_effects``' chain) if
         the fact nearest ``from_content`` causally leads to the one nearest
         ``to_content``; otherwise None.
+
+        Facts rarely repeat each other's wording, so two bridges are applied:
+        the walk also continues from cause spans (of other facts) that share a
+        content word with the origin fact or with a reached effect span (see
+        :meth:`_lexical_bridges`), and it counts as arrived when a hop's effect is
+        a target span, a ``same_as`` alias of one, or mentions one of the target
+        fact's entities.
         """
-        target = await self._resolve_fact(to_content, set(scopes) if scopes else None)
+        scope_set = set(scopes) if scopes else None
+        target = await self._resolve_fact(to_content, scope_set)
         if target is None:
             return None
         target_pairs = (await self.backend.get_causal_relations([target])).get(target, [])
         target_spans = {p["cause"] for p in target_pairs} | {p["effect"] for p in target_pairs}
-        if not target_spans:
+        target_names = [n for n in await self._entity_names(target) if n not in target_spans]
+        if not target_spans and not target_names:
             return None
-        traced = await self.trace_effects(
-            from_content, max_depth=max_depth, scopes=scopes, isolate=isolate,
-            include_superseded=include_superseded, walk_scopes=walk_scopes,
+        origin = await self._resolve_fact(from_content, scope_set)
+        if origin is None:
+            return None
+        own = {p["cause"] for p in (await self.backend.get_causal_relations([origin])).get(origin, [])}
+        own |= {p["effect"] for p in (await self.backend.get_causal_relations([origin])).get(origin, [])}
+        seeds = await self._lexical_bridges(origin, exclude=own)
+        traced = await self._trace(
+            origin, "effects", max_depth=max_depth, scopes=scopes, isolate=isolate,
+            include_superseded=include_superseded, walk_scopes=walk_scopes, extra_start=seeds,
+            bridge=True,
         )
-        # A chain exists if the forward walk *arrived at* a span of the target fact,
-        # i.e. some hop's effect is one of its spans. Checking the hop's cause too
+        # A chain exists if the forward walk *arrived at* the target fact: either it
+        # traversed the target's own hop (its cause span was reached, so the hop
+        # belongs to the target), or some hop's effect is a target span, an alias of
+        # one, or names one of the target's entities. Checking a hop's cause alone
         # would count the origin's own spans (a fact whose cause is the target's
-        # effect would wrongly "lead to" it, reversing the direction).
-        for hop in traced["chain"]:
-            if hop["effect"] in target_spans:
-                return traced["chain"]
+        # effect would wrongly "lead to" it).
+        target_effects = {p["effect"] for p in target_pairs}
+        for i, hop in enumerate(traced["chain"]):
+            if hop.get("fact") == target:
+                return traced["chain"][: i + 1]
+            effect = hop["effect"]
+            arrived = effect in target_effects
+            if not arrived:
+                aliases = {n["content"] for n in await self.backend.get_neighbors(effect)
+                           if n.get("label") == "same_as"}
+                arrived = bool(aliases & target_effects)
+            if not arrived and target_names:
+                low = effect.lower()
+                arrived = any(name.lower() in low for name in target_names)
+            if arrived:
+                return traced["chain"][: i + 1]
         return None
 
     async def what_if(
