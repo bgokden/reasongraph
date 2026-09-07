@@ -235,10 +235,19 @@ class ReasonGraph:
         ``gliner``). Both are lazy (models load on first call), so building here is
         cheap. Returns ``None`` and warns once when neither backend is installed,
         so the drop is visible rather than silent.
+
+        Environment: ``REASONGRAPH_CAUSAL_MODEL`` (HF repo id or local dir) and
+        ``REASONGRAPH_CAUSAL_GATE_THRESHOLD`` (0.5 = argmax gate, 1.0 = off).
         """
         try:
             import causal_span_model as _pointer_check  # noqa: F401
-            return CausalPointerExtractor()
+            import os
+            kwargs = {}
+            if os.environ.get("REASONGRAPH_CAUSAL_MODEL"):
+                kwargs["model"] = os.environ["REASONGRAPH_CAUSAL_MODEL"]
+            if os.environ.get("REASONGRAPH_CAUSAL_GATE_THRESHOLD"):
+                kwargs["gate_threshold"] = float(os.environ["REASONGRAPH_CAUSAL_GATE_THRESHOLD"])
+            return CausalPointerExtractor(**kwargs)
         except ImportError:
             pass
         try:

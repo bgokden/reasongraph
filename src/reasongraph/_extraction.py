@@ -663,11 +663,15 @@ class CausalPointerExtractor:
         topk: int = 5,
         max_len: int = 256,
         device: str | None = None,
+        gate_threshold: float = 0.5,
     ) -> None:
         self.model = model
         self.topk = topk
         self.max_len = max_len
         self.device = device
+        # probability of "non-causal" above which the model abstains; 0.5 = argmax gate,
+        # 1.0 = gate off. Needs causal-span-model >= 0.1.3; older versions ignore it.
+        self.gate_threshold = gate_threshold
         self._model = None
         self._tok = None
 
@@ -702,9 +706,15 @@ class CausalPointerExtractor:
         from causal_span_model.pointer.infer import predict_relations
 
         self._load()
-        relations = predict_relations(
-            self._model, self._tok, text, self.max_len, self.topk, self.device
-        )
+        try:
+            relations = predict_relations(
+                self._model, self._tok, text, self.max_len, self.topk, self.device,
+                gate_threshold=self.gate_threshold,
+            )
+        except TypeError:  # causal-span-model < 0.1.3: fixed argmax gate
+            relations = predict_relations(
+                self._model, self._tok, text, self.max_len, self.topk, self.device
+            )
         return [{"cause": r["cause"], "effect": r["effect"]} for r in relations]
 
     def extract_causal(self, texts: list[str]) -> list[dict]:
