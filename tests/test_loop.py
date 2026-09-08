@@ -162,3 +162,22 @@ def test_own_turn_detection_ignores_the_tenant_tag():
     assert not loop._is_own_turn({"scopes": ["acme/chat", "acme", "acme/notes"]}, "q")   # also held by a real session
     assert not loop._is_own_turn({"scopes": ["notes"]}, "q")
     assert not loop._is_own_turn({"scopes": []}, "q")
+
+
+@pytest.mark.asyncio
+async def test_chain_facts_keep_their_slot_in_a_busy_memory():
+    """Filler that reads like the question must not push the traced chain out of the budget."""
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=_causal)
+    g.embeddings.rerank = _no_rerank
+    await g.initialize()
+    filler = [f"Note {i}: the main road has a road sign near the river." for i in range(6)]
+    g.embeddings.score = lambda q, texts: [0.95 if t in filler else 0.5 for t in texts]
+    try:
+        await g.add_texts(list(_RELS) + filler, extractor=_ents, scopes={"notes"})
+        block = await MemoryLoop(g, max_facts=3).recall("Why is the main road closed?")
+        got = [f["content"] for f in block.facts]
+        assert len(got) == 3
+        assert "Heavy rain caused the river to flood." in got        # a hop of the traced chain
+        assert all(f["scopes"] == ["notes"] for f in block.facts)   # hop facts carry their sources
+    finally:
+        await g.close()

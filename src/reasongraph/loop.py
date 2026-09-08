@@ -186,6 +186,7 @@ class MemoryLoop:
                 found.append(f); seen.add(f["content"])
         chain: list[dict] = []
         roots: list[str] = []
+        chain_ids: set[str] = set()          # facts that belong to the traced chain: they keep their slot
         if _QUESTION.search(message) and found:
             # walk backwards from the top few facts: the deepest (root) fact is the one
             # retrieval misses most, and a small model answers with the nearest cause
@@ -196,6 +197,8 @@ class MemoryLoop:
                     traced = await self.graph.trace_causes(f["content"], max_depth=self.hops)
                 except Exception:
                     continue
+                if traced.get("chain"):
+                    chain_ids.add(f["content"])
                 for h in traced.get("chain", []):
                     key = (h.get("cause"), h.get("effect"))
                     if key not in hops_seen and len(chain) < 8:
@@ -205,17 +208,15 @@ class MemoryLoop:
                         roots.append(r)
             for h in chain:                          # pull in the facts that assert those hops
                 fact = h.get("fact")
-                if fact and fact not in seen and len(found) < self.max_facts:
+                if fact and fact not in seen:
                     found.append({"content": fact, "scopes": [], "path": [],
                                   "causes": [], "cross_session": False})
-                    seen.add(fact)
+                    seen.add(fact); chain_ids.add(fact)
             if self.extend_query and roots:
                 # the chain's loose ends: a root cause span whose own fact is not in
                 # context yet (a plain statement with no causal relation of its own).
                 # One targeted query per root replaces the vague first question.
                 for root in roots[:3]:
-                    if len(found) >= self.max_facts:
-                        break
                     # no "already stated" short-circuit: the root span is by construction
                     # part of the fact that asserts the last hop, and the plain fact behind
                     # it rarely repeats the span's words. The cosine gate below decides.
@@ -233,10 +234,28 @@ class MemoryLoop:
                         continue
                     for r in more:
                         content = r["content"]
-                        if content not in seen and len(found) < self.max_facts:
+                        if content not in seen:
                             found.append({"content": content, "scopes": sorted(r.get("scopes", [])),
                                           "path": [], "causes": [], "cross_session": False})
-                            seen.add(content)
+                            seen.add(content); chain_ids.add(content)
+        # The context budget: a fact of the traced chain keeps its slot ahead of anything
+        # found by wording alone (in a busy memory most misses were roots that were reached
+        # and then lost to filler), and the conversation's own turns come last.
+        if len(found) > self.max_facts or chain_ids:
+            own_ids = {f["content"] for f in found if self._is_own_turn(f, message)}
+            first = [f for f in found if f["content"] in chain_ids]
+            middle = [f for f in found if f["content"] not in chain_ids and f["content"] not in own_ids]
+            last = [f for f in found if f["content"] in own_ids and f["content"] not in chain_ids]
+            found = (first + middle + last)[: self.max_facts]
+        missing_scopes = [f["content"] for f in found if not f.get("scopes")]
+        if missing_scopes:
+            try:
+                sc = await self.graph.backend.get_scopes(missing_scopes)
+                for f in found:
+                    if not f.get("scopes") and f["content"] in sc:
+                        f["scopes"] = sorted(sc[f["content"]])
+            except Exception:
+                pass
         block = ContextBlock(facts=found, chain=chain, roots=roots)
         block.text = self._render(block)
         return block
