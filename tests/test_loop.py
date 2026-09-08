@@ -112,3 +112,20 @@ async def test_memory_loop_rerank_cutoff_drops_same_topic_filler():
         assert any("Rotterdam" in f["content"] for f in strict.facts)
     finally:
         await g.close()
+
+
+@pytest.mark.asyncio
+async def test_follow_up_query_readds_a_fact_the_question_cutoff_dropped():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=_causal)
+    g.embeddings.rerank = _no_rerank
+    await g.initialize()
+    hop = "Storms hit the coast, so rain was heavy."
+    # the hop fact reads unrelated to the question but close to the chain's root span
+    g.embeddings.score = lambda q, texts: [0.9 if (t == hop) == ("coastal storms" in q) else 0.1 for t in texts]
+    try:
+        await g.add_texts(list(_RELS), extractor=_ents)
+        block = await MemoryLoop(g, max_facts=8, min_score=0.5).recall("Why is the main road closed?")
+        assert "coastal storms" in block.roots
+        assert any(f["content"] == hop for f in block.facts)
+    finally:
+        await g.close()

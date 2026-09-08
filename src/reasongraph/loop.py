@@ -112,12 +112,14 @@ class MemoryLoop:
                 found = [f for f, sc in zip(found, scores) if sc >= self.min_score]
             except Exception:
                 pass
+            seen = {f["content"] for f in found}     # a dropped fact may come back by structure below
         if found and self.rerank_min is not None:
             try:
                 rel = self.graph.embeddings.relevance(query, [f["content"] for f in found])
                 found = [f for f, x in zip(found, rel) if x >= self.rerank_min]
             except Exception:
                 pass
+            seen = {f["content"] for f in found}
         chain: list[dict] = []
         roots: list[str] = []
         if _QUESTION.search(message) and found:
