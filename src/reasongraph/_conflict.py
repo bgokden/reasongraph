@@ -146,12 +146,60 @@ class FineTunedConflictResolver:
     )
 
     def __init__(self, endpoint: str = "http://127.0.0.1:8080", *, timeout: float = 20.0,
-                 max_candidates: int = 10, fail_open: bool = True, post=None) -> None:
+                 max_candidates: int = 10, fail_open: bool = True, post=None,
+                 prefilter: "str | dict | None" = None, prefilter_threshold: float | None = None,
+                 prefilter_encoder=None) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.timeout = timeout
         self.max_candidates = max_candidates
         self.fail_open = fail_open
         self._post = post or self._http_post
+        # Optional first stage: a logistic regression on sentence-embedding pair features
+        # ``[a, b, |a-b|, a*b]`` (a = existing fact, b = new fact) trained for recall
+        # (lab task H4: recall 0.99 at threshold 0.2, cutting ~65% of candidate pairs). Only
+        # pairs it passes reach the model. ``prefilter`` is a .joblib path, an ``hf://`` ref,
+        # or the dict the trainer saves ({embed_model, clf, threshold, features}).
+        self.prefilter = prefilter
+        self.prefilter_threshold = prefilter_threshold
+        self._prefilter_encoder = prefilter_encoder
+        self._prefilter_clf = None
+
+    def _load_prefilter(self) -> None:
+        if self._prefilter_clf is not None or self.prefilter is None:
+            return
+        payload = self.prefilter
+        if isinstance(payload, str):
+            import joblib
+            path = payload
+            if path.startswith("hf://"):
+                from huggingface_hub import hf_hub_download
+                parts = path[5:].split("/")
+                path = hf_hub_download("/".join(parts[:2]), "/".join(parts[2:]))
+            payload = joblib.load(path)
+        self._prefilter_clf = payload["clf"]
+        if self.prefilter_threshold is None:
+            self.prefilter_threshold = float(payload.get("threshold", 0.2))
+        if self._prefilter_encoder is None:
+            from sentence_transformers import SentenceTransformer
+            st = SentenceTransformer(payload["embed_model"])
+            self._prefilter_encoder = lambda texts: st.encode(
+                texts, batch_size=64, normalize_embeddings=True, show_progress_bar=False)
+
+    def prefilter_probs(self, new_text: str, candidates: list[str]) -> "list[float] | None":
+        """P(conflict) per candidate from the pre-filter, or None when none is set."""
+        if self.prefilter is None:
+            return None
+        self._load_prefilter()
+        if not candidates:
+            return []
+        import numpy as np
+        embs = np.asarray(self._prefilter_encoder(candidates + [new_text]))
+        a, b = embs[:-1], np.repeat(embs[-1:], len(candidates), axis=0)
+        feats = np.concatenate([a, b, np.abs(a - b), a * b], axis=1)
+        probs = self._prefilter_clf.predict_proba(feats)
+        classes = list(getattr(self._prefilter_clf, "classes_", [0, 1]))
+        idx = classes.index(1) if 1 in classes else len(classes) - 1
+        return [float(p[idx]) for p in probs]
 
     @staticmethod
     def prompt(existing: str, new: str) -> str:
@@ -190,10 +238,12 @@ class FineTunedConflictResolver:
             return None
 
     def contradictions(self, new_text: str, candidates: list[str]) -> list[str]:
+        cands = [c for c in candidates[: self.max_candidates] if c != new_text]
+        probs = self.prefilter_probs(new_text, cands)
+        if probs is not None:
+            cands = [c for c, p in zip(cands, probs) if p >= self.prefilter_threshold]
         out: list[str] = []
-        for cand in candidates[: self.max_candidates]:
-            if cand == new_text:
-                continue
+        for cand in cands:
             if self.is_conflict(cand, new_text):
                 out.append(cand)
         return out

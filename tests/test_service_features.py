@@ -293,3 +293,26 @@ async def test_push_split_stores_one_fact_per_sentence():
         assert out3["count"] == 2
         out4 = await svc2.push("s", "Three facts. Four facts.", split=False)
         assert "sentences" not in out4
+
+
+def test_finetuned_conflict_resolver_prefilter_skips_unlikely_pairs():
+    from reasongraph._conflict import FineTunedConflictResolver
+    import numpy as np
+    class _Clf:
+        classes_ = [0, 1]
+        def predict_proba(self, feats):
+            # conflict likely when the pair embeddings are close (small |a-b|)
+            d = feats[:, 4:8].sum(axis=1)
+            p = np.clip(1.0 - d, 0, 1)
+            return np.stack([1 - p, p], axis=1)
+    enc = lambda texts: np.array([[1, 0, 0, 0] if "Olympus" in t or "Athens" in t else [0, 1, 0, 0] for t in texts], dtype=float)
+    calls = []
+    def fake_post(url, body):
+        calls.append(body["prompt"]); return {"content": '{"conflict": true}'}
+    r = FineTunedConflictResolver("http://llm:8080", post=fake_post,
+                                  prefilter={"embed_model": "x", "kind": "lr", "clf": _Clf(), "threshold": 0.5,
+                                             "features": "a,b,|a-b|,a*b"}, prefilter_encoder=enc)
+    hits = r.contradictions("Zeus now lives in Athens.", ["Zeus lives on Olympus.", "The API returns JSON."])
+    assert hits == ["Zeus lives on Olympus."]
+    assert len(calls) == 1 and "Olympus" in calls[0]      # the unlikely pair never reached the model
+    assert r.prefilter_threshold == 0.5
