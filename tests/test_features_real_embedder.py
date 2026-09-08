@@ -60,7 +60,10 @@ async def test_dedup_090_merges_paraphrases_but_not_distinct_facts(embedder):
 async def test_span_link_085_joins_differently_worded_causal_spans(embedder):
     facts = ["Because of the heavy rain, the river flooded the old town. => the heavy rain => the river flooded the old town",
              "the old town flooded => the main road was closed for two days"]
-    for threshold, expect in ((None, False), (0.85, True)):
+    # Since 0.7.0 causal_chain bridges consecutive facts that share a content word
+    # ("flooded the old town" -> "the old town flooded"), so the chain forms even
+    # without span linking; span_link 0.85 additionally records the same_as tie.
+    for threshold in (None, 0.85):
         svc = MemoryService(backend=MemoryBackend(), embed_model=embedder, extractor=_no_entities,
                             causal_extractor=_causal)
         svc.graph.span_link_threshold = threshold
@@ -68,8 +71,7 @@ async def test_span_link_085_joins_differently_worded_causal_spans(embedder):
             await svc.push("s", "the heavy rain => the river flooded the old town")
             await svc.push("s", "the old town flooded => the main road was closed for two days")
             res = await svc.causal_chain("the heavy rain", "the main road was closed")
-            assert bool(res["chain"]) is expect, (threshold, res)
-            if expect:
-                # the tie does not create chains between unrelated spans
-                await svc.push("s", "Elasticsearch rebuilds its index => the node's CPU is saturated")
-                assert not (await svc.causal_chain("the heavy rain", "CPU is saturated"))["chain"]
+            assert res["chain"], (threshold, res)
+            # neither the tie nor the bridge creates chains between unrelated spans
+            await svc.push("s", "Elasticsearch rebuilds its index => the node's CPU is saturated")
+            assert not (await svc.causal_chain("the heavy rain", "CPU is saturated"))["chain"]
