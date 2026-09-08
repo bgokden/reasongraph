@@ -912,15 +912,19 @@ class ReasonGraph:
             else (scope_set if (isolate and scope_set) else None)
         )
         embedding = self.embeddings.encode_query(query)
+        # Entity nodes share the index with facts and often outrank them for short
+        # queries, so fetch a wider window and keep the first ``top_k`` facts; otherwise
+        # a question could seed from one fact and return a single connection.
+        fetch = max(top_k * 4, 20)
         if search_mode == "embedding":
-            seeds = await self.backend.knn_search(embedding, top_k, scopes=scope_set)
+            seeds = await self.backend.knn_search(embedding, fetch, scopes=scope_set)
         elif search_mode == "keyword":
             seeds = await self.backend.hybrid_search(
-                embedding, query, top_k, keyword_only=True, scopes=scope_set,
+                embedding, query, fetch, keyword_only=True, scopes=scope_set,
             )
         elif search_mode == "hybrid":
             seeds = await self.backend.hybrid_search(
-                embedding, query, top_k, rrf_k=rrf_k, scopes=scope_set,
+                embedding, query, fetch, rrf_k=rrf_k, scopes=scope_set,
             )
         else:
             raise ValueError(
@@ -929,7 +933,7 @@ class ReasonGraph:
 
         # Seed only from text facts so every connection path is rooted at a fact
         # (entities bridge during traversal, they are not path roots).
-        seeds = [s for s in seeds if s.get("type") == "text"]
+        seeds = [s for s in seeds if s.get("type") == "text"][:top_k]
 
         # Breadth-first traversal tracking, for every node, the fact and entity
         # it was reached through. parent[c] = (prior_fact, bridging_entity, depth);

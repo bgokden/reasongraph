@@ -1101,3 +1101,23 @@ async def test_no_canonicalizer_leaves_entities_verbatim(graph):
         "x", extractor=lambda t: ["Apple Inc.", "Apple Inc."], causal=False,
     )
     assert ents == ["Apple Inc.", "Apple Inc."]
+
+
+@pytest.mark.asyncio
+async def test_discover_seeds_from_top_k_facts_even_when_entities_outrank_them():
+    """Entity nodes live in the same index; a short question must still seed from
+    top_k facts, not from whatever facts survive among the nearest entities."""
+    from reasongraph.backends._memory import MemoryBackend
+    from test_causal import _fake_embed
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=False)
+    g.embeddings.rerank = lambda q, c, n: c[:n]
+    await g.initialize()
+    try:
+        facts = [f"crisis fact {i}: banks and mortgages number {i}." for i in range(8)]
+        ents = [f"crisis entity {i}" for i in range(12)]
+        # every fact mentions all entities, so entities are dense in the index
+        await g.add_texts(facts, extractor=lambda t: ents)
+        res = await g.discover("crisis", top_k=5, hops=1, max_results=10)
+        assert len(res) >= 5, [r["content"] for r in res]
+    finally:
+        await g.close()
