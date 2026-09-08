@@ -402,6 +402,20 @@ by default and falls back to the hybrid automatically. If neither is available t
 default warns once rather than silently dropping causality; `add_text(..., causal=True)`
 raises when no causal extractor can be resolved.
 
+### Sentence splitting at ingest
+
+Every model in the pipeline is trained on single sentences, so a paragraph pushed as one
+fact hurts entities, causal spans and retrieval alike (on our 39-case causal eval, chain
+recall drops from 79% to 10%). Pass a splitter and each text becomes one fact per sentence:
+
+```python
+ReasonGraph(sentence_splitter="sat")          # Segment-any-Text, 85 languages: pip install reasongraph[split]
+ReasonGraph(sentence_splitter="regex")        # dependency-free fallback (punctuation + newlines)
+graph.add_texts([paragraph], split=True)      # or per call; split=False keeps a text whole
+```
+
+The service reads `REASONGRAPH_SPLIT_SENTENCES=sat|regex`; pushes accept `split: true/false`.
+
 ## Fast inference (optional, pure ONNX)
 
 The defaults already deliver the eval quality below; this is purely a
