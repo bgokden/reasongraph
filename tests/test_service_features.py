@@ -302,7 +302,7 @@ def test_finetuned_conflict_resolver_prefilter_skips_unlikely_pairs():
         classes_ = [0, 1]
         def predict_proba(self, feats):
             # conflict likely when the pair embeddings are close (small |a-b|)
-            d = feats[:, 4:8].sum(axis=1)
+            d = feats[:, 8:12].sum(axis=1)
             p = np.clip(1.0 - d, 0, 1)
             return np.stack([1 - p, p], axis=1)
     enc = lambda texts: np.array([[1, 0, 0, 0] if "Olympus" in t or "Athens" in t else [0, 1, 0, 0] for t in texts], dtype=float)
