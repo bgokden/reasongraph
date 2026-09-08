@@ -27,6 +27,9 @@ async def test_memory_loop_recalls_injects_and_observes():
         assert "The flood closed the main road." in msgs[1]["content"] and "[notes" in msgs[1]["content"]
         assert msgs[-1] == history[-1]
         assert not block.empty and any("closed the main road" in f["content"] for f in block.facts)
+        # why-questions walk back to the root and spell it out for the model
+        assert "heavy rain" in block.roots and "Root cause(s)" in block.text
+        assert any("Heavy rain caused" in f["content"] for f in block.facts)   # hop facts pulled in
 
         seen = {}
         def model(messages):

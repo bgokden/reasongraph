@@ -27,6 +27,7 @@ class ContextBlock:
     """What the loop recalled for one message."""
     facts: list[dict] = field(default_factory=list)      # {content, scopes, path, causes, cross_session}
     chain: list[dict] = field(default_factory=list)      # cause->effect hops for why/what-if questions
+    roots: list[str] = field(default_factory=list)       # root causes the chain terminates in
     text: str = ""                                       # the rendered block injected into the prompt
 
     @property
@@ -100,13 +101,31 @@ class MemoryLoop:
             except Exception:
                 pass
         chain: list[dict] = []
+        roots: list[str] = []
         if _QUESTION.search(message) and found:
-            try:
-                traced = await self.graph.trace_causes(found[0]["content"], max_depth=self.hops)
-                chain = traced.get("chain", [])[:6]
-            except Exception:
-                chain = []
-        block = ContextBlock(facts=found, chain=chain)
+            # walk backwards from the top few facts: the deepest (root) fact is the one
+            # retrieval misses most, and a small model answers with the nearest cause
+            # unless the root is spelled out
+            hops_seen: set[tuple] = set()
+            for f in found[:3]:
+                try:
+                    traced = await self.graph.trace_causes(f["content"], max_depth=self.hops)
+                except Exception:
+                    continue
+                for h in traced.get("chain", []):
+                    key = (h.get("cause"), h.get("effect"))
+                    if key not in hops_seen and len(chain) < 8:
+                        hops_seen.add(key); chain.append(h)
+                for r in traced.get("terminals", []):
+                    if r not in roots:
+                        roots.append(r)
+            for h in chain:                          # pull in the facts that assert those hops
+                fact = h.get("fact")
+                if fact and fact not in seen and len(found) < self.max_facts:
+                    found.append({"content": fact, "scopes": [], "path": [],
+                                  "causes": [], "cross_session": False})
+                    seen.add(fact)
+        block = ContextBlock(facts=found, chain=chain, roots=roots)
         block.text = self._render(block)
         return block
 
@@ -127,7 +146,12 @@ class MemoryLoop:
         if block.chain:
             hops = "; ".join(f"{h['cause']} -> {h['effect']}" for h in block.chain)
             if used + len(hops) + 20 <= self.max_chars:
-                lines.append(f"Causal chain behind it: {hops}")
+                lines.append(f"Causal chain behind it: {hops}"); used += len(hops) + 20
+        if block.roots:
+            roots = "; ".join(block.roots[:4])
+            if used + len(roots) + 90 <= self.max_chars:
+                lines.append(f"Root cause(s) at the start of that chain: {roots}. "
+                             "When asked why, name the root cause as well as the nearest one.")
         return "\n".join(lines)
 
     # -- observe --------------------------------------------------------------

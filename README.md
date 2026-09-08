@@ -431,6 +431,9 @@ history = [{"role": "user", "content": "Why did the Rotterdam warehouse lose pow
 reply, context = loop.chat_sync(call_model, history, system="You are a careful assistant.")
 # call_model is any fn(messages) -> str: OpenAI-compatible, Claude, Ollama, llama.cpp
 # context.facts  -> what was recalled (with sources and cause->effect links)
+# context.roots  -> for why-questions, the root cause(s) the chain walks back to;
+#                   they are spelled out in the injected block so a small model
+#                   answers with the root, not only the nearest cause
 # the question and the reply are now remembered in "support-chat"
 ```
 
