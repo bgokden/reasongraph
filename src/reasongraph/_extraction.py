@@ -669,6 +669,8 @@ class CausalPointerExtractor:
         embed_gate: "str | dict | None" = None,
         embed_gate_threshold: float = 0.9,
         embed_gate_encoder: "Callable[[list[str]], Any] | None" = None,
+        token_gate: "str | None" = None,
+        token_gate_threshold: float = 0.1,
     ) -> None:
         self.model = model
         self.topk = topk
@@ -687,6 +689,13 @@ class CausalPointerExtractor:
         self.embed_gate_threshold = embed_gate_threshold
         self._embed_gate_encoder = embed_gate_encoder
         self._gate_clf = None
+        # Optional token-level gate: a fine-tuned sequence classifier (HF format, labels
+        # non_causal/causal) read end to end, so it sees the relation, not just the topic.
+        # Local dir or ``hf://owner/repo/subfolder``. Texts with P(causal) under
+        # ``token_gate_threshold`` get no relations. Takes precedence over ``embed_gate``.
+        self.token_gate = token_gate
+        self.token_gate_threshold = token_gate_threshold
+        self._token_gate = None
         self._model = None
         self._tok = None
 
@@ -734,8 +743,45 @@ class CausalPointerExtractor:
             self._embed_gate_encoder = lambda texts: st.encode(
                 texts, batch_size=64, normalize_embeddings=True, show_progress_bar=False)
 
+    def _load_token_gate(self) -> None:
+        if self._token_gate is not None or self.token_gate is None:
+            return
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        path = self.token_gate
+        if path.startswith("hf://"):   # hf://owner/repo[/subfolder]
+            from huggingface_hub import snapshot_download
+            parts = path[5:].split("/")
+            repo, sub = "/".join(parts[:2]), "/".join(parts[2:])
+            root = snapshot_download(repo, allow_patterns=[f"{sub}/*"] if sub else None)
+            path = os.path.join(root, sub) if sub else root
+        tok = AutoTokenizer.from_pretrained(path)
+        model = AutoModelForSequenceClassification.from_pretrained(path).eval()
+        labels = {str(v).lower(): int(k) for k, v in (model.config.id2label or {}).items()}
+        pos = labels.get("causal", labels.get("label_1", 1))
+        self._token_gate = (tok, model, pos, torch)
+
+    def token_causal_probs(self, texts: list[str]) -> "list[float] | None":
+        """P(causal) per text from the token gate, or None when no token gate is set."""
+        if self.token_gate is None:
+            return None
+        self._load_token_gate()
+        if not texts:
+            return []
+        tok, model, pos, torch = self._token_gate
+        out: list[float] = []
+        with torch.no_grad():
+            for i in range(0, len(texts), 32):
+                batch = tok(texts[i:i + 32], padding=True, truncation=True, max_length=128,
+                            return_tensors="pt")
+                probs = torch.softmax(model(**batch).logits, dim=-1)[:, pos]
+                out.extend(float(p) for p in probs)
+        return out
+
     def causal_probs(self, texts: list[str]) -> "list[float] | None":
-        """P(causal) per text from the embedding gate, or None when no gate is set."""
+        """P(causal) per text from the token gate if set, else the embedding gate, else None."""
+        if self.token_gate is not None:
+            return self.token_causal_probs(texts)
         if self.embed_gate is None:
             return None
         self._load_gate()
@@ -775,9 +821,10 @@ class CausalPointerExtractor:
         reported as non-causal without running the span model.
         """
         probs = self.causal_probs(texts)
+        cutoff = self.token_gate_threshold if self.token_gate is not None else self.embed_gate_threshold
         results = []
         for i, text in enumerate(texts):
-            if probs is not None and probs[i] < self.embed_gate_threshold:
+            if probs is not None and probs[i] < cutoff:
                 results.append({"text": text, "causal": False, "relations": [],
                                 "causal_prob": probs[i]})
                 continue

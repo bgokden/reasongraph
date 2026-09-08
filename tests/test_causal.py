@@ -332,3 +332,33 @@ async def test_add_texts_split_keeps_entities_aligned_with_inputs():
         assert len(out2) == 1
     finally:
         await g.close()
+
+
+def test_pointer_extractor_token_gate_takes_precedence(monkeypatch):
+    from reasongraph._extraction import CausalPointerExtractor
+
+    class _Tok:
+        def __call__(self, texts, **kw):
+            return {"texts": texts}
+    class _Logits:
+        def __init__(self, rows): self.rows = rows
+    class _Out:
+        def __init__(self, rows): self.logits = rows
+    class _Cfg:
+        id2label = {0: "non_causal", 1: "causal"}
+    class _Model:
+        config = _Cfg()
+        def eval(self): return self
+        def __call__(self, texts):
+            import torch
+            # high causal logit when the sentence has a verb of change
+            return _Out(torch.tensor([[0.0, 4.0] if "increase" in t else [4.0, 0.0] for t in texts]))
+    import torch
+    ex = CausalPointerExtractor(token_gate="/nonexistent", token_gate_threshold=0.1,
+                                embed_gate={"embed_model": "x", "kind": "x", "clf": None})
+    ex._token_gate = (_Tok(), _Model(), 1, torch)   # pre-loaded: no download in tests
+    monkeypatch.setattr(ex, "relations_for", lambda text: [{"cause": "c", "effect": "e"}])
+    out = ex.extract_causal(["The cluster increased throughput.", "The cluster is in rack 4."])
+    assert out[0]["causal"] and out[0]["causal_prob"] > 0.9
+    assert out[1] == {"text": "The cluster is in rack 4.", "causal": False, "relations": [],
+                      "causal_prob": out[1]["causal_prob"]} and out[1]["causal_prob"] < 0.1
