@@ -12,6 +12,8 @@ Run:  uv run python tests/eval_causal_extraction.py
 
 from __future__ import annotations
 
+import json
+import os
 import time
 
 from reasongraph import ReasonGraph
@@ -74,6 +76,37 @@ def evaluate(graph: ReasonGraph) -> list[dict]:
             "p5": precision_at_k(results, case.expected_chain, 5),
             "da": domain_accuracy(results, case.domain),
         })
+    return rows
+
+
+EXTRA_CASES_PATH = os.path.join(os.path.dirname(__file__), "data", "reasoning_cases_extra.jsonl")
+
+
+def load_extra_cases() -> list[dict]:
+    """32 reviewed extra cases (logistics, legal, education, sport; 8 non-English), each
+    with its own raw corpus. Auto-extraction only: there is no hand-built graph for them."""
+    with open(EXTRA_CASES_PATH, encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def build_autoextracted_extra(cases: list[dict]) -> tuple[ReasonGraph, float]:
+    g = ReasonGraph()
+    g.initialize_sync()
+    corpus = list(dict.fromkeys(s for c in cases for s in c["corpus"]))
+    t0 = time.perf_counter()
+    g.add_texts_sync(corpus)
+    return g, time.perf_counter() - t0
+
+
+def evaluate_extra(graph: ReasonGraph, cases: list[dict]) -> list[dict]:
+    rows = []
+    for case in cases:
+        results = graph.query_sync(case["agent_thought"], search_mode=case.get("search_mode", "hybrid"),
+                                   top_k=case.get("top_k", 5), hops=case.get("hops", 4))
+        rows.append({"name": case["name"], "domain": case["domain"], "lang": case.get("lang", "en"),
+                     "comp": chain_completeness(results, case["expected_chain"]),
+                     "r5": recall_at_k(results, case["expected_chain"], 5),
+                     "p5": precision_at_k(results, case["expected_chain"], 5)})
     return rows
 
 
@@ -147,5 +180,20 @@ def main():
     print(f"{'=' * 78}")
 
 
+def run_extra() -> None:
+    cases = load_extra_cases()
+    print(f"\nExtra cases ({len(cases)}, auto-extracted only; reviewed 2026-09-08)")
+    g, secs = build_autoextracted_extra(cases)
+    rows = evaluate_extra(g, cases)
+    print(f"  ingest {secs:.1f}s for {_graph_stats(g)['text']} sentences")
+    print(f"  {'domain':<12s} {'n':>3s}  Chain   R@5   P@5")
+    for key in ("domain", "lang"):
+        for val in sorted({r[key] for r in rows}):
+            sub = [r for r in rows if r[key] == val]
+            print(f"  {val:<12s} {len(sub):>3d}  {_avg(sub,'comp'):>5.0%}  {_avg(sub,'r5'):>4.0%}  {_avg(sub,'p5'):>4.0%}")
+    print(f"  {'OVERALL':<12s} {len(rows):>3d}  {_avg(rows,'comp'):>5.0%}  {_avg(rows,'r5'):>4.0%}  {_avg(rows,'p5'):>4.0%}")
+
+
 if __name__ == "__main__":
     main()
+    run_extra()
