@@ -210,6 +210,14 @@ asyncio.run(main())
 - **Async-first** -- native async API with sync convenience wrappers
 - **Pluggable backends** -- in-memory (zero-config default), SQLite, or PostgreSQL with pgvector
 
+### Causal eval cases
+
+`tests/data/causal_cases.jsonl` (40 reviewed cases) and `tests/data/causal_cases_batch2.jsonl`
+(40 more, 8 domains x 5, 12 non-English) each hold multi-source why-questions with a gold
+chain. Run `python tests/eval_causal_cases.py --cases tests/data/causal_cases_batch2.jsonl`.
+Baseline on batch2 with the default models: chain recovered 100%, ordered 47%, answer 100%,
+causal chain 65%.
+
 ## Models
 
 Every model slot is pluggable; these are the defaults and what ReasonGraph Cloud runs.
