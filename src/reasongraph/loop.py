@@ -42,6 +42,7 @@ class ContextBlock:
     facts: list[dict] = field(default_factory=list)      # {content, scopes, path, causes, cross_session}
     chain: list[dict] = field(default_factory=list)      # cause->effect hops for why/what-if questions
     roots: list[str] = field(default_factory=list)       # root causes the chain terminates in
+    narrative: str = ""                                  # the chain's facts, root first, as one passage
     text: str = ""                                       # the rendered block injected into the prompt
 
     @property
@@ -109,7 +110,11 @@ class MemoryLoop:
 
     async def recall(self, message: str, *, previous: str | None = None) -> ContextBlock:
         """Facts, paths and causal hops relevant to ``message`` (and the previous turn)."""
-        query = message if not previous else f"{previous}\n{message}"
+        # A short follow-up ("and why?") needs the previous turn to mean anything; a full
+        # question does not, and dragging the previous answer into the query pulls the
+        # seeds back to the old topic when the conversation moves on.
+        short = len(message.split()) < 4
+        query = f"{previous[:300]}\n{message}" if (previous and short) else message
         found = await self.graph.discover(query, top_k=self.top_k, hops=self.hops,
                                           max_results=self.max_facts, scopes=self.recall_scopes)
         seen = {f["content"] for f in found}
@@ -256,7 +261,34 @@ class MemoryLoop:
                         f["scopes"] = sorted(sc[f["content"]])
             except Exception:
                 pass
-        block = ContextBlock(facts=found, chain=chain, roots=roots)
+        narrative = ""
+        if chain:
+            # cause -> effect order: start from hops whose cause nothing else produces (the
+            # roots) and follow effect -> next cause; hops merged from several traces carry
+            # depths on different bases, so depth only breaks ties
+            produced = {h.get("effect") for h in chain}
+            starts = [h for h in chain if h.get("cause") not in produced] or chain
+            order: list[dict] = []
+            def walk(h):
+                if any(h is x for x in order):
+                    return
+                order.append(h)
+                for n in chain:
+                    if n.get("cause") == h.get("effect"):
+                        walk(n)
+            for h in sorted(starts, key=lambda h: -int(h.get("depth", 0))):
+                walk(h)
+            for h in sorted(chain, key=lambda h: -int(h.get("depth", 0))):
+                walk(h)
+            ordered: list[str] = []
+            for h in order:
+                fact = h.get("fact")
+                if fact and fact not in ordered:
+                    ordered.append(fact)
+            known = {f["content"] for f in found}
+            ordered = [f for f in ordered if f in known] or ordered
+            narrative = " ".join(ordered)
+        block = ContextBlock(facts=found, chain=chain, roots=roots, narrative=narrative)
         block.text = self._render(block)
         return block
 
@@ -299,6 +331,12 @@ class MemoryLoop:
             if used + len(roots) + 90 <= self.max_chars:
                 lines.append(f"Root cause(s) at the start of that chain: {roots}. "
                              "When asked why, name the root cause as well as the nearest one.")
+                used += len(roots) + 90
+        if block.narrative and used + len(block.narrative) + 60 <= self.max_chars:
+            lines.append(f"In order, cause to effect: {block.narrative}")
+        if block.facts:
+            lines.append("These are your own memories: answer from them when they relate to the question, "
+                         "and do not say you have no record of something listed above.")
         return "\n".join(lines)
 
     # -- observe --------------------------------------------------------------

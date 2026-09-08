@@ -181,3 +181,27 @@ async def test_chain_facts_keep_their_slot_in_a_busy_memory():
         assert all(f["scopes"] == ["notes"] for f in block.facts)   # hop facts carry their sources
     finally:
         await g.close()
+
+
+@pytest.mark.asyncio
+async def test_narrative_orders_the_chain_root_first_and_previous_turn_is_not_prepended():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=_causal)
+    g.embeddings.rerank = _no_rerank
+    await g.initialize()
+    try:
+        await g.add_texts(list(_RELS), extractor=_ents, scopes={"notes"})
+        loop = MemoryLoop(g, max_facts=8)
+        block = await loop.recall("Why is the main road closed?", previous="Some long earlier answer about something else entirely.")
+        assert block.narrative.startswith("Storms hit the coast") and block.narrative.endswith("closed the main road.")
+        assert "In order, cause to effect:" in block.text and "your own memories" in block.text
+        seen = []
+        real = g.discover
+        async def spy(q, **kw):
+            seen.append(q); return await real(q, **kw)
+        g.discover = spy
+        await loop.recall("Why is the main road closed?", previous="Some long earlier answer.")
+        assert seen[-1] == "Why is the main road closed?"          # a full question stands alone
+        await loop.recall("and why?", previous="Because the flood closed it.")
+        assert seen[-1].startswith("Because the flood closed it.")  # a short follow-up keeps its context
+    finally:
+        await g.close()
