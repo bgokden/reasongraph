@@ -463,6 +463,12 @@ reply, context = loop.chat_sync(call_model, history, system="You are a careful a
 # the question and the reply are now remembered in "support-chat"
 ```
 
+The loop also remembers the conversation itself. Those stored turns are recalled like any
+other fact, but judged after everything else: the question you just asked and an earlier
+"I don't know" would otherwise score highest and take every slot.
+`graph.forget(scopes)` erases a session (or a tenant, or a test run): facts and the entities
+only they linked are deleted; a sentence also held elsewhere is detached, not deleted.
+
 `loop.messages(history)` returns the message list with the recalled facts injected as a
 system message, if you want to call the model yourself; `loop.observe(user, assistant)`
 stores an exchange. Options: `max_facts` / `max_chars` (context budget), `min_score`
