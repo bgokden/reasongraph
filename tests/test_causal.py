@@ -362,3 +362,4 @@ def test_pointer_extractor_token_gate_takes_precedence(monkeypatch):
     assert out[0]["causal"] and out[0]["causal_prob"] > 0.9
     assert out[1] == {"text": "The cluster is in rack 4.", "causal": False, "relations": [],
                       "causal_prob": out[1]["causal_prob"]} and out[1]["causal_prob"] < 0.1
+

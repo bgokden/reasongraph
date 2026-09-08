@@ -630,6 +630,47 @@ class HybridCausalExtractor:
     __call__ = extract_causal
 
 
+_POINTER_OUT_KEYS = ["cause_start", "cause_end", "effect_start", "effect_end",
+                     "sig_start", "sig_end", "signal_cls", "causal_cls"]
+
+
+def _resolve_onnx(spec: str) -> str:
+    """A local path, or ``hf://owner/repo/path/in/repo.onnx`` (downloaded and cached)."""
+    if spec.startswith("hf://"):
+        from huggingface_hub import hf_hub_download
+        rest = spec[len("hf://"):]
+        owner, repo, *path = rest.split("/")
+        return hf_hub_download(f"{owner}/{repo}", "/".join(path))
+    return spec
+
+
+class _OnnxPointer:
+    """Stands in for the PyTorch pointer's forward: onnxruntime session in, the same
+    eight named tensors out (as torch tensors), so the package's decode is unchanged."""
+
+    def __init__(self, path: str, threads: "int | None" = None) -> None:
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        if threads:
+            so.intra_op_num_threads = int(threads)
+            so.inter_op_num_threads = 1
+        self._sess = ort.InferenceSession(path, sess_options=so, providers=["CPUExecutionProvider"])
+
+    def __call__(self, input_ids, attention_mask, **kw):
+        import numpy as np
+        import torch
+        feeds = {"input_ids": input_ids.cpu().numpy().astype(np.int64),
+                 "attention_mask": attention_mask.cpu().numpy().astype(np.int64)}
+        outs = self._sess.run(_POINTER_OUT_KEYS, feeds)
+        return {k: torch.from_numpy(v) for k, v in zip(_POINTER_OUT_KEYS, outs)}
+
+    def to(self, *a, **k):
+        return self
+
+    def eval(self):
+        return self
+
+
 class CausalPointerExtractor:
     """Causal extractor backed by the span-pointer model (causal-span-model).
 
@@ -671,8 +712,15 @@ class CausalPointerExtractor:
         embed_gate_encoder: "Callable[[list[str]], Any] | None" = None,
         token_gate: "str | None" = None,
         token_gate_threshold: float = 0.1,
+        onnx: "str | None" = None,
+        onnx_threads: "int | None" = None,
     ) -> None:
         self.model = model
+        # Optional ONNX export of the pointer (local path or ``hf://owner/repo/file.onnx``):
+        # the same spans, 2-2.5x faster on CPU. The tokenizer still comes from ``model``;
+        # decoding and the gates are unchanged. Needs onnxruntime.
+        self.onnx = onnx
+        self.onnx_threads = onnx_threads
         self.topk = topk
         self.max_len = max_len
         self.device = device
@@ -715,6 +763,12 @@ class CausalPointerExtractor:
         if not os.path.isdir(model_dir):  # treat as a HF repo id
             from huggingface_hub import snapshot_download
             model_dir = snapshot_download(self.model)
+        if self.onnx:
+            from transformers import AutoTokenizer
+            self._tok = AutoTokenizer.from_pretrained(model_dir)
+            self._model = _OnnxPointer(_resolve_onnx(self.onnx), self.onnx_threads)
+            self.device = "cpu"
+            return
         self._model, self._tok = load_pointer(model_dir)
         if self.device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"

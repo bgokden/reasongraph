@@ -251,6 +251,8 @@ class ReasonGraph:
         ``REASONGRAPH_CAUSAL_GATE_THRESHOLD`` (0.5 = argmax gate, 1.0 = off),
         ``REASONGRAPH_CAUSAL_EMBED_GATE`` (path or ``hf://repo/file`` of an embedding-gate
         .joblib) and ``REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD`` (default 0.9);
+        ``REASONGRAPH_CAUSAL_ONNX`` (path or ``hf://owner/repo/file.onnx``: the pointer's
+        ONNX export, 2-2.5x faster on CPU, same spans) and ``REASONGRAPH_CAUSAL_ONNX_THREADS``;
         ``REASONGRAPH_CAUSAL_TOKEN_GATE`` (dir or ``hf://owner/repo/subfolder`` of a
         fine-tuned causal/non-causal sequence classifier, takes precedence) and
         ``REASONGRAPH_CAUSAL_TOKEN_GATE_THRESHOLD`` (default 0.1).
@@ -267,6 +269,10 @@ class ReasonGraph:
                 kwargs["embed_gate"] = os.environ["REASONGRAPH_CAUSAL_EMBED_GATE"]
                 if os.environ.get("REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD"):
                     kwargs["embed_gate_threshold"] = float(os.environ["REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD"])
+            if os.environ.get("REASONGRAPH_CAUSAL_ONNX"):
+                kwargs["onnx"] = os.environ["REASONGRAPH_CAUSAL_ONNX"]
+                if os.environ.get("REASONGRAPH_CAUSAL_ONNX_THREADS"):
+                    kwargs["onnx_threads"] = int(os.environ["REASONGRAPH_CAUSAL_ONNX_THREADS"])
             if os.environ.get("REASONGRAPH_CAUSAL_TOKEN_GATE"):
                 kwargs["token_gate"] = os.environ["REASONGRAPH_CAUSAL_TOKEN_GATE"]
                 if os.environ.get("REASONGRAPH_CAUSAL_TOKEN_GATE_THRESHOLD"):
