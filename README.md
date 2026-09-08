@@ -440,7 +440,9 @@ reply, context = loop.chat_sync(call_model, history, system="You are a careful a
 `loop.messages(history)` returns the message list with the recalled facts injected as a
 system message, if you want to call the model yourself; `loop.observe(user, assistant)`
 stores an exchange. Options: `max_facts` / `max_chars` (context budget), `min_score`
-(no unrelated filler), `extend_query` (when a why-question's chain ends in a root cause
+(no unrelated filler), `rerank_min` (an optional cross-encoder cutoff on top of it:
+cosine cannot tell "same topic" from "answers this", the reranker can; -4 with the
+default reranker), `extend_query` (when a why-question's chain ends in a root cause
 no recalled fact states, one more targeted query fetches the plain fact behind it),
 `observe_user` / `observe_assistant`, `redact` (a function that
 drops or rewrites text before it is stored), `resolve_conflicts`. The hosted service

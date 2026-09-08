@@ -88,3 +88,27 @@ async def test_memory_loop_min_score_keeps_unrelated_filler_out():
         assert len((await loose.recall("Why did the warehouse lose power?")).facts) == 2
     finally:
         await g.close()
+
+
+class _FakeCrossEncoder:
+    """Unrelated content far below zero, everything else above: the shape of the real one."""
+    def predict(self, pairs):
+        return [-9.0 if "Berlin" in text else 4.0 for _, text in pairs]
+
+
+@pytest.mark.asyncio
+async def test_memory_loop_rerank_cutoff_drops_same_topic_filler():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=False,
+                    rerank_model=_FakeCrossEncoder())
+    g.embeddings.rerank = _no_rerank
+    await g.initialize()
+    try:
+        await g.add_texts(["The Rotterdam warehouse lost power on Tuesday.", "Alice works from the Berlin office."])
+        q = "Why did the Rotterdam warehouse lose power?"
+        loose = await MemoryLoop(g, min_score=-1.0).recall(q)
+        assert any("Berlin" in f["content"] for f in loose.facts)         # cosine alone lets it through
+        strict = await MemoryLoop(g, min_score=-1.0, rerank_min=-4.0).recall(q)
+        assert not any("Berlin" in f["content"] for f in strict.facts)
+        assert any("Rotterdam" in f["content"] for f in strict.facts)
+    finally:
+        await g.close()

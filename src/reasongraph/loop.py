@@ -48,6 +48,12 @@ class MemoryLoop:
         observe_user / observe_assistant: what to remember after each exchange.
         resolve_conflicts: retire facts the new ones replace (uses the graph's resolver).
         redact: optional ``fn(text) -> text | None`` applied before storing; None drops it.
+        rerank_min: optional cross-encoder cutoff applied to the recalled facts on top of
+            ``min_score``. Embedding cosine cannot tell "same topic" from "answers this"
+            (facts about another Dutch city score like a real hit); the reranker can.
+            With the default reranker unrelated facts score below -7 and direct hits
+            above -2, so -4 is a safe value. Facts pulled in by the causal walk are
+            exempt: they are relevant by structure, not by wording.
         extend_query: when a why-question's chain ends in a root cause that no recalled
             fact states, run one more query with that root cause so the plain fact
             behind it (often the deepest, hardest one to retrieve) is pulled in too.
@@ -56,7 +62,7 @@ class MemoryLoop:
 
     def __init__(self, graph, session: str = "chat", *, recall_scopes=None, max_facts: int = 8,
                  max_chars: int = 1600, top_k: int = 5, hops: int = 3, min_score: float = 0.25,
-                 extend_query: bool = True,
+                 extend_query: bool = True, rerank_min: float | None = None,
                  observe_user: bool = True, observe_assistant: bool = True,
                  resolve_conflicts: bool = False, redact: Callable[[str], str | None] | None = None,
                  header: str = "What you remember that is relevant (with sources):") -> None:
@@ -68,6 +74,7 @@ class MemoryLoop:
         self.top_k = top_k
         self.hops = hops
         self.extend_query = extend_query
+        self.rerank_min = rerank_min
         # direct-hit filler below this cosine score is left out: an empty context beats
         # padding the prompt with unrelated facts
         self.min_score = min_score
@@ -103,6 +110,12 @@ class MemoryLoop:
             try:
                 scores = self.graph.embeddings.score(query, [f["content"] for f in found])
                 found = [f for f, sc in zip(found, scores) if sc >= self.min_score]
+            except Exception:
+                pass
+        if found and self.rerank_min is not None:
+            try:
+                rel = self.graph.embeddings.relevance(query, [f["content"] for f in found])
+                found = [f for f, x in zip(found, rel) if x >= self.rerank_min]
             except Exception:
                 pass
         chain: list[dict] = []

@@ -190,6 +190,20 @@ class EmbeddingManager:
             ranked = [r for _, r in sorted(zip(scores, unique), reverse=True)]
         return ranked[:top_k]
 
+    def relevance(self, query: str, texts: list[str]) -> list[float]:
+        """Cross-encoder relevance of each text to the query (raw model scores, one per
+        text, in order). Sharper than embedding cosine for "does this answer the
+        question": unrelated text lands far below zero, direct hits above. Loads the
+        reranker on first use; empty input returns []."""
+        if not texts:
+            return []
+        if self._rerank is None:
+            if self._rerank_name is not None and not isinstance(self._rerank_name, str):
+                self._rerank = self._rerank_name
+            else:
+                self._rerank = CrossEncoder(self._rerank_name or self.DEFAULT_RERANK_MODEL)
+        return [float(x) for x in self._rerank.predict([(query, t) for t in texts])]
+
     def score(self, query: str, texts: list[str]) -> list[float]:
         """Embedding cosine similarity of each text to the query, in [-1, 1].
 
