@@ -416,6 +416,31 @@ graph.add_texts([paragraph], split=True)      # or per call; split=False keeps a
 
 The service reads `REASONGRAPH_SPLIT_SENTENCES=sat|regex`; pushes accept `split: true/false`.
 
+## Deep memory integration: the memory loop
+
+No tools, no prompts to write: wrap any chat model and every exchange becomes memory, and
+whatever is relevant comes back by itself before the next call.
+
+```python
+from reasongraph import ReasonGraph, MemoryLoop
+
+graph = ReasonGraph()                                  # or your Postgres-backed graph
+loop = MemoryLoop(graph, session="support-chat", max_facts=8)
+
+history = [{"role": "user", "content": "Why did the Rotterdam warehouse lose power?"}]
+reply, context = loop.chat_sync(call_model, history, system="You are a careful assistant.")
+# call_model is any fn(messages) -> str: OpenAI-compatible, Claude, Ollama, llama.cpp
+# context.facts  -> what was recalled (with sources and cause->effect links)
+# the question and the reply are now remembered in "support-chat"
+```
+
+`loop.messages(history)` returns the message list with the recalled facts injected as a
+system message, if you want to call the model yourself; `loop.observe(user, assistant)`
+stores an exchange. Options: `max_facts` / `max_chars` (context budget), `min_score`
+(no unrelated filler), `observe_user` / `observe_assistant`, `redact` (a function that
+drops or rewrites text before it is stored), `resolve_conflicts`. The hosted service
+exposes the same loop as `POST /chat`. Example agent: `examples/agents/memory_loop_agent.py`.
+
 ## Fast inference (optional, pure ONNX)
 
 The defaults already deliver the eval quality below; this is purely a
