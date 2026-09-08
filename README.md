@@ -204,11 +204,29 @@ asyncio.run(main())
 - **Causal reasoning** -- trace downstream effects, root causes, and directed causal paths; ask counterfactual `what_if`
 - **Hybrid search** -- combine embedding similarity, keyword (trigram) matching, or both
 - **Multi-hop traversal** -- follow graph edges to discover connected reasoning chains
-- **Cross-encoder reranking** -- rerank results at each hop with `ms-marco-MiniLM-L-6-v2`
+- **Cross-encoder reranking** -- rerank results at each hop with a cross-encoder (`ms-marco-MiniLM-L-6-v2` by default, multilingual mMARCO in the hosted service)
 - **Memory service** -- ready HTTP + MCP server so agents share and query memory
 - **Built-in datasets** -- load curated reasoning graphs for immediate use
 - **Async-first** -- native async API with sync convenience wrappers
 - **Pluggable backends** -- in-memory (zero-config default), SQLite, or PostgreSQL with pgvector
+
+## Models
+
+Every model slot is pluggable; these are the defaults and what ReasonGraph Cloud runs.
+All of them are small and run on CPU.
+
+| Step | Library default | ReasonGraph Cloud | Notes |
+|---|---|---|---|
+| Sentence splitting | off (`split="sat"` or `"regex"` to enable) | SaT `sat-3l-sm` (wtpsplit) | 84% boundary recovery on messy text vs 40% for the regex splitter |
+| Entities | GLiNER `gliner-community/gliner_small-v2.5` | same | zero-shot, multilingual; 97% recall on a 6-language check, ~19 ms/call |
+| Cause → effect | `Berk/causal-span-pointer-v2` (fine-tuned mDeBERTa-v3, open weights) | same, plus the token gate in the same repo at threshold 0.1 | 0.70 F1 on CausalNewsCorpus dev; the gate keeps plain statements out of the causal graph |
+| Embeddings | `all-MiniLM-L12-v2` | `paraphrase-multilingual-MiniLM-L12-v2` (fastembed) | switch when your facts are not only English |
+| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | the multilingual reranker lifted German discovery from 62% to 88% in our eval |
+| Contradiction check | off (`resolve_conflicts=True` needs a resolver) | `Berk/reasongraph-extractor-1.7b` (fine-tuned Qwen3 1.7B, open weights) on llama.cpp, with an embedding pre-filter | 0.95 F1 on the hand-checked pairs; ~0.4 s per pair on two CPU threads |
+| Chat / written answers | none (bring your own `call_model`) | an outside provider, currently `gpt-oss-120b` on Groq | the only step that uses a large model, and only when you use chat or ask for an answer |
+
+Evaluation scripts for each slot are in `tests/` (`eval_causal_extraction.py`,
+`eval_causal_cases.py`) and results are quoted next to the options below.
 
 ## Built-in Datasets
 
