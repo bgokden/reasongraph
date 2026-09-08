@@ -110,8 +110,9 @@ def build_autoextracted_extra(cases: list[dict]) -> tuple[ReasonGraph, float]:
 def evaluate_extra(graph: ReasonGraph, cases: list[dict]) -> list[dict]:
     rows = []
     for case in cases:
+        top_k = int(os.environ.get("EVAL_TOP_K") or case.get("top_k", 5))   # window sweep (X1 follow-up)
         results = graph.query_sync(case["agent_thought"], search_mode=case.get("search_mode", "hybrid"),
-                                   top_k=case.get("top_k", 5), hops=case.get("hops", 4))
+                                   top_k=top_k, hops=case.get("hops", 4))
         rows.append({"name": case["name"], "domain": case["domain"], "lang": case.get("lang", "en"),
                      "comp": chain_completeness(results, case["expected_chain"]),
                      "r5": recall_at_k(results, case["expected_chain"], 5),
