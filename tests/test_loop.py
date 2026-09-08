@@ -199,9 +199,36 @@ async def test_narrative_orders_the_chain_root_first_and_previous_turn_is_not_pr
         async def spy(q, **kw):
             seen.append(q); return await real(q, **kw)
         g.discover = spy
+        seen.clear()
         await loop.recall("Why is the main road closed?", previous="Some long earlier answer.")
-        assert seen[-1] == "Why is the main road closed?"          # a full question stands alone
+        assert seen[0] == "Why is the main road closed?"           # a full question stands alone
+        seen.clear()
         await loop.recall("and why?", previous="Because the flood closed it.")
-        assert seen[-1].startswith("Because the flood closed it.")  # a short follow-up keeps its context
+        assert seen[0].startswith("Because the flood closed it.")   # a short follow-up keeps its context
+    finally:
+        await g.close()
+
+
+@pytest.mark.asyncio
+async def test_root_entity_walk_pulls_the_plain_fact_behind_the_deepest_hop():
+    """The chain's deepest fact names a thing; the plain fact stating what happened to that
+    thing (no causal relation of its own) is reached by the shared name, not by wording."""
+    rels = {"When the boiler is off, the greenhouse night temperature drops sharply.":
+                {"cause": "the boiler is off", "effect": "the greenhouse night temperature drops sharply"},
+            "A sharp drop in greenhouse night temperature slows tomato ripening.":
+                {"cause": "the greenhouse night temperature drops sharply", "effect": "tomato ripening slows"}}
+    plain = "The Groningen greenhouse boiler was switched off in April."
+    ents = lambda t: ["boiler"] if "boiler" in t else (["greenhouse"] if "greenhouse" in t else [])
+    causal = lambda texts: [{"causal": t in rels, "relations": [rels[t]] if t in rels else []} for t in texts]
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=causal)
+    g.embeddings.rerank = _no_rerank
+    # wording: the question reaches the ripening fact only; the plain root scores nothing
+    g.embeddings.score = lambda q, texts: [0.8 if "ripening" in t else (0.1 if t == plain else 0.5) for t in texts]
+    await g.initialize()
+    try:
+        await g.add_texts(list(rels) + [plain, "Tomatoes are red."], extractor=ents, scopes={"notes"})
+        block = await MemoryLoop(g, max_facts=6).recall("Why are the tomatoes ripening late?")
+        got = [f["content"] for f in block.facts]
+        assert plain in got, got
     finally:
         await g.close()

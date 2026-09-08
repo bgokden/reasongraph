@@ -243,6 +243,34 @@ class MemoryLoop:
                             found.append({"content": content, "scopes": sorted(r.get("scopes", [])),
                                           "path": [], "causes": [], "cross_session": False})
                             seen.add(content); chain_ids.add(content)
+        # The deepest fact of the chain rarely states its own cause; the plain fact behind it
+        # ("the boiler was switched off in April") shares a name with it and nothing else. One
+        # entity hop from that fact, plain facts only (no causal relation of their own), cap 2.
+        if chain and _QUESTION.search(message):
+            deepest = None
+            produced = {h.get("effect") for h in chain}
+            for h in sorted(chain, key=lambda h: -int(h.get("depth", 0))):
+                if h.get("cause") not in produced and h.get("fact"):
+                    deepest = h["fact"]; break
+            if deepest is None:
+                deepest = max(chain, key=lambda h: int(h.get("depth", 0))).get("fact")
+            if deepest:
+                try:
+                    near = await self.graph.discover(deepest, top_k=1, hops=1, max_results=12,
+                                                     scopes=self.recall_scopes)
+                except Exception:
+                    near = []
+                added = 0
+                for r in near:
+                    if not isinstance(r, dict) or not _walked(r) or r["content"] in seen:
+                        continue
+                    if r.get("causes"):
+                        continue                      # a causal fact would have been a hop already
+                    found.append({"content": r["content"], "scopes": sorted(r.get("scopes", [])),
+                                  "path": r.get("path", []), "causes": [], "cross_session": r.get("cross_session", False)})
+                    seen.add(r["content"]); chain_ids.add(r["content"]); added += 1
+                    if added >= 2:
+                        break
         # The context budget: a fact of the traced chain keeps its slot ahead of anything
         # found by wording alone (in a busy memory most misses were roots that were reached
         # and then lost to filler), and the conversation's own turns come last.
