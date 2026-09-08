@@ -250,3 +250,25 @@ async def test_knn_search_returns_cosine_scores_memory_backend():
         hits = await svc.graph.backend.knn_search(_Embed()("k1"), top_k=2)
         assert hits[0]["content"] == "k1~Zeus threw lightning."
         assert hits[0]["score"] > 0.99 and hits[1]["score"] < 0.5
+
+
+def test_finetuned_conflict_resolver_prompt_grammar_and_fail_open():
+    from reasongraph._conflict import FineTunedConflictResolver
+    calls = []
+    def fake_post(url, body):
+        calls.append((url, body))
+        # the served model answers with the JSON the grammar admits
+        existing = body["prompt"].split("existing: ", 1)[1].split("\nnew:", 1)[0]
+        return {"content": '{"conflict": true}' if "Olympus" in existing else '{"conflict": false}'}
+    r = FineTunedConflictResolver("http://llm:8080/", post=fake_post)
+    hits = r.contradictions("Zeus now lives in Athens.", ["Zeus lives on Olympus.", "Hera is Zeus's wife.", "Zeus now lives in Athens."])
+    assert hits == ["Zeus lives on Olympus."]
+    assert calls[0][0] == "http://llm:8080/completion"
+    assert calls[0][1]["prompt"] == "[conflict] existing: Zeus lives on Olympus.\nnew: Zeus now lives in Athens."
+    assert calls[0][1]["temperature"] == 0 and "conflict" in calls[0][1]["grammar"]
+    assert len(calls) == 2            # identical text skipped, no call for it
+    # a dead model never blocks a push
+    def dead(url, body): raise OSError("connection refused")
+    r2 = FineTunedConflictResolver("http://llm:8080", post=dead)
+    assert r2.contradictions("x", ["y"]) == []
+    assert FineTunedConflictResolver("http://llm:8080", post=dead, fail_open=False).is_conflict.__name__ == "is_conflict"

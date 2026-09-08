@@ -120,3 +120,72 @@ class LLMConflictResolver:
             if answer.startswith("yes"):
                 out.append(candidate)
         return out
+
+
+class FineTunedConflictResolver:
+    """Conflict detection with our own fine-tuned small model served by ``llama.cpp``.
+
+    The model (the ``reasongraph-extractor`` adapters trained in the lab) was taught one
+    instruction per task; the conflict one is exactly::
+
+        [conflict] existing: <existing fact>\nnew: <new fact>  ->  {"conflict": true|false}
+
+    This resolver sends that prompt, one candidate at a time, to a ``llama-server``
+    (``<endpoint>/completion``) with a grammar that only admits the JSON answer, so the
+    reply is a strict yes/no and never free text. It keeps the write path on our own
+    hardware: no external LLM provider sees the facts.
+
+    ``fail_open`` (default True) means a down or slow model yields "no conflicts" instead
+    of blocking a push; the miss is logged by the caller's normal path. Pass ``post`` to
+    substitute the HTTP call (tests).
+    """
+
+    GRAMMAR = (
+        'root ::= "{" ws "\\"conflict\\"" ws ":" ws ("true" | "false") ws "}"\n'
+        "ws ::= [ \\n\\t]*\n"
+    )
+
+    def __init__(self, endpoint: str = "http://127.0.0.1:8080", *, timeout: float = 20.0,
+                 max_candidates: int = 10, fail_open: bool = True, post=None) -> None:
+        self.endpoint = endpoint.rstrip("/")
+        self.timeout = timeout
+        self.max_candidates = max_candidates
+        self.fail_open = fail_open
+        self._post = post or self._http_post
+
+    @staticmethod
+    def prompt(existing: str, new: str) -> str:
+        return f"[conflict] existing: {existing}\nnew: {new}"
+
+    def _http_post(self, url: str, body: dict) -> dict:
+        import json
+        import urllib.request
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def is_conflict(self, existing: str, new: str) -> bool | None:
+        """True/False from the model, or None when the model could not answer."""
+        import json
+        body = {"prompt": self.prompt(existing, new), "n_predict": 16, "temperature": 0,
+                "grammar": self.GRAMMAR, "cache_prompt": True}
+        try:
+            out = self._post(self.endpoint + "/completion", body)
+            text = out.get("content") if isinstance(out, dict) else None
+            if text is None and isinstance(out, dict) and out.get("choices"):
+                text = out["choices"][0].get("text")
+            return bool(json.loads(text.strip())["conflict"])
+        except Exception:
+            if self.fail_open:
+                return None
+            raise
+
+    def contradictions(self, new_text: str, candidates: list[str]) -> list[str]:
+        out: list[str] = []
+        for cand in candidates[: self.max_candidates]:
+            if cand == new_text:
+                continue
+            if self.is_conflict(cand, new_text):
+                out.append(cand)
+        return out
