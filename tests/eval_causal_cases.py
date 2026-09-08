@@ -255,12 +255,15 @@ def main(argv=None):
     extractor = build_extractor(args)
 
     from reasongraph import ReasonGraph
+    from eval_causal_extraction import _embed_model
 
     span_link = args.span_link_threshold if args.span_link_threshold > 0 else None
+    embed_model = _embed_model()   # mirror production: REASONGRAPH_EMBED_MODEL (multilingual) not the English default
     t0 = time.perf_counter()
     rows = []
     for case in cases:
         graph = ReasonGraph(causal_extractor=extractor, span_link_threshold=span_link,
+                            embed_model=embed_model,
                             sentence_splitter=(None if args.split == "off" else args.split))
         graph._eval_ingest = args.ingest
         graph.initialize_sync()
@@ -272,7 +275,7 @@ def main(argv=None):
     print(f"  model={args.causal_model} gate={args.gate_threshold} "
           f"embed_gate={os.path.basename(args.embed_gate) if args.embed_gate else 'none'}"
           f"{'@'+str(args.embed_gate_threshold) if args.embed_gate else ''} "
-          f"span_link={span_link}")
+          f"span_link={span_link} embed_model={embed_model}")
     print(f"  {len(cases)} cases in {elapsed:.0f}s\n{'='*70}")
     _group_table(rows, "lang", "Language")
     print()
