@@ -316,6 +316,7 @@ class ReasonGraph:
         causal: bool | None = None,
         dedup_threshold: float | None = None,
         dedup_scopes=None,
+        dedup_entity_gate: bool = False,
         resolve_conflicts: bool | None = None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[str]:
@@ -342,7 +343,7 @@ class ReasonGraph:
         """
         result = await self.add_texts(
             [text], extractor=extractor, causal_extractor=causal_extractor,
-            scopes=scopes, causal=causal, dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes,
+            scopes=scopes, causal=causal, dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, dedup_entity_gate=dedup_entity_gate,
             resolve_conflicts=resolve_conflicts, canonicalizer=canonicalizer,
         )
         return result[0]
@@ -356,6 +357,7 @@ class ReasonGraph:
         causal: bool | None = None,
         dedup_threshold: float | None = None,
         dedup_scopes=None,
+        dedup_entity_gate: bool = False,
         resolve_conflicts: bool | None = None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
         split: bool | None = None,
@@ -417,7 +419,7 @@ class ReasonGraph:
             flat = [sent for g in groups for sent in g]
             per_fact = await self.add_texts(
                 flat, extractor=extractor, causal_extractor=causal_extractor, scopes=scopes,
-                causal=causal, dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, resolve_conflicts=resolve_conflicts,
+                causal=causal, dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, dedup_entity_gate=dedup_entity_gate, resolve_conflicts=resolve_conflicts,
                 canonicalizer=canonicalizer, split=False,
             )
             out: list[list[str]] = []
@@ -458,11 +460,15 @@ class ReasonGraph:
         # Semantic dedup (opt-in): drop texts that near-duplicate an existing
         # fact, unioning their scopes onto it instead of adding a paraphrase.
         skip: set[str] = set()
+        pre_entities: dict[str, list] = {}   # extracted early for the gate, reused below
         if dedup_threshold is not None:
             for text in texts:
                 if text in skip:
                     continue
-                dup = await self._find_duplicate(text, dedup_threshold, scopes=dedup_scopes)
+                ents = None
+                if dedup_entity_gate and extractor is not None:
+                    ents = pre_entities[text] = list(extractor(text) or [])
+                dup = await self._find_duplicate(text, dedup_threshold, scopes=dedup_scopes, entities=ents)
                 if dup is not None:
                     skip.add(text)
                     if scopes:
@@ -478,7 +484,7 @@ class ReasonGraph:
             if text in skip:
                 all_entities.append([])
                 continue
-            entities = extractor(text)
+            entities = pre_entities[text] if text in pre_entities else extractor(text)
             if canonicalizer is not None:
                 entities = self._canonicalize(entities, canonicalizer)
             all_entities.append(entities)
@@ -627,14 +633,19 @@ class ReasonGraph:
         if retired:
             await self.backend.set_invalid(retired, datetime.now())
 
-    async def _find_duplicate(self, text: str, threshold: float, scopes=None) -> str | None:
+    async def _find_duplicate(self, text: str, threshold: float, scopes=None,
+                              entities=None) -> str | None:
         """Return an existing text fact that near-duplicates ``text``, or None.
 
         Exact-content matches are left to the backend upsert (which unions
         scopes); only a distinct text node whose cosine similarity is >=
         ``threshold`` counts as a near-duplicate. ``scopes`` confines the search
         to nodes carrying one of those scopes (a tenant must never be merged
-        into another tenant's wording).
+        into another tenant's wording). ``entities`` (the new text's entities)
+        gates the merge: two sentences built on the same template score 0.9+
+        even when they name different things ("Zurich ... strike for Thursday"
+        vs "Frankfurt ... strike for Friday"), so the merge is refused unless
+        every entity of the new text is already linked to the candidate.
         """
         embedding = self.embeddings.encode(text)
         candidates = await self.backend.knn_search(embedding, top_k=5, scopes=set(scopes) if scopes else None)
@@ -647,7 +658,14 @@ class ReasonGraph:
         else:
             scores = self.embeddings.score(text, [c["content"] for c in hits])
         best = max(range(len(hits)), key=lambda i: scores[i])
-        return hits[best]["content"] if scores[best] >= threshold else None
+        if scores[best] < threshold:
+            return None
+        dup = hits[best]["content"]
+        if entities is not None:
+            linked = {n["content"] for n in await self.backend.get_neighbors(dup) if n.get("type") == "entity"}
+            if not set(entities) <= linked:
+                return None
+        return dup
 
     async def query(
         self,
@@ -1648,12 +1666,13 @@ class ReasonGraph:
         causal: bool | None = None,
         dedup_threshold: float | None = None,
         dedup_scopes=None,
+        dedup_entity_gate: bool = False,
         resolve_conflicts: bool | None = None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[str]:
         return self._run(self.add_text(
             text, extractor, scopes, causal_extractor, causal,
-            dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, resolve_conflicts=resolve_conflicts,
+            dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, dedup_entity_gate=dedup_entity_gate, resolve_conflicts=resolve_conflicts,
             canonicalizer=canonicalizer,
         ))
 
@@ -1666,12 +1685,13 @@ class ReasonGraph:
         causal: bool | None = None,
         dedup_threshold: float | None = None,
         dedup_scopes=None,
+        dedup_entity_gate: bool = False,
         resolve_conflicts: bool | None = None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[list[str]]:
         return self._run(self.add_texts(
             texts, extractor, causal_extractor, scopes, causal,
-            dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, resolve_conflicts=resolve_conflicts,
+            dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, dedup_entity_gate=dedup_entity_gate, resolve_conflicts=resolve_conflicts,
             canonicalizer=canonicalizer,
         ))
 

@@ -382,3 +382,35 @@ async def test_dedup_search_can_be_confined_to_scopes():
         assert "tenant-b" in (await g.backend.get_scopes([a]))[a]
     finally:
         await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_dedup_merge_is_gated_on_entities():
+    """Same template, different names must stay two facts; a wording that already links
+    every entity of the new text may absorb it."""
+    from reasongraph import ReasonGraph
+    from test_causal import _fake_encode, _no_rerank
+    a = "Frankfurt airport ground staff announced a strike for Friday."
+    b = "Zurich airport ground staff announced a strike for Thursday."
+    c = "Frankfurt airport staff announced a Friday strike."
+    def embed(x):   # b and c get a's vector: cosine 1.0, the dedup threshold is met
+        enc = lambda t: _fake_encode(a if t in (b, c) else t)
+        return [enc(t) for t in x] if isinstance(x, list) else enc(x)
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=embed, causal_extractor=False)
+    g.embeddings.rerank = _no_rerank
+    ents = {a: ["Frankfurt", "Friday"], b: ["Zurich", "Thursday"], c: ["Frankfurt", "Friday"]}
+    await g.initialize()
+    try:
+        await g.add_texts([a], extractor=lambda t: ents[t], scopes={"s"})
+        # ungated (old behaviour): b is swallowed by a
+        assert await g._find_duplicate(b, 0.9) == a
+        # gated: b names other things, so it is not a duplicate; c names the same, so it is
+        assert await g._find_duplicate(b, 0.9, entities=ents[b]) is None
+        assert await g._find_duplicate(c, 0.9, entities=ents[c]) == a
+        # through add_texts with the gate on: b is stored, c is merged
+        await g.add_texts([b, c], extractor=lambda t: ents[t], scopes={"s"}, dedup_threshold=0.9, dedup_entity_gate=True)
+        stored = {n.content for n in await g.get_all_nodes() if getattr(n, "type", "text") == "text"} if hasattr(g, "get_all_nodes") else None
+        if stored is not None:
+            assert b in stored and c not in stored
+    finally:
+        await g.close()

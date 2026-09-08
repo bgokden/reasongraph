@@ -135,13 +135,14 @@ class MemoryService:
         causal_results = await asyncio.to_thread(causal_fn, [text]) if causal_fn else None
         return entities, causal_results, causal_fn
 
-    async def _dedup(self, text: str, scopes: list[str], within=None) -> bool:
+    async def _dedup(self, text: str, scopes: list[str], within=None, entities=None) -> bool:
         """True when ``text`` near-duplicates an existing fact (scopes were unioned
         onto it); the caller must then skip adding/enriching it. ``within`` confines
-        the duplicate search to nodes carrying one of those scopes."""
+        the duplicate search to nodes carrying one of those scopes; ``entities`` (of
+        the new text) refuses a merge into a wording that lacks any of them."""
         if self.dedup_threshold is None:
             return False
-        dup = await self.graph._find_duplicate(text, self.dedup_threshold, scopes=within)
+        dup = await self.graph._find_duplicate(text, self.dedup_threshold, scopes=within, entities=entities)
         if dup is None:
             return False
         if scopes:
