@@ -440,7 +440,9 @@ reply, context = loop.chat_sync(call_model, history, system="You are a careful a
 `loop.messages(history)` returns the message list with the recalled facts injected as a
 system message, if you want to call the model yourself; `loop.observe(user, assistant)`
 stores an exchange. Options: `max_facts` / `max_chars` (context budget), `min_score`
-(no unrelated filler), `observe_user` / `observe_assistant`, `redact` (a function that
+(no unrelated filler), `extend_query` (when a why-question's chain ends in a root cause
+no recalled fact states, one more targeted query fetches the plain fact behind it),
+`observe_user` / `observe_assistant`, `redact` (a function that
 drops or rewrites text before it is stored), `resolve_conflicts`. The hosted service
 exposes the same loop as `POST /chat`. Example agent: `examples/agents/memory_loop_agent.py`.
 

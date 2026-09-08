@@ -48,11 +48,15 @@ class MemoryLoop:
         observe_user / observe_assistant: what to remember after each exchange.
         resolve_conflicts: retire facts the new ones replace (uses the graph's resolver).
         redact: optional ``fn(text) -> text | None`` applied before storing; None drops it.
+        extend_query: when a why-question's chain ends in a root cause that no recalled
+            fact states, run one more query with that root cause so the plain fact
+            behind it (often the deepest, hardest one to retrieve) is pulled in too.
         header: first line of the injected system message.
     """
 
     def __init__(self, graph, session: str = "chat", *, recall_scopes=None, max_facts: int = 8,
                  max_chars: int = 1600, top_k: int = 5, hops: int = 3, min_score: float = 0.25,
+                 extend_query: bool = True,
                  observe_user: bool = True, observe_assistant: bool = True,
                  resolve_conflicts: bool = False, redact: Callable[[str], str | None] | None = None,
                  header: str = "What you remember that is relevant (with sources):") -> None:
@@ -63,6 +67,7 @@ class MemoryLoop:
         self.max_chars = max_chars
         self.top_k = top_k
         self.hops = hops
+        self.extend_query = extend_query
         # direct-hit filler below this cosine score is left out: an empty context beats
         # padding the prompt with unrelated facts
         self.min_score = min_score
@@ -125,6 +130,28 @@ class MemoryLoop:
                     found.append({"content": fact, "scopes": [], "path": [],
                                   "causes": [], "cross_session": False})
                     seen.add(fact)
+            if self.extend_query and roots:
+                # the chain's loose ends: a root cause span whose own fact is not in
+                # context yet (a plain statement with no causal relation of its own).
+                # One targeted query per root replaces the vague first question.
+                for root in roots[:3]:
+                    if len(found) >= self.max_facts:
+                        break
+                    if any(root.lower() in f["content"].lower() for f in found):
+                        continue
+                    try:
+                        more = await self.graph.query_detailed(root, top_k=2, scopes=self.recall_scopes)
+                    except Exception:
+                        continue
+                    for r in more:
+                        content = r["content"] if isinstance(r, dict) else str(r)
+                        score = r.get("score") if isinstance(r, dict) else None
+                        if isinstance(score, (int, float)) and score < self.min_score:
+                            continue
+                        if content not in seen and len(found) < self.max_facts:
+                            found.append({"content": content, "scopes": sorted(r.get("scopes", [])) if isinstance(r, dict) else [],
+                                          "path": [], "causes": [], "cross_session": False})
+                            seen.add(content)
         block = ContextBlock(facts=found, chain=chain, roots=roots)
         block.text = self._render(block)
         return block

@@ -5,7 +5,9 @@ from reasongraph.backends._memory import MemoryBackend
 from test_causal import _fake_embed, _no_rerank
 
 _RELS = {"Heavy rain caused the river to flood.": {"cause": "heavy rain", "effect": "the river to flood"},
-         "The flood closed the main road.": {"cause": "the flood", "effect": "closed the main road"}}
+         "The flood closed the main road.": {"cause": "the flood", "effect": "closed the main road"},
+         # the root span paraphrases the fact: no recalled fact contains "coastal storms"
+         "Storms hit the coast, so rain was heavy.": {"cause": "coastal storms", "effect": "heavy rain"}}
 def _causal(texts):
     return [{"causal": t in _RELS, "relations": [_RELS[t]] if t in _RELS else []} for t in texts]
 def _ents(t):
@@ -28,8 +30,20 @@ async def test_memory_loop_recalls_injects_and_observes():
         assert msgs[-1] == history[-1]
         assert not block.empty and any("closed the main road" in f["content"] for f in block.facts)
         # why-questions walk back to the root and spell it out for the model
-        assert "heavy rain" in block.roots and "Root cause(s)" in block.text
+        assert "coastal storms" in block.roots and "Root cause(s)" in block.text
         assert any("Heavy rain caused" in f["content"] for f in block.facts)   # hop facts pulled in
+
+        # a root cause nobody's fact states yet triggers one targeted follow-up query
+        asked = []
+        real = g.query_detailed
+        async def spy(q, **kw):
+            asked.append(q); return await real(q, **kw)
+        g.query_detailed = spy
+        block3 = await MemoryLoop(g, session="chat", max_facts=8).recall("Why is the main road closed?")
+        assert "coastal storms" in block3.roots and "coastal storms" in asked   # asked for the loose end
+        g.query_detailed = real
+        off = await MemoryLoop(g, session="chat", max_facts=8, extend_query=False).recall("Why is the main road closed?")
+        assert off.roots == block3.roots
 
         seen = {}
         def model(messages):
