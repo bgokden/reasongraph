@@ -22,6 +22,20 @@ from typing import Any, Callable
 _QUESTION = re.compile(r"\?\s*$|^(why|how|what|when|who|which|where|is|are|does|do|did|can|could|should|will)\b", re.I)
 
 
+def _seed_of(f: dict) -> str | None:
+    """The fact a discover result was walked from (the first content step of its path)."""
+    for step in f.get("path") or []:
+        if isinstance(step, dict) and "content" in step:
+            return step["content"]
+    return None
+
+
+def _walked(f: dict) -> bool:
+    """True when the fact was reached by walking from another fact, not found by wording."""
+    seed = _seed_of(f)
+    return seed is not None and seed != f.get("content")
+
+
 @dataclass
 class ContextBlock:
     """What the loop recalled for one message."""
@@ -48,6 +62,11 @@ class MemoryLoop:
         observe_user / observe_assistant: what to remember after each exchange.
         resolve_conflicts: retire facts the new ones replace (uses the graph's resolver).
         redact: optional ``fn(text) -> text | None`` applied before storing; None drops it.
+        min_score / min_ratio: a seed or direct hit is kept when its embedding cosine to
+            the question clears ``min_score`` AND ``min_ratio`` times the best hit's cosine.
+            The ratio does the work: cosines to a vague question ("anything about Friday?")
+            sit at 0.13-0.25 for the right facts, while a sharp question puts them at 0.5+
+            and filler at 0.15. Facts reached by the walk are kept with their seed.
         rerank_min: optional cross-encoder cutoff applied to the recalled facts on top of
             ``min_score``. Embedding cosine cannot tell "same topic" from "answers this"
             (facts about another Dutch city score like a real hit); the reranker can.
@@ -61,7 +80,8 @@ class MemoryLoop:
     """
 
     def __init__(self, graph, session: str = "chat", *, recall_scopes=None, max_facts: int = 8,
-                 max_chars: int = 1600, top_k: int = 5, hops: int = 3, min_score: float = 0.25,
+                 max_chars: int = 1600, top_k: int = 5, hops: int = 3, min_score: float = 0.1,
+                 min_ratio: float = 0.45,
                  extend_query: bool = True, rerank_min: float | None = None,
                  observe_user: bool = True, observe_assistant: bool = True,
                  resolve_conflicts: bool = False, redact: Callable[[str], str | None] | None = None,
@@ -78,6 +98,7 @@ class MemoryLoop:
         # direct-hit filler below this cosine score is left out: an empty context beats
         # padding the prompt with unrelated facts
         self.min_score = min_score
+        self.min_ratio = min_ratio
         self.observe_user = observe_user
         self.observe_assistant = observe_assistant
         self.resolve_conflicts = resolve_conflicts
@@ -97,29 +118,55 @@ class MemoryLoop:
             for r in direct:
                 content = r["content"] if isinstance(r, dict) else str(r)
                 scopes = sorted(r.get("scopes", [])) if isinstance(r, dict) else []
-                score = r.get("score") if isinstance(r, dict) else None
-                if isinstance(score, (int, float)) and score < self.min_score:
-                    continue
                 if content not in seen and len(found) < self.max_facts:
                     found.append({"content": content, "scopes": scopes, "path": [],
                                   "causes": [], "cross_session": False})
                     seen.add(content)
-        if found and self.min_score > -1.0:
-            # one cosine pass over everything recalled: discover's seeds carry no score
-            # and a short question can seed from facts that merely share a word
-            try:
-                scores = self.graph.embeddings.score(query, [f["content"] for f in found])
-                found = [f for f, sc in zip(found, scores) if sc >= self.min_score]
-            except Exception:
-                pass
+        # Cutoffs judge only what was found by wording: discover's seeds and the direct
+        # hits. A fact reached by walking from a seed through a shared entity is kept
+        # because of that structure (it rarely reads like an answer to the question:
+        # "Redis runs on the same node as Elasticsearch" scores like noise against
+        # "why is checkout slow?"), and is dropped only when its seed is dropped.
+        if found and (self.min_score > -1.0 or self.rerank_min is not None):
+            seeds = [f for f in found if not _walked(f)]
+            walked = [f for f in found if _walked(f)]
+            keep = seeds
+            if keep and self.min_score > -1.0:
+                try:
+                    scores = self.graph.embeddings.score(query, [f["content"] for f in keep])
+                    floor = max(self.min_score, self.min_ratio * max(scores)) if scores else self.min_score
+                    keep = [f for f, sc in zip(keep, scores) if sc >= floor]
+                except Exception:
+                    pass
+            if keep and self.rerank_min is not None:
+                try:
+                    rel = self.graph.embeddings.relevance(query, [f["content"] for f in keep])
+                    keep = [f for f, x in zip(keep, rel) if x >= self.rerank_min]
+                except Exception:
+                    pass
+            kept_seeds = {f["content"] for f in keep}
+            # A fact discover picked as a seed by wording may also sit one or two entity
+            # hops from a kept seed ("Maria reported that Bulk Export fails" next to
+            # "Maria downgraded"): being a seed hid that structure. Walk from the kept
+            # seeds and reinstate any dropped seed the walk reaches.
+            dropped = {f["content"] for f in seeds} - kept_seeds
+            if dropped:
+                for k in keep[:5]:
+                    try:
+                        # seed on the fact itself (top_k=1: its own text) and walk two
+                        # entity hops; what comes back with a path is structure, not wording
+                        near = await self.graph.discover(k["content"], top_k=1, hops=2, max_results=20,
+                                                         scopes=self.recall_scopes)
+                    except Exception:
+                        continue
+                    for r in near:
+                        if isinstance(r, dict) and _walked(r) and r["content"] in dropped:
+                            kept_seeds.add(r["content"]); dropped.discard(r["content"])
+                    if not dropped:
+                        break
+            keep_set = kept_seeds | {f["content"] for f in walked if _seed_of(f) in kept_seeds}
+            found = [f for f in found if f["content"] in keep_set]
             seen = {f["content"] for f in found}     # a dropped fact may come back by structure below
-        if found and self.rerank_min is not None:
-            try:
-                rel = self.graph.embeddings.relevance(query, [f["content"] for f in found])
-                found = [f for f, x in zip(found, rel) if x >= self.rerank_min]
-            except Exception:
-                pass
-            seen = {f["content"] for f in found}
         chain: list[dict] = []
         roots: list[str] = []
         if _QUESTION.search(message) and found:
@@ -161,8 +208,10 @@ class MemoryLoop:
                         # query_detailed's score is the reranker's, not bounded: gate on the
                         # embedding cosine to the root span, as the first pass did to the question
                         if more and self.min_score > -1.0:
+                            # a root span is short and specific: the fact behind it scores
+                            # 0.6+ against it, unrelated facts 0.3 and below
                             sc = self.graph.embeddings.score(root, [r["content"] for r in more])
-                            more = [r for r, x in zip(more, sc) if x >= self.min_score]
+                            more = [r for r, x in zip(more, sc) if x >= max(self.min_score, 0.35)]
                     except Exception:
                         continue
                     for r in more:
