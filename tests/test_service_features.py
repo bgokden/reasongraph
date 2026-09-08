@@ -354,3 +354,31 @@ def test_embedding_prefixes_apply_to_documents_and_queries():
     assert (m2.query_prefix, m2.document_prefix) == ("query: ", "passage: ")
     m3 = EmbeddingManager(Named(), query_prefix="", document_prefix="")
     assert (m3.query_prefix, m3.document_prefix) == ("", "")
+
+
+@pytest.mark.asyncio
+async def test_dedup_search_can_be_confined_to_scopes():
+    """A tenant's near-duplicate must never be merged into another tenant's wording."""
+    from reasongraph import ReasonGraph
+    from test_causal import _fake_encode, _no_rerank
+    a = "Maria Lopez reported that Bulk Export fails for files over 50 MB."
+    b = "Maria Lopez reported that exports fail for files over 50 MB."
+    # fake embeddings: give the second wording the first one's vector so it is a duplicate
+    def embed(x):
+        enc = lambda t: _fake_encode(a if t == b else t)
+        return [enc(t) for t in x] if isinstance(x, list) else enc(x)
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=embed, causal_extractor=False)
+    g.embeddings.rerank = _no_rerank
+    svc = MemoryService(graph=g, dedup_threshold=0.9) if "graph" in MemoryService.__init__.__code__.co_varnames else None
+    if svc is None:
+        pytest.skip("MemoryService does not take a graph")
+    await svc.initialize()
+    try:
+        await g.add_texts([a], extractor=lambda t: [], scopes={"tenant-a/notes", "tenant-a"})
+        # confined to tenant B: nothing of B's exists yet, so it is not a duplicate
+        assert await svc._dedup(b, ["tenant-b/notes", "tenant-b"], within={"tenant-b"}) is False
+        # global search (the old behaviour): merged into tenant A's wording, B's scopes unioned on
+        assert await svc._dedup(b, ["tenant-b/notes", "tenant-b"]) is True
+        assert "tenant-b" in (await g.backend.get_scopes([a]))[a]
+    finally:
+        await svc.close()

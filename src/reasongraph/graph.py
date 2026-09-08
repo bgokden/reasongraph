@@ -315,6 +315,7 @@ class ReasonGraph:
         causal_extractor: CausalExtractorFn | None = None,
         causal: bool | None = None,
         dedup_threshold: float | None = None,
+        dedup_scopes=None,
         resolve_conflicts: bool | None = None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[str]:
@@ -341,7 +342,7 @@ class ReasonGraph:
         """
         result = await self.add_texts(
             [text], extractor=extractor, causal_extractor=causal_extractor,
-            scopes=scopes, causal=causal, dedup_threshold=dedup_threshold,
+            scopes=scopes, causal=causal, dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes,
             resolve_conflicts=resolve_conflicts, canonicalizer=canonicalizer,
         )
         return result[0]
@@ -354,6 +355,7 @@ class ReasonGraph:
         scopes: set[str] | list[str] | None = None,
         causal: bool | None = None,
         dedup_threshold: float | None = None,
+        dedup_scopes=None,
         resolve_conflicts: bool | None = None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
         split: bool | None = None,
@@ -415,7 +417,7 @@ class ReasonGraph:
             flat = [sent for g in groups for sent in g]
             per_fact = await self.add_texts(
                 flat, extractor=extractor, causal_extractor=causal_extractor, scopes=scopes,
-                causal=causal, dedup_threshold=dedup_threshold, resolve_conflicts=resolve_conflicts,
+                causal=causal, dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, resolve_conflicts=resolve_conflicts,
                 canonicalizer=canonicalizer, split=False,
             )
             out: list[list[str]] = []
@@ -460,7 +462,7 @@ class ReasonGraph:
             for text in texts:
                 if text in skip:
                     continue
-                dup = await self._find_duplicate(text, dedup_threshold)
+                dup = await self._find_duplicate(text, dedup_threshold, scopes=dedup_scopes)
                 if dup is not None:
                     skip.add(text)
                     if scopes:
@@ -625,15 +627,17 @@ class ReasonGraph:
         if retired:
             await self.backend.set_invalid(retired, datetime.now())
 
-    async def _find_duplicate(self, text: str, threshold: float) -> str | None:
+    async def _find_duplicate(self, text: str, threshold: float, scopes=None) -> str | None:
         """Return an existing text fact that near-duplicates ``text``, or None.
 
         Exact-content matches are left to the backend upsert (which unions
         scopes); only a distinct text node whose cosine similarity is >=
-        ``threshold`` counts as a near-duplicate.
+        ``threshold`` counts as a near-duplicate. ``scopes`` confines the search
+        to nodes carrying one of those scopes (a tenant must never be merged
+        into another tenant's wording).
         """
         embedding = self.embeddings.encode(text)
-        candidates = await self.backend.knn_search(embedding, top_k=5)
+        candidates = await self.backend.knn_search(embedding, top_k=5, scopes=set(scopes) if scopes else None)
         hits = [c for c in candidates if c.get("type") == "text" and c["content"] != text]
         if not hits:
             return None
@@ -1643,12 +1647,13 @@ class ReasonGraph:
         causal_extractor: CausalExtractorFn | None = None,
         causal: bool | None = None,
         dedup_threshold: float | None = None,
+        dedup_scopes=None,
         resolve_conflicts: bool | None = None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[str]:
         return self._run(self.add_text(
             text, extractor, scopes, causal_extractor, causal,
-            dedup_threshold=dedup_threshold, resolve_conflicts=resolve_conflicts,
+            dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, resolve_conflicts=resolve_conflicts,
             canonicalizer=canonicalizer,
         ))
 
@@ -1660,12 +1665,13 @@ class ReasonGraph:
         scopes: set[str] | list[str] | None = None,
         causal: bool | None = None,
         dedup_threshold: float | None = None,
+        dedup_scopes=None,
         resolve_conflicts: bool | None = None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
     ) -> list[list[str]]:
         return self._run(self.add_texts(
             texts, extractor, causal_extractor, scopes, causal,
-            dedup_threshold=dedup_threshold, resolve_conflicts=resolve_conflicts,
+            dedup_threshold=dedup_threshold, dedup_scopes=dedup_scopes, resolve_conflicts=resolve_conflicts,
             canonicalizer=canonicalizer,
         ))
 
