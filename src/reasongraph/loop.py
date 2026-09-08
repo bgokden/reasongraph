@@ -150,8 +150,9 @@ class MemoryLoop:
                 for root in roots[:3]:
                     if len(found) >= self.max_facts:
                         break
-                    if any(root.lower() in f["content"].lower() for f in found):
-                        continue
+                    # no "already stated" short-circuit: the root span is by construction
+                    # part of the fact that asserts the last hop, and the plain fact behind
+                    # it rarely repeats the span's words. The cosine gate below decides.
                     try:
                         more = await self.graph.query_detailed(root, top_k=2, scopes=self.recall_scopes)
                         more = [r for r in more if isinstance(r, dict)]
