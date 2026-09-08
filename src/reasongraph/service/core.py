@@ -360,6 +360,26 @@ class MemoryService:
             scopes |= node.scopes
         return sorted(scopes)
 
+    async def facts(self, texts: list[str]) -> dict:
+        """What the graph holds for each given fact: its sessions, the entities it links
+        to, the cause->effect spans found in it, and whether extraction is still pending.
+        Made for the console: after a push, poll ``stats.pending`` then call this to show
+        what was extracted. Unknown texts come back with ``stored: False``."""
+        rels = await self.graph.backend.get_causal_relations(texts)
+        scope_map = await self.graph.backend.get_scopes(texts)
+        out = []
+        for text in texts:
+            neighbours = await self.graph.backend.get_neighbors(text)
+            pairs = rels.get(text, [])
+            spans = {p["cause"] for p in pairs} | {p["effect"] for p in pairs}
+            entities = [n["content"] for n in neighbours
+                        if n.get("type") == "entity" and n["content"] not in spans]
+            stored = bool(neighbours) or bool(scope_map.get(text))
+            out.append({"text": text, "stored": stored,
+                        "sessions": sorted(scope_map.get(text, set())),
+                        "entities": entities, "relations": pairs})
+        return {"facts": out, "pending": self.pending_extractions}
+
     async def stats(self) -> dict:
         nodes = await self.graph.get_all_nodes()
         edges = await self.graph.get_all_edges()

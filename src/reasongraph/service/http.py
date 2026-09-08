@@ -50,6 +50,10 @@ class PushManyIn(BaseModel):
     split: bool | None = None
 
 
+class FactsIn(BaseModel):
+    texts: list[str]
+
+
 class QueryIn(BaseModel):
     query: str
     session: str | None = None
@@ -287,6 +291,11 @@ def create_app(service: MemoryService, api_key: str | None = None) -> FastAPI:
     @router.get("/stats")
     async def stats():
         return await service.stats()
+
+    @router.post("/facts")
+    async def facts(body: FactsIn):
+        """Entities, cause->effect spans and sessions of the given facts (console helper)."""
+        return await service.facts(body.texts[:50])
 
     app.include_router(router)
     return app

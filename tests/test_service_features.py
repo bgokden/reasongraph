@@ -316,3 +316,19 @@ def test_finetuned_conflict_resolver_prefilter_skips_unlikely_pairs():
     assert hits == ["Zeus lives on Olympus."]
     assert len(calls) == 1 and "Olympus" in calls[0]      # the unlikely pair never reached the model
     assert r.prefilter_threshold == 0.5
+
+
+async def test_facts_endpoint_reports_entities_relations_and_pending():
+    def causal(texts):
+        return [{"causal": "=>" in t, "relations": [dict(zip(("cause", "effect"), [p.strip() for p in t.split("=>", 1)]))] if "=>" in t else []} for t in texts]
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_Embed(), extractor=_zeus, causal_extractor=causal)
+    async with svc:
+        await svc.push("s", "k1~Zeus lives on Olympus.")
+        await svc.push("t", "heavy rain => the river flooded")
+        res = await svc.facts(["k1~Zeus lives on Olympus.", "heavy rain => the river flooded", "never stored"])
+        f0, f1, f2 = res["facts"]
+        assert f0["stored"] and f0["sessions"] == ["s"] and "Zeus" in f0["entities"] and f0["relations"] == []
+        assert f1["stored"] and f1["relations"] == [{"cause": "heavy rain", "effect": "the river flooded"}]
+        assert "heavy rain" not in f1["entities"]          # causal spans are not listed twice
+        assert f2 == {"text": "never stored", "stored": False, "sessions": [], "entities": [], "relations": []}
+        assert res["pending"] == 0
