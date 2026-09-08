@@ -44,10 +44,15 @@ class ReasonGraph:
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
         span_link_threshold: float | None = None,
         sentence_splitter=None,
+        embed_query_prefix: str | None = None,
+        embed_document_prefix: str | None = None,
     ) -> None:
         self.backend = backend or MemoryBackend()
+        # Asymmetric retrievers (e5, nomic) want "query: " / "passage: " markers; known
+        # model names get them automatically, explicit prefixes override.
         self.embeddings = EmbeddingManager(
-            embed_model=embed_model, rerank_model=rerank_model
+            embed_model=embed_model, rerank_model=rerank_model,
+            query_prefix=embed_query_prefix, document_prefix=embed_document_prefix,
         )
         self.forget_after = forget_after
         self.forget_every = forget_every
@@ -703,7 +708,7 @@ class ReasonGraph:
             set(walk_scopes) if walk_scopes
             else (scope_set if (isolate and scope_set) else None)
         )
-        embedding = self.embeddings.encode(query)
+        embedding = self.embeddings.encode_query(query)
 
         if search_mode == "embedding":
             seeds = await self.backend.knn_search(embedding, top_k, scopes=scope_set)
@@ -906,7 +911,7 @@ class ReasonGraph:
             set(walk_scopes) if walk_scopes
             else (scope_set if (isolate and scope_set) else None)
         )
-        embedding = self.embeddings.encode(query)
+        embedding = self.embeddings.encode_query(query)
         if search_mode == "embedding":
             seeds = await self.backend.knn_search(embedding, top_k, scopes=scope_set)
         elif search_mode == "keyword":

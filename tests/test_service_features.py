@@ -332,3 +332,25 @@ async def test_facts_endpoint_reports_entities_relations_and_pending():
         assert "heavy rain" not in f1["entities"]          # causal spans are not listed twice
         assert f2 == {"text": "never stored", "stored": False, "sessions": [], "entities": [], "relations": []}
         assert res["pending"] == 0
+
+
+def test_embedding_prefixes_apply_to_documents_and_queries():
+    from reasongraph._embeddings import EmbeddingManager
+    seen = []
+    def enc(x):
+        seen.append(x); items = x if isinstance(x, list) else [x]
+        return [[float(len(t)), 1.0] for t in items] if isinstance(x, list) else [float(len(x)), 1.0]
+    m = EmbeddingManager(enc, query_prefix="query: ", document_prefix="passage: ")
+    m.encode("rain"); m.encode_query("rain"); m.encode_batch(["a", "b"])
+    assert seen == ["passage: rain", "query: rain", ["passage: a", "passage: b"]]
+    # known families get prefixes automatically from the model name
+    assert EmbeddingManager.default_prefixes("intfloat/multilingual-e5-small") == ("query: ", "passage: ")
+    assert EmbeddingManager.default_prefixes("nomic-ai/nomic-embed-text-v2-moe") == ("search_query: ", "search_document: ")
+    assert EmbeddingManager.default_prefixes("paraphrase-multilingual-MiniLM-L12-v2") == ("", "")
+    class Named:
+        model_name = "intfloat/multilingual-e5-base"
+        def encode(self, x): return enc(x)
+    m2 = EmbeddingManager(Named())
+    assert (m2.query_prefix, m2.document_prefix) == ("query: ", "passage: ")
+    m3 = EmbeddingManager(Named(), query_prefix="", document_prefix="")
+    assert (m3.query_prefix, m3.document_prefix) == ("", "")

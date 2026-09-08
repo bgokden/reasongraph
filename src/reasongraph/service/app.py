@@ -31,6 +31,9 @@ Environment variables:
     REASONGRAPH_CAUSAL_EMBED_GATE / REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD  span-pointer
         model id, built-in gate threshold (1.0 = off), optional embedding-gate .joblib
         (path or hf://owner/repo/file) and its P(causal) cutoff (default 0.9).
+    REASONGRAPH_EMBED_QUERY_PREFIX / REASONGRAPH_EMBED_DOC_PREFIX  role markers for
+        asymmetric retrievers (e5: "query: " / "passage: "); auto-set for known model
+        names, unset = none.
     REASONGRAPH_SPLIT_SENTENCES  sat | sat:<model> | regex -> every push is split into
         sentences and stored one fact per sentence (clients can override per call with
         split=true/false). Unset = off. "sat" needs pip install reasongraph[split].
@@ -189,6 +192,8 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
         span_link_threshold=(float(env["REASONGRAPH_SPAN_LINK_THRESHOLD"])
                              if env.get("REASONGRAPH_SPAN_LINK_THRESHOLD") else None),
         sentence_splitter=(env.get("REASONGRAPH_SPLIT_SENTENCES") or None),
+        embed_query_prefix=env.get("REASONGRAPH_EMBED_QUERY_PREFIX"),
+        embed_document_prefix=env.get("REASONGRAPH_EMBED_DOC_PREFIX"),
     )
     dedup = env.get("REASONGRAPH_DEDUP_THRESHOLD")
     return MemoryService(

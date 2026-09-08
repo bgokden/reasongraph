@@ -50,11 +50,33 @@ class EmbeddingManager:
     DEFAULT_EMBED_MODEL = "all-MiniLM-L12-v2"
     DEFAULT_RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+    # Asymmetric retrievers want a role marker in front of the text. Known families:
+    _KNOWN_PREFIXES = (
+        ("e5", ("query: ", "passage: ")),                       # intfloat/*e5*
+        ("nomic-embed", ("search_query: ", "search_document: ")),
+    )
+
+    @classmethod
+    def default_prefixes(cls, model_name: str | None) -> tuple[str, str]:
+        name = (model_name or "").lower()
+        for key, prefixes in cls._KNOWN_PREFIXES:
+            if key in name:
+                return prefixes
+        return ("", "")
+
     def __init__(
         self,
         embed_model: EmbedderLike = None,
         rerank_model: RerankerLike = None,
+        *,
+        query_prefix: str | None = None,
+        document_prefix: str | None = None,
     ) -> None:
+        # Prefixes: explicit values win; else known model families get theirs; else none.
+        auto_q, auto_d = self.default_prefixes(embed_model if isinstance(embed_model, str) else
+                                               getattr(embed_model, "model_name", None))
+        self.query_prefix = auto_q if query_prefix is None else query_prefix
+        self.document_prefix = auto_d if document_prefix is None else document_prefix
         # str is checked before the encode() duck-check because str itself has
         # an encode() method (text -> bytes), which is not what we want.
         if embed_model is None or isinstance(embed_model, str):
@@ -88,11 +110,19 @@ class EmbeddingManager:
     _CACHE_SIZE = 256
 
     def encode(self, text: str) -> list[float]:
-        """Encode a single text string to a float vector.
+        """Encode one stored text (fact, span, entity) to a float vector, with the
+        document prefix when the model wants one.
 
         A small LRU cache: a write path encodes the same text several times
         (dedup check, node insert, conflict candidates) and agents often re-ask
         the same question; caching avoids the repeated model call."""
+        return self._encode_cached(self.document_prefix + text)
+
+    def encode_query(self, text: str) -> list[float]:
+        """Encode a search query (query prefix for asymmetric retrievers such as e5)."""
+        return self._encode_cached(self.query_prefix + text)
+
+    def _encode_cached(self, text: str) -> list[float]:
         cache = self.__dict__.setdefault("_encode_cache", {})
         vec = cache.get(text)
         if vec is None:
@@ -105,8 +135,8 @@ class EmbeddingManager:
         return list(vec)
 
     def encode_batch(self, texts: list[str]) -> list[list[float]]:
-        """Encode multiple texts at once."""
-        result = self._encode(texts)
+        """Encode multiple stored texts at once (document prefix applied)."""
+        result = self._encode([self.document_prefix + t for t in texts])
         tolist = getattr(result, "tolist", None)
         if callable(tolist):
             return result.tolist()
