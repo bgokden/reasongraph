@@ -1,3 +1,4 @@
+from reasongraph._split import SentenceSplitter, SaTSplitter, RegexSplitter
 __version__ = "0.6.6"
 
 import os as _os
@@ -21,7 +22,6 @@ from reasongraph._extraction import (
     HybridCausalExtractor,
     CausalPointerExtractor,
 )
-from reasongraph._split import SentenceSplitter, SaTSplitter, RegexSplitter
 from reasongraph._conflict import ConflictResolver, NLIConflictResolver, LLMConflictResolver, FineTunedConflictResolver
 from reasongraph._fastembed import FastEmbedEmbedder, FastEmbedReranker
 from reasongraph._synthesizers import (

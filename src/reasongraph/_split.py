@@ -17,6 +17,14 @@ from __future__ import annotations
 import re
 from typing import Protocol, runtime_checkable
 
+# wtpsplit must be imported BEFORE transformers: its skops dependency enumerates public
+# types of already-imported packages and, once transformers is loaded, trips over a lazy
+# torchvision import. reasongraph/__init__ imports this module first for that reason.
+try:  # optional extra
+    import wtpsplit as _wtpsplit  # noqa: F401
+except Exception:  # ImportError, or a broken optional install: SaTSplitter reports it on use
+    _wtpsplit = None
+
 
 @runtime_checkable
 class SentenceSplitter(Protocol):
@@ -60,10 +68,9 @@ class SaTSplitter:
     def _load(self) -> None:
         if self._sat is not None:
             return
-        try:
-            from wtpsplit import SaT
-        except ImportError as exc:  # pragma: no cover - depends on the optional extra
-            raise ImportError("SaTSplitter needs wtpsplit: pip install 'reasongraph[split]'") from exc
+        if _wtpsplit is None:
+            raise ImportError("SaTSplitter needs wtpsplit: pip install 'reasongraph[split]'")
+        SaT = _wtpsplit.SaT
         self._sat = SaT(self.model, ort_providers=self.ort_providers) if self.ort_providers else SaT(self.model)
 
     def split(self, text: str) -> list[str]:
