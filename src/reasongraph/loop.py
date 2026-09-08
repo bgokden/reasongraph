@@ -141,15 +141,18 @@ class MemoryLoop:
                         continue
                     try:
                         more = await self.graph.query_detailed(root, top_k=2, scopes=self.recall_scopes)
+                        more = [r for r in more if isinstance(r, dict)]
+                        # query_detailed's score is the reranker's, not bounded: gate on the
+                        # embedding cosine to the root span, as the first pass did to the question
+                        if more and self.min_score > -1.0:
+                            sc = self.graph.embeddings.score(root, [r["content"] for r in more])
+                            more = [r for r, x in zip(more, sc) if x >= self.min_score]
                     except Exception:
                         continue
                     for r in more:
-                        content = r["content"] if isinstance(r, dict) else str(r)
-                        score = r.get("score") if isinstance(r, dict) else None
-                        if isinstance(score, (int, float)) and score < self.min_score:
-                            continue
+                        content = r["content"]
                         if content not in seen and len(found) < self.max_facts:
-                            found.append({"content": content, "scopes": sorted(r.get("scopes", [])) if isinstance(r, dict) else [],
+                            found.append({"content": content, "scopes": sorted(r.get("scopes", [])),
                                           "path": [], "causes": [], "cross_session": False})
                             seen.add(content)
         block = ContextBlock(facts=found, chain=chain, roots=roots)
