@@ -56,3 +56,18 @@ def test_memory_loop_sync_wrappers_and_empty_memory():
     assert reply == "ok"
     assert loop.recall_sync("meeting Tuesday").facts
     g.close_sync()
+
+
+@pytest.mark.asyncio
+async def test_memory_loop_min_score_keeps_unrelated_filler_out():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=False)
+    g.embeddings.rerank = _no_rerank
+    await g.initialize()
+    try:
+        await g.add_texts(["The printer is a shared model.", "The office is on the third floor."], extractor=lambda t: [], scopes={"notes"})
+        strict = MemoryLoop(g, min_score=0.99)      # nothing is that similar with fake embeddings
+        assert (await strict.recall("Why did the warehouse lose power?")).facts == []
+        loose = MemoryLoop(g, min_score=-1.0)
+        assert len((await loose.recall("Why did the warehouse lose power?")).facts) == 2
+    finally:
+        await g.close()

@@ -43,6 +43,7 @@ class MemoryLoop:
             sessions unless ``recall_scopes`` narrows it.
         recall_scopes: seed scopes for recall (None = everything).
         max_facts / max_chars: context budget, most relevant first.
+        min_score: direct hits below this cosine score are not used as filler (default 0.25).
         observe_user / observe_assistant: what to remember after each exchange.
         resolve_conflicts: retire facts the new ones replace (uses the graph's resolver).
         redact: optional ``fn(text) -> text | None`` applied before storing; None drops it.
@@ -50,7 +51,7 @@ class MemoryLoop:
     """
 
     def __init__(self, graph, session: str = "chat", *, recall_scopes=None, max_facts: int = 8,
-                 max_chars: int = 1600, top_k: int = 5, hops: int = 3,
+                 max_chars: int = 1600, top_k: int = 5, hops: int = 3, min_score: float = 0.25,
                  observe_user: bool = True, observe_assistant: bool = True,
                  resolve_conflicts: bool = False, redact: Callable[[str], str | None] | None = None,
                  header: str = "What you remember that is relevant (with sources):") -> None:
@@ -61,6 +62,9 @@ class MemoryLoop:
         self.max_chars = max_chars
         self.top_k = top_k
         self.hops = hops
+        # direct-hit filler below this cosine score is left out: an empty context beats
+        # padding the prompt with unrelated facts
+        self.min_score = min_score
         self.observe_user = observe_user
         self.observe_assistant = observe_assistant
         self.resolve_conflicts = resolve_conflicts
@@ -80,6 +84,9 @@ class MemoryLoop:
             for r in direct:
                 content = r["content"] if isinstance(r, dict) else str(r)
                 scopes = sorted(r.get("scopes", [])) if isinstance(r, dict) else []
+                score = r.get("score") if isinstance(r, dict) else None
+                if isinstance(score, (int, float)) and score < self.min_score:
+                    continue
                 if content not in seen and len(found) < self.max_facts:
                     found.append({"content": content, "scopes": scopes, "path": [],
                                   "causes": [], "cross_session": False})
