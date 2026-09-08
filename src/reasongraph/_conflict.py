@@ -166,8 +166,12 @@ class FineTunedConflictResolver:
             return json.loads(resp.read().decode("utf-8"))
 
     def is_conflict(self, existing: str, new: str) -> bool | None:
-        """True/False from the model, or None when the model could not answer."""
+        """True/False from the model, or None when the model could not answer
+        (endpoint down, timeout, or a reply the grammar should have prevented).
+        Only transport and reply-format errors fail open; anything else propagates."""
         import json
+        import logging
+        import urllib.error
         body = {"prompt": self.prompt(existing, new), "n_predict": 16, "temperature": 0,
                 "grammar": self.GRAMMAR, "cache_prompt": True}
         try:
@@ -176,10 +180,14 @@ class FineTunedConflictResolver:
             if text is None and isinstance(out, dict) and out.get("choices"):
                 text = out["choices"][0].get("text")
             return bool(json.loads(text.strip())["conflict"])
-        except Exception:
-            if self.fail_open:
-                return None
-            raise
+        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError,
+                KeyError, TypeError, AttributeError, ValueError) as exc:
+            if not self.fail_open:
+                raise
+            logging.getLogger(__name__).warning(
+                "FineTunedConflictResolver: no answer from %s (%s: %s); treating as no conflict",
+                self.endpoint, type(exc).__name__, exc)
+            return None
 
     def contradictions(self, new_text: str, candidates: list[str]) -> list[str]:
         out: list[str] = []
