@@ -38,6 +38,7 @@ Issues = "https://github.com/bgokden/reasongraph/issues"
 reasongraph-serve = "reasongraph.service.app:main"
 
 [project.optional-dependencies]
+split = ["wtpsplit>=2.0"]
 sqlite = [
     "aiosqlite>=0.19.0",
     "sqlite-vec>=0.1.6",

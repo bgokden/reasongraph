@@ -46,7 +46,9 @@ class MemoryService:
         canonicalizer=None,
         defer_extraction: bool = False,
         dedup_threshold: float | None = None,
+        split_sentences: bool = False,
     ) -> None:
+        self.split_by_default = split_sentences
         self.graph = graph or ReasonGraph(
             backend=backend, embed_model=embed_model,
             rerank_model=rerank_model, synthesizer=synthesizer,
@@ -154,13 +156,34 @@ class MemoryService:
 
     # -- write path (an agent pushes memory) --
 
-    async def push(self, session: str, text: str, *, resolve_conflicts: bool | None = None) -> dict:
+    split_by_default: bool = False   # REASONGRAPH_SPLIT_SENTENCES: split every push into sentences
+
+    def _sentences(self, text: str) -> list[str]:
+        splitter = self.graph.sentence_splitter
+        if splitter is None:
+            from reasongraph._split import RegexSplitter
+            splitter = RegexSplitter()
+        return splitter.split(text) or [text]
+
+    async def push(self, session: str, text: str, *, resolve_conflicts: bool | None = None,
+                   split: bool | None = None) -> dict:
         """Store one memory in a session; returns the extracted entities.
 
         With ``defer_extraction`` the fact is stored immediately and its entities
         are extracted in the background, so ``entities`` is empty and ``deferred``
         is True; the fact is queryable at once, its bridges appear shortly after.
+
+        ``split`` (default: the service's ``split_by_default``) cuts the text into
+        sentences first and stores one fact per sentence; the reply then carries
+        ``sentences`` (the stored facts) and the ``push_many`` fields.
         """
+        use_split = self.split_by_default if split is None else split
+        if use_split:
+            sentences = self._sentences(text)
+            if len(sentences) > 1:
+                out = await self.push_many(session, sentences, resolve_conflicts=resolve_conflicts, split=False)
+                out["sentences"] = sentences
+                return out
         if self._enrich_queue is not None:
             async with self._write_lock:
                 if await self._dedup(text, [session]):
@@ -178,7 +201,10 @@ class MemoryService:
         return {"session": session, "entities": entities}
 
     async def push_many(self, session: str, texts: list[str], *,
-                        resolve_conflicts: bool | None = None) -> dict:
+                        resolve_conflicts: bool | None = None, split: bool | None = None) -> dict:
+        use_split = self.split_by_default if split is None else split
+        if use_split:
+            texts = [sent for t in texts for sent in self._sentences(t)]
         if self._enrich_queue is not None:
             fresh: list[str] = []
             async with self._write_lock:

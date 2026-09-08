@@ -303,3 +303,32 @@ def test_embed_gate_env_wiring(monkeypatch):
     assert isinstance(ex, CausalPointerExtractor)
     assert ex.model == "some/model" and ex.embed_gate == "/tmp/gate.joblib"
     assert ex.embed_gate_threshold == 0.7
+
+
+def test_regex_splitter_and_resolve():
+    from reasongraph._split import RegexSplitter, resolve_splitter, SaTSplitter
+    r = RegexSplitter()
+    assert r.split("The server failed. It was e.g. overloaded! Dr. Smith replied? Yes.\nNew line.") == [
+        "The server failed.", "It was e.g. overloaded!", "Dr. Smith replied?", "Yes.", "New line."]
+    assert r.split("Die Bank senkt den Leitzins. Das gilt z.B. im Bau.") == ["Die Bank senkt den Leitzins.", "Das gilt z.B. im Bau."]
+    assert resolve_splitter(None) is None and resolve_splitter("off") is None
+    assert isinstance(resolve_splitter("regex"), RegexSplitter)
+    s = resolve_splitter("sat:sat-12l-sm"); assert isinstance(s, SaTSplitter) and s.model == "sat-12l-sm"
+    assert resolve_splitter(r) is r
+
+
+@pytest.mark.asyncio
+async def test_add_texts_split_keeps_entities_aligned_with_inputs():
+    from reasongraph._split import RegexSplitter
+    ents = {"Rain fell.": ["Rain"], "Roads flooded.": ["Roads"], "Trains stopped.": ["Trains"]}
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=False,
+                    sentence_splitter=RegexSplitter())
+    await g.initialize()
+    try:
+        out = await g.add_texts(["Rain fell. Roads flooded.", "Trains stopped."], extractor=lambda t: ents.get(t, []))
+        assert out == [["Rain", "Roads"], ["Trains"]]
+        assert (await g.stats())["texts"] == 3 if hasattr(g, "stats") else True
+        out2 = await g.add_texts(["A. B."], extractor=lambda t: [], split=False)
+        assert len(out2) == 1
+    finally:
+        await g.close()

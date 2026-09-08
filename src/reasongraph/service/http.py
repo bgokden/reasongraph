@@ -41,11 +41,13 @@ def parse_as_of(value) -> datetime | None:
 class PushIn(BaseModel):
     text: str
     resolve_conflicts: bool | None = None   # True = check nearby facts for contradictions
+    split: bool | None = None               # True = one fact per sentence (default: server setting)
 
 
 class PushManyIn(BaseModel):
     texts: list[str]
     resolve_conflicts: bool | None = None
+    split: bool | None = None
 
 
 class QueryIn(BaseModel):
@@ -197,11 +199,13 @@ def create_app(service: MemoryService, api_key: str | None = None) -> FastAPI:
 
     @router.post("/sessions/{session}/memory")
     async def push(session: str, body: PushIn):
-        return await service.push(session, body.text, resolve_conflicts=body.resolve_conflicts)
+        return await service.push(session, body.text, resolve_conflicts=body.resolve_conflicts,
+                                  split=body.split)
 
     @router.post("/sessions/{session}/memory/batch")
     async def push_many(session: str, body: PushManyIn):
-        return await service.push_many(session, body.texts, resolve_conflicts=body.resolve_conflicts)
+        return await service.push_many(session, body.texts, resolve_conflicts=body.resolve_conflicts,
+                                       split=body.split)
 
     @router.post("/query")
     async def query(body: QueryIn):

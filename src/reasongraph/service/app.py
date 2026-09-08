@@ -31,6 +31,9 @@ Environment variables:
     REASONGRAPH_CAUSAL_EMBED_GATE / REASONGRAPH_CAUSAL_EMBED_GATE_THRESHOLD  span-pointer
         model id, built-in gate threshold (1.0 = off), optional embedding-gate .joblib
         (path or hf://owner/repo/file) and its P(causal) cutoff (default 0.9).
+    REASONGRAPH_SPLIT_SENTENCES  sat | sat:<model> | regex -> every push is split into
+        sentences and stored one fact per sentence (clients can override per call with
+        split=true/false). Unset = off. "sat" needs pip install reasongraph[split].
     REASONGRAPH_DEDUP_THRESHOLD  cosine similarity (e.g. 0.95) above which a new
                                fact is treated as a paraphrase of an existing one
                                (scopes are unioned, nothing new is added)
@@ -185,12 +188,14 @@ def build_service(env: Mapping[str, str] | None = None) -> MemoryService:
         canonicalizer=build_canonicalizer(env),
         span_link_threshold=(float(env["REASONGRAPH_SPAN_LINK_THRESHOLD"])
                              if env.get("REASONGRAPH_SPAN_LINK_THRESHOLD") else None),
+        sentence_splitter=(env.get("REASONGRAPH_SPLIT_SENTENCES") or None),
     )
     dedup = env.get("REASONGRAPH_DEDUP_THRESHOLD")
     return MemoryService(
         graph=graph,
         defer_extraction=_bool_env(env, "REASONGRAPH_DEFER_EXTRACT", False),
         dedup_threshold=float(dedup) if dedup not in (None, "") else None,
+        split_sentences=bool(env.get("REASONGRAPH_SPLIT_SENTENCES")),
     )
 
 

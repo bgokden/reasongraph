@@ -43,6 +43,7 @@ class ReasonGraph:
         conflict_resolver=None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
         span_link_threshold: float | None = None,
+        sentence_splitter=None,
     ) -> None:
         self.backend = backend or MemoryBackend()
         self.embeddings = EmbeddingManager(
@@ -67,6 +68,10 @@ class ReasonGraph:
         # "the old town flooded"). The causal walk follows those ties, so chains
         # can cross facts that phrase the same event differently.
         self.span_link_threshold = span_link_threshold
+        # Sentence splitting at ingest: a splitter object, or "sat" / "regex" / None. When set,
+        # add_texts(split=None) splits every input into sentences (one fact each).
+        from reasongraph._split import resolve_splitter
+        self.sentence_splitter = resolve_splitter(sentence_splitter)
         # When a resolver is configured, resolve on every add unless a call says
         # otherwise. Set False to make resolution opt-in per call
         # (``add_texts(..., resolve_conflicts=True)``), e.g. when the resolver
@@ -339,8 +344,13 @@ class ReasonGraph:
         dedup_threshold: float | None = None,
         resolve_conflicts: bool | None = None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
+        split: bool | None = None,
     ) -> list[list[str]]:
         """Add multiple texts with automatic entity and causal extraction.
+
+        ``split``: split each text into sentences first and store one fact per sentence
+        (``None`` = whenever a ``sentence_splitter`` is configured). The returned entity
+        lists still line up with the input texts (union over a text's sentences).
 
         Processes texts in batch. Entity nodes that appear across multiple
         texts are shared (deduplicated by the backend upsert).
@@ -383,6 +393,30 @@ class ReasonGraph:
             List of entity lists, one per input text (canonical forms when a
             canonicalizer is in effect). Skipped duplicates yield [].
         """
+        use_split = self.sentence_splitter is not None if split is None else split
+        if use_split:
+            splitter = self.sentence_splitter
+            if splitter is None:
+                from reasongraph._split import RegexSplitter
+                splitter = RegexSplitter()
+            groups = [splitter.split(t) or [t] for t in texts]
+            flat = [sent for g in groups for sent in g]
+            per_fact = await self.add_texts(
+                flat, extractor=extractor, causal_extractor=causal_extractor, scopes=scopes,
+                causal=causal, dedup_threshold=dedup_threshold, resolve_conflicts=resolve_conflicts,
+                canonicalizer=canonicalizer, split=False,
+            )
+            out: list[list[str]] = []
+            k = 0
+            for g in groups:
+                seen: list[str] = []
+                for _ in g:
+                    for e in per_fact[k]:
+                        if e not in seen:
+                            seen.append(e)
+                    k += 1
+                out.append(seen)
+            return out
         if extractor is None:
             if not hasattr(self, "_default_extractor"):
                 self._default_extractor = self._build_default_extractor()

@@ -141,9 +141,9 @@ def build_extractor(args):
     else:
         from reasongraph._extraction import CausalPointerExtractor
 
-        extractor = CausalPointerExtractor(model=args.causal_model, gate_threshold=args.gate_threshold)
-    if args.embed_gate:
-        extractor = EmbedGatedExtractor(extractor, args.embed_gate, args.embed_gate_threshold)
+        extractor = CausalPointerExtractor(model=args.causal_model, gate_threshold=args.gate_threshold,
+                                           embed_gate=args.embed_gate or None,
+                                           embed_gate_threshold=args.embed_gate_threshold)
     return extractor
 
 
@@ -184,8 +184,12 @@ def _ordered_fraction(discovered, gold_chain):
 def score_case(graph, case):
     from reasongraph import ReasonGraph  # noqa: F401  (graph already built by caller)
 
+    ingest = getattr(graph, "_eval_ingest", "sentences")
     for session, facts in case["sessions"].items():
-        graph.add_texts_sync(facts, scopes={session}, resolve_conflicts=False)
+        if ingest == "paragraphs":   # one paragraph per session, the splitter (if any) cuts it
+            graph.add_texts_sync([" ".join(facts)], scopes={session}, resolve_conflicts=False)
+        else:
+            graph.add_texts_sync(facts, scopes={session}, resolve_conflicts=False)
 
     results = graph.discover_sync(case["question"], top_k=5, hops=4, max_results=10)
     discovered = _discovered_contents(results)
@@ -240,6 +244,9 @@ def main(argv=None):
                              "spans chain across facts. Set 0 to disable.")
     parser.add_argument("--label", default=None)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--ingest", choices=["sentences", "paragraphs"], default="sentences",
+                        help="paragraphs = join each session's facts into one text before pushing")
+    parser.add_argument("--split", default="off", help="sentence splitter for ingest: off | sat | sat:<model> | regex")
     parser.add_argument("--out", default=None, help="write per-case rows to this JSON")
     args = parser.parse_args(argv)
 
@@ -253,7 +260,9 @@ def main(argv=None):
     t0 = time.perf_counter()
     rows = []
     for case in cases:
-        graph = ReasonGraph(causal_extractor=extractor, span_link_threshold=span_link)
+        graph = ReasonGraph(causal_extractor=extractor, span_link_threshold=span_link,
+                            sentence_splitter=(None if args.split == "off" else args.split))
+        graph._eval_ingest = args.ingest
         graph.initialize_sync()
         rows.append(score_case(graph, case))
         graph.close_sync()

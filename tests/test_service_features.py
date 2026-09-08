@@ -272,3 +272,24 @@ def test_finetuned_conflict_resolver_prompt_grammar_and_fail_open():
     r2 = FineTunedConflictResolver("http://llm:8080", post=dead)
     assert r2.contradictions("x", ["y"]) == []
     assert FineTunedConflictResolver("http://llm:8080", post=dead, fail_open=False).is_conflict.__name__ == "is_conflict"
+
+
+async def test_push_split_stores_one_fact_per_sentence():
+    from reasongraph._split import RegexSplitter
+    svc = MemoryService(backend=MemoryBackend(), embed_model=_Embed(), extractor=_zeus, causal_extractor=False)
+    svc.graph.sentence_splitter = RegexSplitter()
+    async with svc:
+        out = await svc.push("s", "Zeus lives on Olympus. Hera is his wife! Athena was born from his head.", split=True)
+        assert out["count"] == 3 and len(out["sentences"]) == 3
+        assert out["sentences"][1] == "Hera is his wife!"
+        # default is off: the same text as one fact
+        out2 = await svc.push("t", "One fact. Two facts.")
+        assert "sentences" not in out2
+    # service-wide default on
+    svc2 = MemoryService(backend=MemoryBackend(), embed_model=_Embed(), extractor=_zeus, causal_extractor=False,
+                         split_sentences=True)
+    async with svc2:
+        out3 = await svc2.push("s", "One fact. Two facts.")
+        assert out3["count"] == 2
+        out4 = await svc2.push("s", "Three facts. Four facts.", split=False)
+        assert "sentences" not in out4
