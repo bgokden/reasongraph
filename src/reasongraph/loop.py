@@ -91,6 +91,14 @@ class MemoryLoop:
                     found.append({"content": content, "scopes": scopes, "path": [],
                                   "causes": [], "cross_session": False})
                     seen.add(content)
+        if found and self.min_score > -1.0:
+            # one cosine pass over everything recalled: discover's seeds carry no score
+            # and a short question can seed from facts that merely share a word
+            try:
+                scores = self.graph.embeddings.score(query, [f["content"] for f in found])
+                found = [f for f, sc in zip(found, scores) if sc >= self.min_score]
+            except Exception:
+                pass
         chain: list[dict] = []
         if _QUESTION.search(message) and found:
             try:
