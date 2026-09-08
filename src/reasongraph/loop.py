@@ -242,11 +242,20 @@ class MemoryLoop:
         return block
 
     def _is_own_turn(self, f: dict, message: str) -> bool:
-        """A fact that lives only in this loop's session (a stored conversation turn)."""
-        scopes = f.get("scopes") or []
+        """A fact that lives only in this loop's session (a stored conversation turn).
+
+        Hosted services tag every fact with the session ("tenant/chat") and with the
+        tenant ("tenant") as well; the tenant tag is a prefix of the session tag and
+        does not make the fact belong to anything else.
+        """
+        scopes = [str(s) for s in (f.get("scopes") or [])]
         if not scopes:
             return False
-        return all(s == self.session or str(s).endswith("/" + self.session) for s in scopes)
+        sess = [s for s in scopes if s == self.session or s.endswith("/" + self.session)]
+        if not sess:
+            return False
+        others = [s for s in scopes if s not in sess and not any(x.startswith(s + "/") for x in sess)]
+        return not others
 
     def _render(self, block: ContextBlock) -> str:
         if block.empty:

@@ -153,3 +153,12 @@ async def test_own_conversation_turns_do_not_crowd_out_facts():
         assert got.index("The flood closed the main road.") < (got.index(hedge) if hedge in got else 99)
     finally:
         await g.close()
+
+
+def test_own_turn_detection_ignores_the_tenant_tag():
+    loop = MemoryLoop.__new__(MemoryLoop); loop.session = "chat"
+    assert loop._is_own_turn({"scopes": ["chat"]}, "q")
+    assert loop._is_own_turn({"scopes": ["acme/chat", "acme"]}, "q")          # hosted: session tag + tenant tag
+    assert not loop._is_own_turn({"scopes": ["acme/chat", "acme", "acme/notes"]}, "q")   # also held by a real session
+    assert not loop._is_own_turn({"scopes": ["notes"]}, "q")
+    assert not loop._is_own_turn({"scopes": []}, "q")
