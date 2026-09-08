@@ -41,8 +41,17 @@ def build_handcrafted() -> ReasonGraph:
     return g
 
 
+def _embed_model():
+    """Mirror the deployment: REASONGRAPH_EMBED_MODEL (a ``fastembed:`` prefix is dropped,
+    the sentence-transformers name is used); unset = library default (English MiniLM)."""
+    name = os.environ.get("REASONGRAPH_EMBED_MODEL") or None
+    if name and name.startswith("fastembed:"):
+        name = name.split(":", 1)[1]
+    return name
+
+
 def build_autoextracted() -> tuple[ReasonGraph, float]:
-    g = ReasonGraph()
+    g = ReasonGraph(embed_model=_embed_model())
     g.initialize_sync()
     t0 = time.perf_counter()
     # Default pipeline: gliner_small entities + hybrid causal (cue + relex), causal on.
@@ -90,7 +99,7 @@ def load_extra_cases() -> list[dict]:
 
 
 def build_autoextracted_extra(cases: list[dict]) -> tuple[ReasonGraph, float]:
-    g = ReasonGraph()
+    g = ReasonGraph(embed_model=_embed_model())
     g.initialize_sync()
     corpus = list(dict.fromkeys(s for c in cases for s in c["corpus"]))
     t0 = time.perf_counter()
