@@ -1582,6 +1582,37 @@ class ReasonGraph:
             await self._purge_orphan_entities(entity_neighbors)
         return deleted
 
+    async def forget(self, scopes, *, purge_orphans: bool = True) -> dict:
+        """Erase everything held under ``scopes`` (sessions, a tenant, a test run).
+
+        A node that lives only in these scopes is deleted, with the entities that
+        linked only to it when ``purge_orphans`` is set. A node also held elsewhere
+        (the same sentence pushed by another session or tenant) merely loses these
+        scopes and stays for its other holders. Returns ``{"deleted", "detached"}``.
+        """
+        scopes = set(scopes)
+        if not scopes:
+            return {"deleted": 0, "detached": 0}
+        contents = await self.backend.nodes_in_scopes(scopes)
+        held = await self.backend.get_scopes(contents)
+        gone = [c for c in contents if held.get(c, set()) <= scopes]
+        kept = [c for c in contents if c not in set(gone)]
+        if kept:
+            await self.backend.remove_scopes(kept, scopes)
+        deleted = 0
+        types = {}
+        try:
+            for n in await self.get_all_nodes():
+                if n.content in set(gone):
+                    types[n.content] = getattr(n, "type", "text")
+        except Exception:
+            pass
+        # text facts first (their orphan entities go with them), then leftover entity nodes
+        for c in sorted(gone, key=lambda c: types.get(c, "text") != "text"):
+            if await self.delete(c, purge_orphans=purge_orphans):
+                deleted += 1
+        return {"deleted": deleted, "detached": len(kept)}
+
     async def supersede(
         self,
         old_content: str,
@@ -1756,6 +1787,9 @@ class ReasonGraph:
 
     def trace_effects_sync(self, content: str, **kwargs) -> dict:
         return self._run(self.trace_effects(content, **kwargs))
+
+    def forget_sync(self, scopes, **kwargs) -> dict:
+        return self._run(self.forget(scopes, **kwargs))
 
     def trace_causes_sync(self, content: str, **kwargs) -> dict:
         return self._run(self.trace_causes(content, **kwargs))

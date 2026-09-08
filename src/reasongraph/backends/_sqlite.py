@@ -504,6 +504,32 @@ class SqliteBackend(Backend):
         )
         return {row[0]: row[1] for row in await cursor.fetchall()}
 
+    async def nodes_in_scopes(self, scopes: set[str]) -> list[str]:
+        scopes = list(scopes)
+        if not scopes:
+            return []
+        db = await self._conn()
+        ph = ",".join("?" for _ in scopes)
+        cursor = await db.execute(
+            f"SELECT DISTINCT n.content FROM nodes n JOIN node_scopes s ON s.node_id = n.id WHERE s.scope IN ({ph})",
+            scopes,
+        )
+        return [row[0] for row in await cursor.fetchall()]
+
+    async def remove_scopes(self, contents: list[str], scopes: set[str]) -> int:
+        scopes = list(scopes)
+        if not contents or not scopes:
+            return 0
+        db = await self._conn()
+        cph = ",".join("?" for _ in contents)
+        sph = ",".join("?" for _ in scopes)
+        cursor = await db.execute(
+            f"DELETE FROM node_scopes WHERE scope IN ({sph}) AND node_id IN (SELECT id FROM nodes WHERE content IN ({cph}))",
+            [*scopes, *contents],
+        )
+        await db.commit()
+        return cursor.rowcount or 0
+
     async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
         if not contents:
             return {}

@@ -387,6 +387,31 @@ class PostgresBackend(Backend):
                     for row in await cur.fetchall()
                 }
 
+    async def nodes_in_scopes(self, scopes: set[str]) -> list[str]:
+        scopes = list(scopes)
+        if not scopes:
+            return []
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT DISTINCT node_content FROM node_scopes WHERE scope = ANY(%s)", (scopes,)
+                )
+                return [row[0] for row in await cur.fetchall()]
+
+    async def remove_scopes(self, contents: list[str], scopes: set[str]) -> int:
+        scopes = list(scopes)
+        if not contents or not scopes:
+            return 0
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "DELETE FROM node_scopes WHERE node_content = ANY(%s) AND scope = ANY(%s)",
+                    (contents, scopes),
+                )
+                return cur.rowcount or 0
+
     async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
         if not contents:
             return {}

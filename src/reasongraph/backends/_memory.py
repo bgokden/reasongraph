@@ -309,6 +309,19 @@ class MemoryBackend(Backend):
                 out[c] = node.invalid_at.isoformat() if node.invalid_at else None
         return out
 
+    async def nodes_in_scopes(self, scopes: set[str]) -> list[str]:
+        return [n.content for n in self._nodes.values() if n.scopes & set(scopes)]
+
+    async def remove_scopes(self, contents: list[str], scopes: set[str]) -> int:
+        removed = 0
+        for c in contents:
+            node = self._nodes.get(c)
+            if node is not None:
+                before = len(node.scopes)
+                node.scopes -= set(scopes)
+                removed += before - len(node.scopes)
+        return removed
+
     async def get_scopes(self, contents: list[str]) -> dict[str, set[str]]:
         return {
             c: set(self._nodes[c].scopes)

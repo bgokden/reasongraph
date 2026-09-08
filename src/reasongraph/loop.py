@@ -127,6 +127,13 @@ class MemoryLoop:
         # because of that structure (it rarely reads like an answer to the question:
         # "Redis runs on the same node as Elasticsearch" scores like noise against
         # "why is checkout slow?"), and is dropped only when its seed is dropped.
+        # The conversation's own turns (stored by observe) come back here too. They stay
+        # memory, but they must not crowd out real facts: the question itself and the
+        # model's earlier "I don't know" answers score highest against the question and
+        # would take every slot. They are judged after everything else, never as the best
+        # hit, and never when they repeat the current message.
+        own = [f for f in found if self._is_own_turn(f, message)]
+        found = [f for f in found if not self._is_own_turn(f, message)]
         if found and (self.min_score > -1.0 or self.rerank_min is not None):
             seeds = [f for f in found if not _walked(f)]
             walked = [f for f in found if _walked(f)]
@@ -167,6 +174,16 @@ class MemoryLoop:
             keep_set = kept_seeds | {f["content"] for f in walked if _seed_of(f) in kept_seeds}
             found = [f for f in found if f["content"] in keep_set]
             seen = {f["content"] for f in found}     # a dropped fact may come back by structure below
+        if own:
+            own = [f for f in own if f["content"].strip() != message.strip()]
+            if own and self.min_score > -1.0:
+                try:
+                    sc = self.graph.embeddings.score(query, [f["content"] for f in own])
+                    own = [f for f, x in zip(own, sc) if x >= max(self.min_score, 0.3)]
+                except Exception:
+                    pass
+            for f in own[: max(0, self.max_facts - len(found))]:
+                found.append(f); seen.add(f["content"])
         chain: list[dict] = []
         roots: list[str] = []
         if _QUESTION.search(message) and found:
@@ -223,6 +240,13 @@ class MemoryLoop:
         block = ContextBlock(facts=found, chain=chain, roots=roots)
         block.text = self._render(block)
         return block
+
+    def _is_own_turn(self, f: dict, message: str) -> bool:
+        """A fact that lives only in this loop's session (a stored conversation turn)."""
+        scopes = f.get("scopes") or []
+        if not scopes:
+            return False
+        return all(s == self.session or str(s).endswith("/" + self.session) for s in scopes)
 
     def _render(self, block: ContextBlock) -> str:
         if block.empty:

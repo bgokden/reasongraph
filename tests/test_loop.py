@@ -129,3 +129,27 @@ async def test_follow_up_query_readds_a_fact_the_question_cutoff_dropped():
         assert any(f["content"] == hop for f in block.facts)
     finally:
         await g.close()
+
+
+@pytest.mark.asyncio
+async def test_own_conversation_turns_do_not_crowd_out_facts():
+    """The loop stores the conversation; asking again must still surface the real facts,
+    not the question itself and the earlier 'I don't know' answer."""
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=_causal)
+    g.embeddings.rerank = _no_rerank
+    await g.initialize()
+    q = "Why is the main road closed?"
+    hedge = "I don't know why the main road is closed."
+    # fake scores: the question and the hedge score highest, the real facts lower
+    g.embeddings.score = lambda query, texts: [1.0 if t == q else 0.9 if t == hedge else 0.5 for t in texts]
+    try:
+        await g.add_texts(list(_RELS), extractor=_ents, scopes={"notes"})
+        loop = MemoryLoop(g, session="chat", max_facts=3)
+        await loop.observe(q, hedge)                       # a first round that found nothing useful
+        block = await loop.recall(q)
+        got = [f["content"] for f in block.facts]
+        assert q not in got                                # never inject the question itself
+        assert "The flood closed the main road." in got    # the real fact wins a slot
+        assert got.index("The flood closed the main road.") < (got.index(hedge) if hedge in got else 99)
+    finally:
+        await g.close()

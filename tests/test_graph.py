@@ -1121,3 +1121,24 @@ async def test_discover_seeds_from_top_k_facts_even_when_entities_outrank_them()
         assert len(res) >= 5, [r["content"] for r in res]
     finally:
         await g.close()
+
+
+@pytest.mark.parametrize("backend", [MemoryBackend(), SqliteBackend(":memory:")])
+@pytest.mark.asyncio
+async def test_forget_scopes_deletes_own_facts_and_detaches_shared_ones(backend):
+    from test_causal import _fake_embed
+    g = ReasonGraph(backend=backend, embed_model=_fake_embed, causal_extractor=False)
+    await g.initialize()
+    try:
+        ents = lambda t: ["Zeus"] if "Zeus" in t else (["Hera"] if "Hera" in t else [])
+        await g.add_texts(["Zeus rules Olympus.", "Shared: the sky is blue."], extractor=ents, scopes={"t1/s1", "t1"})
+        await g.add_texts(["Hera is queen.", "Shared: the sky is blue."], extractor=ents, scopes={"t2/s1", "t2"})
+        res = await g.forget({"t1/s1", "t1"})
+        # the t1-only fact is deleted (its orphan entity Zeus goes with it); the shared sentence is detached
+        assert res == {"deleted": 1, "detached": 1}
+        scopes = await g.backend.get_scopes(["Shared: the sky is blue.", "Zeus rules Olympus.", "Hera is queen."])
+        assert scopes["Shared: the sky is blue."] == {"t2/s1", "t2"}
+        assert "Zeus rules Olympus." not in scopes and scopes["Hera is queen."] == {"t2/s1", "t2"}
+        assert await g.backend.get_scopes(["Zeus"]) == {}
+    finally:
+        await g.close()

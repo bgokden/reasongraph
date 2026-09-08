@@ -60,6 +60,14 @@ class Backend(ABC):
     async def delete_stale_nodes(self, days: int) -> int:
         """Delete nodes not accessed within the given number of days. Return count deleted."""
 
+    async def nodes_in_scopes(self, scopes: set[str]) -> list[str]:
+        """Contents of every node carrying at least one of ``scopes``."""
+        raise NotImplementedError
+
+    async def remove_scopes(self, contents: list[str], scopes: set[str]) -> int:
+        """Drop ``scopes`` from the given nodes (the nodes themselves stay). Return rows removed."""
+        raise NotImplementedError
+
     @abstractmethod
     async def delete_nodes(self, contents: list[str]) -> int:
         """Delete the given nodes and their incident edges. Return count deleted."""
