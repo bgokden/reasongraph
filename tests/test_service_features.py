@@ -414,3 +414,14 @@ async def test_dedup_merge_is_gated_on_entities():
             assert b in stored and c not in stored
     finally:
         await g.close()
+
+
+def test_rerank_survives_tied_scores():
+    """Two results with the same cross-encoder score must not make the sort compare dicts."""
+    from reasongraph._embeddings import EmbeddingManager
+    class Tie:
+        def predict(self, pairs):
+            return [0.5 for _ in pairs]
+    e = EmbeddingManager(embed_model=lambda x: [[0.0] * 4 for _ in x] if isinstance(x, list) else [0.0] * 4, rerank_model=Tie())
+    results = [{"content": "a"}, {"content": "b"}, {"content": "c"}]
+    assert [r["content"] for r in e.rerank("q", results, top_k=3)] == ["a", "b", "c"]
