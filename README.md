@@ -282,8 +282,11 @@ asymmetrically can reach a root cause a symmetric one misses:
 loop = MemoryLoop(graph, session="chat", causal_hops=(3, 2))   # or REASONGRAPH_CAUSAL_HOPS=3,2
 ```
 
-The default is symmetric (`None`), because which split wins is an empirical question and our
-standing eval has not yet answered it. Measure on your own data before changing it.
+The default is symmetric (`None`), and on our own causal eval the split makes **no difference at all**:
+no path there runs more than two causal edges in one direction before the overall `hops` limit binds, so a
+per-direction cap never fires. Reach for this only when your graph has genuinely long one-directional
+chains, four or more hops of pure cause-to-cause. Raising `hops` itself was also measured: depth 5 buys
+two more correct answers in 180 for roughly twice the database work, which is why the default stays 3.
 
 ### Repeatable answers at scale
 
