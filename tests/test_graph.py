@@ -1169,3 +1169,26 @@ async def test_entity_normalize_env_bridges_case_variants(monkeypatch):
         assert nodes == {"sabah"}                      # one node, so the two facts bridge
     finally:
         await g.close()
+
+
+@pytest.mark.parametrize("backend", [MemoryBackend(), SqliteBackend(":memory:")])
+@pytest.mark.asyncio
+async def test_containment_links_an_entity_to_the_longer_one(backend):
+    from test_causal import _fake_embed, _no_rerank
+    g = ReasonGraph(backend=backend, embed_model=_fake_embed, causal_extractor=False, link_contained_entities=True)
+    g.embeddings.rerank = _no_rerank
+    await g.initialize()
+    try:
+        ents = {"Malzeme eksikliği üretimi durdurdu.": ["malzeme eksikliği"],
+                "Tedarikçi malzeme gönderemedi.": ["malzeme", "Tedarikçi"],
+                "The weather was nice.": ["weather"]}
+        for t in ents:                                   # separate pushes: the lookup hits stored nodes
+            await g.add_texts([t], extractor=lambda x, t=t: ents[t], scopes={"tr"})
+        nb = await g.backend.get_neighbors("malzeme eksikliği")
+        assert "Tedarikçi malzeme gönderemedi." in {n["content"] for n in nb}     # bridged through containment
+        nb2 = await g.backend.get_neighbors("weather")
+        assert {n["content"] for n in nb2} == {"The weather was nice."}
+        off = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=False)
+        assert off.link_contained_entities is False
+    finally:
+        await g.close()

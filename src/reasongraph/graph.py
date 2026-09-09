@@ -43,6 +43,7 @@ class ReasonGraph:
         isolate_traversal: bool = False,
         conflict_resolver=None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
+        link_contained_entities: bool | None = None,
         span_link_threshold: float | None = None,
         sentence_splitter=None,
         embed_query_prefix: str | None = None,
@@ -103,6 +104,13 @@ class ReasonGraph:
             from reasongraph._canonical import EntityNormalizer
             canonicalizer = EntityNormalizer()
         self._canonicalizer = self._normalize_canonicalizer(canonicalizer)
+        # Containment bridging: an entity that is a whole-word prefix of another ("malzeme" /
+        # "malzeme eksikligi", "Sabah" / "Ahmet sabah" is not: same first word required) links
+        # the new fact to the other entity node too, so inflected recurrences bridge. Looked up
+        # by first word through an indexed prefix query, never a scan. Opt-in.
+        if link_contained_entities is None:
+            link_contained_entities = os.environ.get("REASONGRAPH_ENTITY_CONTAINMENT", "").strip() not in ("", "0", "false", "off")
+        self.link_contained_entities = bool(link_contained_entities)
 
     @staticmethod
     def _normalize_synthesizer(synthesizer):
@@ -140,6 +148,32 @@ class ReasonGraph:
         if canonicalizer is None:
             return self._canonicalizer
         return self._normalize_canonicalizer(canonicalizer)
+
+    _CONTAIN_STOP = frozenset("the a an of and de der die das den het een el la los las le les du des del van von bir ve ile".split())
+
+    async def _contained_entities(self, entities: list[str], batch_seen: set[str]) -> list[str]:
+        """Existing entity nodes that contain, or are contained in, one of ``entities`` as a
+        whole-word prefix (same first word). Short or stopword-led names are skipped."""
+        out: list[str] = []
+        mine = {e.lower() for e in entities}
+        for entity in entities:
+            words = entity.lower().split()
+            if not words or len(entity) < 4 or words[0] in self._CONTAIN_STOP or len(words) > 4:
+                continue
+            try:
+                candidates = list(await self.backend.entities_starting_with(words[0], limit=20))
+            except NotImplementedError:
+                return out
+            candidates += [b for b in batch_seen if b.lower().split()[:1] == words[:1]]
+            for cand in candidates:
+                c = cand.lower()
+                if c in mine or c == entity.lower():
+                    continue
+                cw = c.split()
+                if cw[: len(words)] == words or words[: len(cw)] == cw:
+                    if len(min(c, entity.lower(), key=len)) >= 4 and cand not in out:
+                        out.append(cand)
+        return out
 
     @staticmethod
     def _canonicalize(entities: list[str], canonicalizer: CanonicalizerFn) -> list[str]:
@@ -490,6 +524,7 @@ class ReasonGraph:
         active_texts = []
 
         # NER entity extraction (duplicates are skipped, yielding [] entities)
+        batch_seen: set[str] = set()
         for text in texts:
             if text in skip:
                 all_entities.append([])
@@ -503,6 +538,10 @@ class ReasonGraph:
             for entity in entities:
                 all_nodes.append((entity, "entity"))
                 all_edges.append((entity, text))
+            if self.link_contained_entities and entities:
+                for other in await self._contained_entities(entities, batch_seen):
+                    all_edges.append((other, text))
+            batch_seen.update(entities)
 
         # Causal relation extraction (only on the non-duplicate texts)
         if causal_extractor is not None and active_texts:

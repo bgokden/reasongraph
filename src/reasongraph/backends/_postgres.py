@@ -89,6 +89,7 @@ class PostgresBackend(Backend):
             )
 
             await conn.execute(
+                "CREATE INDEX IF NOT EXISTS nodes_entity_lower_idx ON nodes (LOWER(content) text_pattern_ops) WHERE type = 'entity'",
                 "CREATE INDEX IF NOT EXISTS edges_from_idx ON edges (from_content)"
             )
             await conn.execute(
@@ -386,6 +387,18 @@ class PostgresBackend(Backend):
                     row[0]: (row[1].isoformat() if row[1] else None)
                     for row in await cur.fetchall()
                 }
+
+    async def entities_starting_with(self, word: str, limit: int = 20) -> list[str]:
+        pool = await self._get_pool()
+        w = word.lower()
+        pattern = w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + " %"
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT content FROM nodes WHERE type = 'entity' AND (LOWER(content) = %s OR LOWER(content) LIKE %s) LIMIT %s",
+                    (w, pattern, limit),
+                )
+                return [row[0] for row in await cur.fetchall()]
 
     async def nodes_in_scopes(self, scopes: set[str]) -> list[str]:
         scopes = list(scopes)

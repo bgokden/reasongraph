@@ -60,6 +60,10 @@ class Backend(ABC):
     async def delete_stale_nodes(self, days: int) -> int:
         """Delete nodes not accessed within the given number of days. Return count deleted."""
 
+    async def entities_starting_with(self, word: str, limit: int = 20) -> list[str]:
+        """Entity nodes whose first word is ``word`` (case-insensitive), at most ``limit``."""
+        raise NotImplementedError
+
     async def nodes_in_scopes(self, scopes: set[str]) -> list[str]:
         """Contents of every node carrying at least one of ``scopes``."""
         raise NotImplementedError

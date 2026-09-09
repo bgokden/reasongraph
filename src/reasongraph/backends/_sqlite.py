@@ -504,6 +504,15 @@ class SqliteBackend(Backend):
         )
         return {row[0]: row[1] for row in await cursor.fetchall()}
 
+    async def entities_starting_with(self, word: str, limit: int = 20) -> list[str]:
+        db = await self._conn()
+        w = word.lower()
+        cursor = await db.execute(
+            "SELECT content FROM nodes WHERE type = 'entity' AND (LOWER(content) = ? OR LOWER(content) LIKE ?) LIMIT ?",
+            (w, w.replace("%", "\\%").replace("_", "\\_") + " %", limit),
+        )
+        return [row[0] for row in await cursor.fetchall()]
+
     async def nodes_in_scopes(self, scopes: set[str]) -> list[str]:
         scopes = list(scopes)
         if not scopes:

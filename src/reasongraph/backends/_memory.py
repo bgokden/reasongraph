@@ -309,6 +309,19 @@ class MemoryBackend(Backend):
                 out[c] = node.invalid_at.isoformat() if node.invalid_at else None
         return out
 
+    async def entities_starting_with(self, word: str, limit: int = 20) -> list[str]:
+        w = word.lower()
+        out = []
+        for n in self._nodes.values():
+            if n.type != "entity":
+                continue
+            c = n.content.lower()
+            if c == w or c.startswith(w + " "):
+                out.append(n.content)
+                if len(out) >= limit:
+                    break
+        return out
+
     async def nodes_in_scopes(self, scopes: set[str]) -> list[str]:
         return [n.content for n in self._nodes.values() if n.scopes & set(scopes)]
 
