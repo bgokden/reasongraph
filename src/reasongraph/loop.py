@@ -87,6 +87,7 @@ class MemoryLoop:
                  min_ratio: float = 0.45,
                  extend_query: bool = True, rerank_min: float | None = None,
                  search_mode: str | None = None,
+                 causal_hops: tuple[int, int] | None = None,
                  observe_user: bool = True, observe_assistant: bool = True,
                  resolve_conflicts: bool = False, redact: Callable[[str], str | None] | None = None,
                  header: str = "What you remember that is relevant (with sources):") -> None:
@@ -102,6 +103,17 @@ class MemoryLoop:
         # how the seeds are found: "embedding" (default), "hybrid" (cosine fused with word-level
         # trigram matches: names, codes, numbers) or "keyword"; REASONGRAPH_LOOP_SEARCH sets the default
         self.search_mode = search_mode or os.environ.get("REASONGRAPH_LOOP_SEARCH", "embedding")
+        # separate depth for consequences and for causes, e.g. (3, 2); None keeps the walk
+        # symmetric. REASONGRAPH_CAUSAL_HOPS="3,2" sets it without code.
+        if causal_hops is None:
+            env = os.environ.get("REASONGRAPH_CAUSAL_HOPS", "").strip()
+            if env:
+                try:
+                    f, _, b = env.partition(",")
+                    causal_hops = (int(f), int(b or f))
+                except ValueError:
+                    causal_hops = None
+        self.causal_hops = causal_hops
         # direct-hit filler below this cosine score is left out: an empty context beats
         # padding the prompt with unrelated facts
         self.min_score = min_score
@@ -130,7 +142,7 @@ class MemoryLoop:
         query = f"{previous[:300]}\n{message}" if (previous and short) else message
         found = await self.graph.discover(query, top_k=self.top_k, hops=self.hops,
                                           max_results=self.max_facts, scopes=self.recall_scopes,
-                                          search_mode=self.search_mode)
+                                          search_mode=self.search_mode, causal_hops=self.causal_hops)
         seen = {f["content"] for f in found}
         if len(found) < self.max_facts:          # discover walks; query fills with direct hits
             direct = await self.graph.query_detailed(query, top_k=self.max_facts, scopes=self.recall_scopes,

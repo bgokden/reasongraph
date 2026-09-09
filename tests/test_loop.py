@@ -322,3 +322,37 @@ async def test_one_recall_asks_the_backend_for_each_fact_s_metadata_once():
         assert cached["scopes"] + cached["causal"] < plain["scopes"] + plain["causal"]
     finally:
         await g.close()
+
+
+@pytest.mark.asyncio
+async def test_causal_hops_budget_each_direction_separately():
+    """"Why" is a backward question. The walk can be told how far it may follow consequences
+    and how far it may follow causes, and each budget is spent only on typed causal edges."""
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=_causal)
+    g.embeddings.rerank = _no_rerank
+    try:
+        await g.add_texts(list(_RELS), extractor=_ents, scopes={"notes"})
+        q = "Why is the main road closed?"
+
+        wide = await g.discover(q, top_k=3, hops=6, max_results=20, scopes={"notes"})
+        none_back = await g.discover(q, top_k=3, hops=6, max_results=20, scopes={"notes"},
+                                     causal_hops=(6, 0))
+        assert len(none_back) <= len(wide)                      # no backward steps: never more
+        symmetric = await g.discover(q, top_k=3, hops=6, max_results=20, scopes={"notes"},
+                                     causal_hops=(6, 6))
+        assert {f["content"] for f in symmetric} == {f["content"] for f in wide}   # generous caps are a no-op
+    finally:
+        await g.close()
+
+
+@pytest.mark.asyncio
+async def test_loop_reads_the_causal_hop_budget_from_the_environment(monkeypatch):
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=False)
+    try:
+        assert MemoryLoop(g, session="c").causal_hops is None
+        monkeypatch.setenv("REASONGRAPH_CAUSAL_HOPS", "3,2")
+        assert MemoryLoop(g, session="c").causal_hops == (3, 2)
+        monkeypatch.setenv("REASONGRAPH_CAUSAL_HOPS", "nonsense")
+        assert MemoryLoop(g, session="c").causal_hops is None
+    finally:
+        await g.close()

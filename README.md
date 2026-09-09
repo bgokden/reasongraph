@@ -271,6 +271,20 @@ the context budget. Hybrid's own case (exact names, codes, part numbers, identif
 a *lookup* task, which that eval does not measure. Turn it on for lookup-shaped workloads; leave it
 off for "why" questions.
 
+### How far the walk goes, and in which direction
+
+`hops` bounds the walk's depth. `causal_hops=(forward, backward)` bounds it *per direction*:
+forward follows cause -> effect (consequences), backward follows effect -> cause (what led here).
+Entity bridges are unaffected. "Why" is a backward question, so a walk that spends its depth
+asymmetrically can reach a root cause a symmetric one misses:
+
+```python
+loop = MemoryLoop(graph, session="chat", causal_hops=(3, 2))   # or REASONGRAPH_CAUSAL_HOPS=3,2
+```
+
+The default is symmetric (`None`), because which split wins is an empirical question and our
+standing eval has not yet answered it. Measure on your own data before changing it.
+
 ### Walking in levels
 
 A recall walks the graph outward from its seeds. Each level is fetched in **one backend call**

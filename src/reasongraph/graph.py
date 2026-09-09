@@ -1097,6 +1097,7 @@ class ReasonGraph:
         isolate: bool | None = None,
         include_superseded: bool = False,
         walk_scopes: set[str] | list[str] | None = None,
+        causal_hops: tuple[int, int] | None = None,
     ) -> list[dict]:
         """Discover connection paths from a query into the graph.
 
@@ -1125,6 +1126,13 @@ class ReasonGraph:
 
         ``causes`` lists the directed cause->effect relations the fact asserts
         (from typed ``"causes"`` edges), surfacing causality first-class.
+
+        ``causal_hops`` gives the walk separate budgets along the causal direction:
+        ``(forward, backward)``, forward following cause->effect (consequences) and backward
+        following effect->cause (what led here). Entity bridges are unaffected and total depth
+        is still ``hops``. ``None``, the default, leaves the walk symmetric. "Why" is a backward
+        question, so spending depth differently in each direction can reach a root cause a
+        symmetric walk does not; which split wins is empirical, so measure before changing it.
         """
         scope_set = set(scopes) if scopes else None
         isolate = self.isolate_traversal if isolate is None else isolate
@@ -1160,6 +1168,8 @@ class ReasonGraph:
         # it was reached through. parent[c] = (prior_fact, bridging_entity, depth);
         # seeds have (None, None, 0). By default get_neighbors is unscoped, so the
         # walk crosses knowledge sessions; walk_scopes confines it when isolating.
+        fwd_cap, back_cap = causal_hops if causal_hops else (None, None)
+        spent: dict[str, tuple[int, int]] = {}   # (forward, backward) causal steps used to reach a node
         visited: set[str] = set()
         parent: dict[str, tuple] = {}
         order: list[str] = []  # discovered text facts, in BFS order
@@ -1169,6 +1179,7 @@ class ReasonGraph:
             if c in visited:
                 continue
             visited.add(c)
+            spent[c] = (0, 0)
             parent[c] = (None, None, 0)
             frontier.append((c, s.get("type", "text"), 0))
             if s.get("type") == "text":
@@ -1190,6 +1201,18 @@ class ReasonGraph:
                   nc, nt = n["content"], n["type"]
                   if nc in visited:
                       continue
+                  used_f, used_b = spent.get(content, (0, 0))
+                  if causal_hops and n.get("label") == "causes":
+                      # 'out' means this node -> the neighbour, i.e. along cause->effect.
+                      if n.get("direction") == "out":
+                          if fwd_cap is not None and used_f >= fwd_cap:
+                              continue
+                          used_f += 1
+                      else:
+                          if back_cap is not None and used_b >= back_cap:
+                              continue
+                          used_b += 1
+                  spent[nc] = (used_f, used_b)
                   visited.add(nc)
                   if ntype == "text" and nt == "entity":
                       # An entity bridge leaving this fact.

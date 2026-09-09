@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import logging
 
 import warnings
@@ -49,6 +51,26 @@ class PostgresBackend(Backend):
             )
         self.database_url = database_url
         self._pool: AsyncConnectionPool | None = None
+        # Repeatable vector search, off by default: see _tune().
+        self._deterministic = os.environ.get("REASONGRAPH_PG_DETERMINISTIC", "").lower() in ("1", "true", "yes")
+        self._ef_search = os.environ.get("REASONGRAPH_PG_EF_SEARCH", "").strip()
+
+    async def _tune(self, conn) -> None:
+        """Per-connection settings for vector search, when repeatability is wanted.
+
+        Approximate nearest-neighbour search returns a slightly different set run to run: the
+        candidate window depends on the scan, and among many near-equidistant neighbours the
+        "nearest N" is genuinely ambiguous. Two cheap sources are worth removing when a deployment
+        wants repeatable answers: parallel scan workers, whose merge order varies, and a small
+        candidate window. Enable with ``REASONGRAPH_PG_DETERMINISTIC=1``; widen the window with
+        ``REASONGRAPH_PG_EF_SEARCH`` (more stable and more accurate, slower). Ties are broken by
+        content everywhere regardless, which costs nothing.
+        """
+        if not self._deterministic:
+            return
+        await conn.execute("SET max_parallel_workers_per_gather = 0")
+        if self._ef_search:
+            await conn.execute(f"SET hnsw.ef_search = {int(self._ef_search)}")
 
     async def _get_pool(self) -> AsyncConnectionPool:
         if self._pool is None:
@@ -256,6 +278,7 @@ class PostgresBackend(Backend):
         pool = await self._get_pool()
         vec_str = f"[{', '.join(map(str, embedding))}]"
         async with pool.connection() as conn:
+            await self._tune(conn)
             async with conn.cursor() as cur:
                 if scopes:
                     await cur.execute(
@@ -265,7 +288,7 @@ class PostgresBackend(Backend):
                         WHERE content IN (
                             SELECT node_content FROM node_scopes WHERE scope = ANY(%s)
                         )
-                        ORDER BY embedding <=> '{vec_str}'
+                        ORDER BY embedding <=> '{vec_str}', content
                         LIMIT {top_k}
                         """,
                         (list(scopes),),
@@ -275,7 +298,7 @@ class PostgresBackend(Backend):
                         f"""
                         SELECT content, type, 1 - (embedding <=> '{vec_str}') AS score
                         FROM nodes
-                        ORDER BY embedding <=> '{vec_str}'
+                        ORDER BY embedding <=> '{vec_str}', content
                         LIMIT {top_k}
                         """
                     )
@@ -302,6 +325,7 @@ class PostgresBackend(Backend):
         )
         scope_param = [list(scopes)] if scopes else []
         async with pool.connection() as conn:
+            await self._tune(conn)
             if getattr(self, "_trigram", None) is None:
                 await self._create_trigram_index(conn)
             async with conn.cursor() as cur:
@@ -497,6 +521,7 @@ class PostgresBackend(Backend):
             params.append(sorted(scopes))
         params += [list(map(float, query_embedding)), int(limit)]
         async with pool.connection() as conn:
+            await self._tune(conn)
             async with conn.cursor() as cur:
                 await cur.execute(
                     f"""
@@ -506,7 +531,7 @@ class PostgresBackend(Backend):
                     INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = %s)
                                        OR (e.from_content = n.content AND e.to_content = %s)
                     WHERE 1=1{scope_clause}
-                    ORDER BY n.embedding <=> %s::vector
+                    ORDER BY n.embedding <=> %s::vector, n.content
                     LIMIT %s
                     """,
                     params,
@@ -532,6 +557,7 @@ class PostgresBackend(Backend):
             scope_clause = " AND n.content IN (SELECT node_content FROM node_scopes WHERE scope = ANY(%s))"
         vec = list(map(float, query_embedding))
         async with pool.connection() as conn:
+            await self._tune(conn)
             async with conn.cursor() as cur:
                 await cur.execute(
                     f"""
@@ -544,7 +570,7 @@ class PostgresBackend(Backend):
                         INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = s.src)
                                            OR (e.from_content = n.content AND e.to_content = s.src)
                         WHERE 1=1{scope_clause}
-                        ORDER BY n.embedding <=> %s::vector
+                        ORDER BY n.embedding <=> %s::vector, n.content
                         LIMIT %s
                     ) AS x
                     """,

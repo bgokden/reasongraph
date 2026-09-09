@@ -277,6 +277,18 @@ async def test_aggregates_and_capped_neighbors(backend):
     assert [n["content"] for n in many_scoped["Apple"]] == [n["content"] for n in near_scoped]
     assert await backend.nearest_neighbors_many([], q, 5) == {}
 
+    # Ties are broken by content, so the same query returns the same set in the same order.
+    for _ in range(3):
+        again = await backend.nearest_neighbors("Apple", q, 5)
+        assert [n["content"] for n in again] == [n["content"] for n in near]
+    tied = [_make_node(f"Tied fact {i}.", scopes={"t3"}) for i in range(6)]
+    for t in tied:
+        t.embedding = list(facts[7].embedding)          # identical vectors: the order is pure tie-break
+    await backend.insert_nodes(tied)
+    first = [r["content"] for r in await backend.knn_search(facts[7].embedding, 4, scopes={"t3"})]
+    assert first == sorted(first)                        # deterministic, and by content
+    assert first == [r["content"] for r in await backend.knn_search(facts[7].embedding, 4, scopes={"t3"})]
+
     assert "Apple" in await backend.entities_starting_with("apple")
     assert set(await backend.nodes_in_scopes({"t2"})) == {"Other tenant fact."}
     assert await backend.remove_scopes(["Fact 0 about Apple."], {"t1/s0"}) == 1
