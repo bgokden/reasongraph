@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+
 import asyncio
 import os
 import re
@@ -133,6 +135,7 @@ class ReasonGraph:
         if max_degree is None:
             max_degree = int(os.environ.get("REASONGRAPH_MAX_DEGREE", "64"))
         self.max_degree = max(1, int(max_degree))
+        self._req_cache: dict | None = None   # see request_cache(): per-request metadata memo
 
     @staticmethod
     def _normalize_synthesizer(synthesizer):
@@ -626,6 +629,48 @@ class ReasonGraph:
         neighbors = await self.backend.get_neighbors(content, walk_scopes)
         return neighbors[: self.max_degree] if len(neighbors) > self.max_degree else neighbors
 
+    @contextlib.asynccontextmanager
+    async def request_cache(self):
+        """Memoise read-only metadata for the span of one request.
+
+        One recall makes several discover/query passes over overlapping facts, and each pass asks the
+        backend again for the same scopes, causal relations, timestamps and validity. Over a network
+        those repeats are round trips. Inside this block each (kind, content) is fetched once; the
+        cache is dropped at the end, so nothing is ever stale across requests. Reads only: writes and
+        anything that changes facts are outside it.
+        """
+        outer = self._req_cache
+        self._req_cache = {} if outer is None else outer
+        try:
+            yield
+        finally:
+            self._req_cache = outer
+
+    async def _cached_map(self, kind: str, fetch, contents: list[str]) -> dict:
+        """``fetch(missing) -> {content: value}``, served from the request cache when one is open."""
+        cache = self._req_cache
+        if cache is None:
+            return await fetch(list(contents))
+        store = cache.setdefault(kind, {})
+        missing = [c for c in dict.fromkeys(contents) if c not in store]
+        if missing:
+            store.update(await fetch(missing))
+            for c in missing:                      # a content the backend did not return: remember the gap
+                store.setdefault(c, None)
+        return {c: store[c] for c in contents if store.get(c) is not None}
+
+    async def _scopes_of(self, contents) -> dict:
+        return await self._cached_map("scopes", self.backend.get_scopes, list(contents))
+
+    async def _causal_of(self, contents) -> dict:
+        return await self._cached_map("causal", self.backend.get_causal_relations, list(contents))
+
+    async def _created_of(self, contents) -> dict:
+        return await self._cached_map("created", self.backend.get_created_at, list(contents))
+
+    async def _validity_of(self, contents) -> dict:
+        return await self._cached_map("validity", self.backend.get_validity, list(contents))
+
     async def _neighbors_many(self, contents: list[str], walk_scopes, embedding=None) -> dict[str, list[dict]]:
         """Neighbours for a whole walk level, capped per node, in one backend call where the
         backend supports it. A recall walks tens of nodes; per-node calls make recall latency a
@@ -977,8 +1022,8 @@ class ReasonGraph:
             # are naive, so coerce an aware ``as_of`` to naive local time.
             if as_of.tzinfo is not None:
                 as_of = as_of.astimezone().replace(tzinfo=None)
-            created = await self.backend.get_created_at(texts)
-            validity = await self.backend.get_validity(texts)
+            created = await self._created_of(texts)
+            validity = await self._validity_of(texts)
             texts = [t for t in texts if self._valid_at(t, as_of, created, validity)]
         elif not include_superseded and texts and self.conflict_resolver is not None:
             # Drop retired (soft-superseded) facts. Only a resolver retires facts,
@@ -1026,8 +1071,8 @@ class ReasonGraph:
         )
         if not contents:
             return []
-        created = await self.backend.get_created_at(contents)
-        scope_map = await self.backend.get_scopes(contents)
+        created = await self._created_of(contents)
+        scope_map = await self._scopes_of(contents)
         scores = self.embeddings.score(query, contents)
         return [
             {
@@ -1173,7 +1218,7 @@ class ReasonGraph:
             superseded = set(await self._superseded(order))
             order = [c for c in order if c not in superseded]
 
-        scope_map = await self.backend.get_scopes(order)
+        scope_map = await self._scopes_of(order)
 
         def reconstruct(content: str) -> list[dict]:
             steps: list[dict] = []
@@ -1190,7 +1235,7 @@ class ReasonGraph:
 
         # Causal relations each discovered fact asserts (bounded fetch keyed by
         # the reached facts), so causality is surfaced first-class in the output.
-        causal_map = await self.backend.get_causal_relations(order)
+        causal_map = await self._causal_of(order)
 
         candidates: list[dict] = []
         for content in order:
@@ -1309,7 +1354,7 @@ class ReasonGraph:
         if origin is None:
             return {"origin": None, "chain": [], "terminals": []}
 
-        pairs = (await self.backend.get_causal_relations([origin])).get(origin, [])
+        pairs = (await self._causal_of([origin])).get(origin, [])
         edge_dir = "out" if direction == "effects" else "in"
         start = [p["cause"] for p in pairs] if direction == "effects" else [p["effect"] for p in pairs]
         if extra_start:
@@ -1322,7 +1367,7 @@ class ReasonGraph:
         terminals = sorted(reached_targets - has_next)
 
         # Map each hop to the fact that asserted it, and tag scopes / retirement.
-        causal_map = await self.backend.get_causal_relations(sorted(reached_facts))
+        causal_map = await self._causal_of(sorted(reached_facts))
         reverse: dict[tuple, str] = {}
         for fact, prs in causal_map.items():
             for p in prs:
@@ -1332,7 +1377,7 @@ class ReasonGraph:
         retired: set[str] = set()
         if not include_superseded and present and self.conflict_resolver is not None:
             retired = set(await self._superseded(present))
-        scope_map = await self.backend.get_scopes(present)
+        scope_map = await self._scopes_of(present)
 
         out_chain = []
         for hop, fact in zip(chain, hop_facts):
@@ -1447,7 +1492,7 @@ class ReasonGraph:
         target = await self._resolve_fact(to_content, scope_set)
         if target is None:
             return None
-        target_pairs = (await self.backend.get_causal_relations([target])).get(target, [])
+        target_pairs = (await self._causal_of([target])).get(target, [])
         target_spans = {p["cause"] for p in target_pairs} | {p["effect"] for p in target_pairs}
         target_names = [n for n in await self._entity_names(target) if n not in target_spans]
         if not target_spans and not target_names:
@@ -1455,8 +1500,8 @@ class ReasonGraph:
         origin = await self._resolve_fact(from_content, scope_set)
         if origin is None:
             return None
-        own = {p["cause"] for p in (await self.backend.get_causal_relations([origin])).get(origin, [])}
-        own |= {p["effect"] for p in (await self.backend.get_causal_relations([origin])).get(origin, [])}
+        own = {p["cause"] for p in (await self._causal_of([origin])).get(origin, [])}
+        own |= {p["effect"] for p in (await self._causal_of([origin])).get(origin, [])}
         seeds = await self._lexical_bridges(origin, exclude=own)
         traced = await self._trace(
             origin, "effects", max_depth=max_depth, scopes=scopes, isolate=isolate,
@@ -1541,10 +1586,10 @@ class ReasonGraph:
             return {"cause": pair[0], "effect": pair[1]} if direction == "effects" \
                 else {"cause": pair[1], "effect": pair[0]}
 
-        pruned_pairs = (await self.backend.get_causal_relations([pruned])).get(pruned, [])
+        pruned_pairs = (await self._causal_of([pruned])).get(pruned, [])
         pruned_oriented = {_oriented(p) for p in pruned_pairs}
 
-        origin_pairs = (await self.backend.get_causal_relations([origin_fact])).get(origin_fact, [])
+        origin_pairs = (await self._causal_of([origin_fact])).get(origin_fact, [])
         start = ([p["cause"] for p in origin_pairs] if direction == "effects"
                  else [p["effect"] for p in origin_pairs])
 
@@ -1566,7 +1611,7 @@ class ReasonGraph:
             for n in await self.backend.get_neighbors(span, walk_scopes):
                 if n.get("type") == "text":
                     span_pool.add(n["content"])
-        support_rels = await self.backend.get_causal_relations(sorted(span_pool))
+        support_rels = await self._causal_of(sorted(span_pool))
         retired: set[str] = set()
         if not include_superseded and self.conflict_resolver is not None:
             retired = set(await self._superseded(sorted(span_pool)))
@@ -1596,7 +1641,7 @@ class ReasonGraph:
         survived = sorted(directly_threatened & cf_spans)
 
         # Cite each collapsed span to a fact that asserted its shallowest baseline hop.
-        cite_rels = await self.backend.get_causal_relations(sorted(base_facts))
+        cite_rels = await self._causal_of(sorted(base_facts))
         reverse: dict[tuple, str] = {}
         for fact, prs in cite_rels.items():
             for p in prs:
@@ -1607,7 +1652,7 @@ class ReasonGraph:
             if s in collapsed_spans and (s not in by_span or h["depth"] < by_span[s]["depth"]):
                 by_span[s] = h
         cited = sorted({reverse.get((h["cause"], h["effect"])) for h in by_span.values()} - {None})
-        scope_map = await self.backend.get_scopes(cited)
+        scope_map = await self._scopes_of(cited)
 
         collapsed = []
         for span in sorted(collapsed_spans):

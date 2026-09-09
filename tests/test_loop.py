@@ -277,3 +277,48 @@ async def test_loop_search_mode_defaults_to_embedding_and_reads_the_env(monkeypa
         assert MemoryLoop(g, session="c", search_mode="embedding").search_mode == "embedding"
     finally:
         await g.close()
+
+
+@pytest.mark.asyncio
+async def test_one_recall_asks_the_backend_for_each_fact_s_metadata_once():
+    """A recall makes several passes over overlapping facts. Their scopes, causal relations and
+    timestamps do not change inside one recall, so the backend must be asked once, not per pass:
+    over a network every repeat is a round trip."""
+    from reasongraph.backends._memory import MemoryBackend
+
+    class Counting(MemoryBackend):
+        def __init__(self):
+            super().__init__()
+            self.n = {"scopes": 0, "causal": 0}
+
+        async def get_scopes(self, contents):
+            self.n["scopes"] += 1
+            return await super().get_scopes(contents)
+
+        async def get_causal_relations(self, contents):
+            self.n["causal"] += 1
+            return await super().get_causal_relations(contents)
+
+    backend = Counting()
+    g = ReasonGraph(backend=backend, embed_model=_fake_embed, causal_extractor=_causal)
+    g.embeddings.rerank = _no_rerank
+    try:
+        await g.add_texts(list(_RELS) + ["The warehouse is in Rotterdam."], extractor=_ents, scopes={"notes"})
+        loop = MemoryLoop(g, session="chat", recall_scopes={"notes"})
+
+        backend.n["scopes"] = backend.n["causal"] = 0
+        block = await loop.recall("Why is the main road closed?")
+        assert block.facts
+        cached = dict(backend.n)
+
+        g._req_cache = None
+        loop_uncached = MemoryLoop(g, session="chat", recall_scopes={"notes"})
+        loop_uncached._recall = loop_uncached._recall          # same code path, no cache below
+        backend.n["scopes"] = backend.n["causal"] = 0
+        await MemoryLoop._recall(loop_uncached, "Why is the main road closed?")
+        plain = dict(backend.n)
+
+        assert cached["scopes"] <= plain["scopes"] and cached["causal"] <= plain["causal"]
+        assert cached["scopes"] + cached["causal"] < plain["scopes"] + plain["causal"]
+    finally:
+        await g.close()

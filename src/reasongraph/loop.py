@@ -116,6 +116,13 @@ class MemoryLoop:
 
     async def recall(self, message: str, *, previous: str | None = None) -> ContextBlock:
         """Facts, paths and causal hops relevant to ``message`` (and the previous turn)."""
+        cache = getattr(self.graph, "request_cache", None)
+        if cache is None:      # a graph-like object without the memo (a tenant view, a stub)
+            return await self._recall(message, previous=previous)
+        async with cache():
+            return await self._recall(message, previous=previous)
+
+    async def _recall(self, message: str, previous: str | None = None):
         # A short follow-up ("and why?") needs the previous turn to mean anything; a full
         # question does not, and dragging the previous answer into the query pulls the
         # seeds back to the old topic when the conversation moves on.

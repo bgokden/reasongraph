@@ -271,6 +271,11 @@ A recall walks the graph outward from its seeds. Each level is fetched in **one 
 round trips: measured at 110 round trips per recall, a 5 ms hop to the database nearly quadrupled
 recall latency. Backends that cannot batch inherit a default that loops, so this is transparent.
 
+Within one recall, a fact's scopes, causal relations and timestamps are fetched **once**
+(`ReasonGraph.request_cache()`, opened by `MemoryLoop.recall`): a recall makes several passes over
+overlapping facts, and over a network every repeat is a round trip. The cache is dropped when the
+request ends, so nothing is stale across requests, and only read-only metadata is memoised.
+
 Concurrency, for deployments that run several writers (an API plus extraction workers):
 node and edge upserts are ordered by key so writers cannot deadlock on the same rows, schema
 creation is serialised with an advisory lock, and transient write failures (deadlock, serialization
