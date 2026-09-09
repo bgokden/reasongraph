@@ -261,8 +261,15 @@ trigram channel (`pg_trgm` strict word similarity, index-assisted on Postgres): 
 a number or a compound in the question matches the fact that contains it even when the
 embedder never saw the word. `keyword` is the trigram channel alone, for known-term lookups.
 The memory loop takes the same option (`MemoryLoop(search_mode="hybrid")`, or
-`REASONGRAPH_LOOP_SEARCH=hybrid`); it stays `embedding` by default until the standing
-eval shows a gain.
+`REASONGRAPH_LOOP_SEARCH=hybrid`), and stays `embedding` by default.
+
+**Measured, so you do not have to guess:** on the causal-root eval (180 cases, six languages,
+one busy tenant) hybrid does *not* help and slightly hurts: root recall 9% -> 7%, English 15% -> 8%,
+p95 latency +22%. The reason is structural, not a tuning failure: a root cause is phrased nothing
+like the question, so matching the question's words surfaces mid-chain filler that then competes for
+the context budget. Hybrid's own case (exact names, codes, part numbers, identifiers) is real but is
+a *lookup* task, which that eval does not measure. Turn it on for lookup-shaped workloads; leave it
+off for "why" questions.
 
 ### Walking in levels
 
