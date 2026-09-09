@@ -143,7 +143,9 @@ def build_extractor(args):
 
         extractor = CausalPointerExtractor(model=args.causal_model, gate_threshold=args.gate_threshold,
                                            embed_gate=args.embed_gate or None,
-                                           embed_gate_threshold=args.embed_gate_threshold)
+                                           embed_gate_threshold=args.embed_gate_threshold,
+                                           token_gate=args.token_gate or None,
+                                           token_gate_threshold=args.token_gate_threshold)
     return extractor
 
 
@@ -238,6 +240,9 @@ def main(argv=None):
     parser.add_argument("--gate-threshold", type=float, default=0.5)
     parser.add_argument("--embed-gate", default=None)
     parser.add_argument("--embed-gate-threshold", type=float, default=0.9)
+    parser.add_argument("--token-gate", default=None,
+                        help="token-level causal gate: local dir or hf://owner/repo/subfolder (mirror production)")
+    parser.add_argument("--token-gate-threshold", type=float, default=0.1)
     parser.add_argument("--span-link-threshold", type=float, default=0.85,
                         help="same_as link for causal spans of near-identical meaning "
                              "(production REASONGRAPH_SPAN_LINK_THRESHOLD); lets cause/effect "
