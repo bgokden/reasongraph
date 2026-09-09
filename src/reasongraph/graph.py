@@ -46,6 +46,7 @@ class ReasonGraph:
         link_contained_entities: bool | None = None,
         span_linker=None,
         span_link_logit: float | None = None,
+        max_degree: int | None = None,
         span_link_threshold: float | None = None,
         sentence_splitter=None,
         embed_query_prefix: str | None = None,
@@ -126,6 +127,12 @@ class ReasonGraph:
         if span_link_logit is None:
             span_link_logit = float(os.environ.get("REASONGRAPH_SPAN_LINK_LOGIT", "-2.2"))
         self.span_link_logit = span_link_logit
+        # Hub cap: an entity linked to thousands of facts ("Apple", "the company") would
+        # turn every walk through it into a scan. A walk expands at most max_degree
+        # neighbours of a node, the ones nearest to the question.
+        if max_degree is None:
+            max_degree = int(os.environ.get("REASONGRAPH_MAX_DEGREE", "64"))
+        self.max_degree = max(1, int(max_degree))
 
     @staticmethod
     def _normalize_synthesizer(synthesizer):
@@ -609,6 +616,16 @@ class ReasonGraph:
 
         return all_entities
 
+    async def _neighbors(self, content: str, walk_scopes, embedding=None) -> list[dict]:
+        """Neighbours for a walk step, capped at max_degree nearest to the query."""
+        if embedding is not None:
+            try:
+                return await self.backend.nearest_neighbors(content, embedding, self.max_degree, walk_scopes)
+            except NotImplementedError:
+                pass
+        neighbors = await self.backend.get_neighbors(content, walk_scopes)
+        return neighbors[: self.max_degree] if len(neighbors) > self.max_degree else neighbors
+
     def _get_span_linker(self):
         """The span linker, loaded on first use (a CrossEncoder for a model id or path)."""
         if self._span_linker is not None or self._span_linker_spec is None:
@@ -914,7 +931,7 @@ class ReasonGraph:
                     continue
                 results.append(seed)
                 visited.add(seed["content"])
-                neighbors = await self.backend.get_neighbors(seed["content"], walk_scopes)
+                neighbors = await self._neighbors(seed["content"], walk_scopes, embedding)
                 for n in neighbors:
                     if n["content"] not in visited:
                         if n["type"] == "text":
@@ -929,7 +946,7 @@ class ReasonGraph:
                 if seed["content"] in visited:
                     continue
                 visited.add(seed["content"])
-                neighbors = await self.backend.get_neighbors(seed["content"], walk_scopes)
+                neighbors = await self._neighbors(seed["content"], walk_scopes, embedding)
                 for n in neighbors:
                     if n["content"] not in visited:
                         if n["type"] == "text":
@@ -1102,7 +1119,7 @@ class ReasonGraph:
             content, ntype, depth = frontier.popleft()
             if depth >= hops:
                 continue
-            for n in await self.backend.get_neighbors(content, walk_scopes):
+            for n in await self._neighbors(content, walk_scopes, embedding):
                 if len(visited) >= max_visited:
                     break
                 nc, nt = n["content"], n["type"]
@@ -1723,13 +1740,16 @@ class ReasonGraph:
         if kept:
             await self.backend.remove_scopes(kept, scopes)
         deleted = 0
-        types = {}
+        types: dict[str, str] = {}
         try:
-            for n in await self.get_all_nodes():
-                if n.content in set(gone):
-                    types[n.content] = getattr(n, "type", "text")
-        except Exception:
-            pass
+            types = await self.backend.get_node_types(list(gone))
+        except NotImplementedError:
+            try:
+                for n in await self.get_all_nodes():
+                    if n.content in set(gone):
+                        types[n.content] = getattr(n, "type", "text")
+            except Exception:
+                pass
         # text facts first (their orphan entities go with them), then leftover entity nodes
         for c in sorted(gone, key=lambda c: types.get(c, "text") != "text"):
             if await self.delete(c, purge_orphans=purge_orphans):

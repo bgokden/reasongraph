@@ -390,6 +390,78 @@ class PostgresBackend(Backend):
                     for row in await cur.fetchall()
                 }
 
+    async def list_scopes(self, prefix: str | None = None) -> list[str]:
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                if prefix:
+                    pat = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                    await cur.execute("SELECT DISTINCT scope FROM node_scopes WHERE scope LIKE %s ORDER BY scope", (pat,))
+                else:
+                    await cur.execute("SELECT DISTINCT scope FROM node_scopes ORDER BY scope")
+                return [r[0] for r in await cur.fetchall()]
+
+    async def count_nodes(self, node_type: str | None = None, scopes: set[str] | None = None) -> int:
+        pool = await self._get_pool()
+        where, params = [], []
+        if node_type:
+            where.append("type = %s"); params.append(node_type)
+        if scopes:
+            where.append("content IN (SELECT node_content FROM node_scopes WHERE scope = ANY(%s))"); params.append(sorted(scopes))
+        sql = "SELECT COUNT(*) FROM nodes" + (" WHERE " + " AND ".join(where) if where else "")
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(sql, params)
+                return int((await cur.fetchone())[0])
+
+    async def get_node_types(self, contents: list[str]) -> dict[str, str]:
+        if not contents:
+            return {}
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT content, type FROM nodes WHERE content = ANY(%s)", (contents,))
+                return {c: t for c, t in await cur.fetchall()}
+
+    async def nearest_neighbors(self, content: str, query_embedding, limit: int,
+                                scopes: set[str] | None = None) -> list[dict[str, str]]:
+        """The ``limit`` neighbours nearest to the query, ordered by the vector index."""
+        pool = await self._get_pool()
+        params: list = [content, content, content]
+        scope_clause = ""
+        if scopes:
+            scope_clause = " AND n.content IN (SELECT node_content FROM node_scopes WHERE scope = ANY(%s))"
+            params.append(sorted(scopes))
+        params += [list(map(float, query_embedding)), int(limit)]
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""
+                    SELECT n.content, n.type, e.label,
+                           CASE WHEN e.from_content = %s THEN 'out' ELSE 'in' END AS direction
+                    FROM nodes n
+                    INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = %s)
+                                       OR (e.from_content = n.content AND e.to_content = %s)
+                    WHERE 1=1{scope_clause}
+                    ORDER BY n.embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    params,
+                )
+                neighbors: dict[str, dict[str, str]] = {}
+                for c, node_type, label, direction in await cur.fetchall():
+                    existing = neighbors.get(c)
+                    if existing is None or (label is not None and existing["label"] is None):
+                        neighbors[c] = {"content": c, "type": node_type, "label": label, "direction": direction}
+                return list(neighbors.values())
+
+    async def count_edges(self) -> int:
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT COUNT(*) FROM edges")
+                return int((await cur.fetchone())[0])
+
     async def entities_starting_with(self, word: str, limit: int = 20) -> list[str]:
         pool = await self._get_pool()
         w = word.lower()

@@ -60,6 +60,35 @@ class Backend(ABC):
     async def delete_stale_nodes(self, days: int) -> int:
         """Delete nodes not accessed within the given number of days. Return count deleted."""
 
+    async def list_scopes(self, prefix: str | None = None) -> list[str]:
+        """Distinct scope tags (optionally starting with ``prefix``), without loading nodes."""
+        raise NotImplementedError
+
+    async def count_nodes(self, node_type: str | None = None, scopes: set[str] | None = None) -> int:
+        """Number of nodes, optionally of one type and/or carrying one of ``scopes``."""
+        raise NotImplementedError
+
+    async def get_node_types(self, contents: list[str]) -> dict[str, str]:
+        """``content -> type`` for the given nodes (missing nodes are absent)."""
+        raise NotImplementedError
+
+    async def nearest_neighbors(self, content: str, query_embedding, limit: int,
+                                scopes: set[str] | None = None) -> list[dict[str, str]]:
+        """Like :meth:`get_neighbors`, but at most ``limit`` neighbours, the ones nearest
+        to ``query_embedding``. Hub entities ("Apple" on ten thousand facts) must not
+        turn a walk into a scan. Default: fetch all and rank in Python."""
+        neighbors = await self.get_neighbors(content, scopes)
+        if len(neighbors) <= limit:
+            return neighbors
+        return await self._rank_neighbors(neighbors, query_embedding, limit)
+
+    async def _rank_neighbors(self, neighbors, query_embedding, limit):
+        raise NotImplementedError
+
+    async def count_edges(self) -> int:
+        """Number of edges, without loading them."""
+        raise NotImplementedError
+
     async def entities_starting_with(self, word: str, limit: int = 20) -> list[str]:
         """Entity nodes whose first word is ``word`` (case-insensitive), at most ``limit``."""
         raise NotImplementedError

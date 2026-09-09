@@ -309,6 +309,35 @@ class MemoryBackend(Backend):
                 out[c] = node.invalid_at.isoformat() if node.invalid_at else None
         return out
 
+    async def list_scopes(self, prefix: str | None = None) -> list[str]:
+        out: set[str] = set()
+        for n in self._nodes.values():
+            out |= {s for s in n.scopes if prefix is None or s.startswith(prefix)}
+        return sorted(out)
+
+    async def count_nodes(self, node_type: str | None = None, scopes: set[str] | None = None) -> int:
+        return sum(1 for n in self._nodes.values()
+                   if (node_type is None or n.type == node_type) and (not scopes or (n.scopes & scopes)))
+
+    async def get_node_types(self, contents: list[str]) -> dict[str, str]:
+        return {c: self._nodes[c].type for c in contents if c in self._nodes}
+
+    async def _rank_neighbors(self, neighbors, query_embedding, limit):
+        q = np.asarray(query_embedding, dtype=np.float32)
+        qn = np.linalg.norm(q) or 1.0
+        scored = []
+        for n in neighbors:
+            node = self._nodes.get(n["content"])
+            if node is None:
+                continue
+            v = np.asarray(node.embedding, dtype=np.float32)
+            scored.append((float(v @ q / ((np.linalg.norm(v) or 1.0) * qn)), n))
+        scored.sort(key=lambda x: -x[0])
+        return [n for _, n in scored[:limit]]
+
+    async def count_edges(self) -> int:
+        return len(self._edges)
+
     async def entities_starting_with(self, word: str, limit: int = 20) -> list[str]:
         w = word.lower()
         out = []

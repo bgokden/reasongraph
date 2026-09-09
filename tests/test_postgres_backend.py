@@ -240,3 +240,33 @@ async def test_causal_edges_and_relations(backend):
     rels = await backend.get_causal_relations(["Heavy rainfall caused flooding."])
     assert rels["Heavy rainfall caused flooding."] == [{"cause": "heavy rainfall", "effect": "flooding"}]
     assert await backend.get_causal_relations([]) == {}
+
+
+@pytest.mark.asyncio
+async def test_aggregates_and_capped_neighbors(backend):
+    """The large-graph paths: counts and scopes without loading nodes, a capped
+    nearest-neighbour expansion for hub entities, prefix lookups, scope removal."""
+    hub = _make_node("Apple", node_type="entity", scopes={"t1"})
+    facts = [_make_node(f"Fact {i} about Apple.", scopes={"t1", f"t1/s{i % 3}"}) for i in range(30)]
+    await backend.insert_nodes([hub, *facts, _make_node("Other tenant fact.", scopes={"t2"})])
+    await backend.insert_edges([Edge(from_content="Apple", to_content=f.content) for f in facts])
+
+    assert await backend.count_nodes("text") == 31
+    assert await backend.count_nodes("text", {"t1"}) == 30
+    assert await backend.count_nodes("entity") == 1
+    assert await backend.count_edges() == 30
+    assert await backend.list_scopes("t1/") == ["t1/s0", "t1/s1", "t1/s2"]
+    assert set(await backend.list_scopes()) >= {"t1", "t2", "t1/s0"}
+    assert await backend.get_node_types(["Apple", "Fact 0 about Apple.", "missing"]) == {"Apple": "entity", "Fact 0 about Apple.": "text"}
+
+    assert len(await backend.get_neighbors("Apple")) == 30
+    q = facts[7].embedding
+    near = await backend.nearest_neighbors("Apple", q, 5)
+    assert len(near) == 5 and near[0]["content"] == "Fact 7 about Apple."
+    near_scoped = await backend.nearest_neighbors("Apple", q, 5, scopes={"t1/s1"})
+    assert len(near_scoped) == 5 and all(n["content"].startswith("Fact") for n in near_scoped)
+
+    assert "Apple" in await backend.entities_starting_with("apple")
+    assert set(await backend.nodes_in_scopes({"t2"})) == {"Other tenant fact."}
+    assert await backend.remove_scopes(["Fact 0 about Apple."], {"t1/s0"}) == 1
+    assert (await backend.get_scopes(["Fact 0 about Apple."]))["Fact 0 about Apple."] == {"t1"}

@@ -357,6 +357,10 @@ class MemoryService:
     # -- introspection --
 
     async def list_sessions(self) -> list[str]:
+        try:
+            return list(await self.graph.backend.list_scopes())
+        except NotImplementedError:
+            pass
         scopes: set[str] = set()
         for node in await self.graph.get_all_nodes():
             scopes |= node.scopes
@@ -383,16 +387,25 @@ class MemoryService:
         return {"facts": out, "pending": self.pending_extractions}
 
     async def stats(self) -> dict:
-        nodes = await self.graph.get_all_nodes()
-        edges = await self.graph.get_all_edges()
-        scopes: set[str] = set()
-        for n in nodes:
-            scopes |= n.scopes
+        try:   # aggregates: a large graph must not be loaded to be counted
+            facts = await self.graph.backend.count_nodes("text")
+            entities = await self.graph.backend.count_nodes("entity")
+            edges_n = await self.graph.backend.count_edges()
+            sessions_n = len(await self.graph.backend.list_scopes())
+        except NotImplementedError:
+            nodes = await self.graph.get_all_nodes()
+            edges = await self.graph.get_all_edges()
+            scopes: set[str] = set()
+            for n in nodes:
+                scopes |= n.scopes
+            facts = sum(1 for n in nodes if n.type == "text")
+            entities = sum(1 for n in nodes if n.type == "entity")
+            edges_n, sessions_n = len(edges), len(scopes)
         return {
-            "facts": sum(1 for n in nodes if n.type == "text"),
-            "entities": sum(1 for n in nodes if n.type == "entity"),
-            "edges": len(edges),
-            "sessions": len(scopes),
+            "facts": facts,
+            "entities": entities,
+            "edges": edges_n,
+            "sessions": sessions_n,
             # Facts still waiting for deferred entity/causal extraction. 0 means
             # every bridge is in place; clients can poll this after a push.
             "pending": self.pending_extractions,

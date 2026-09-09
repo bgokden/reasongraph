@@ -4,6 +4,7 @@ import struct
 from datetime import datetime, timedelta
 
 import aiosqlite
+import numpy as np
 import sqlite_vec
 
 from reasongraph._types import Node, Edge
@@ -503,6 +504,53 @@ class SqliteBackend(Backend):
             contents,
         )
         return {row[0]: row[1] for row in await cursor.fetchall()}
+
+    async def list_scopes(self, prefix: str | None = None) -> list[str]:
+        db = await self._conn()
+        if prefix:
+            cursor = await db.execute("SELECT DISTINCT scope FROM node_scopes WHERE scope LIKE ? ORDER BY scope",
+                                      (prefix.replace("%", "\\%").replace("_", "\\_") + "%",))
+        else:
+            cursor = await db.execute("SELECT DISTINCT scope FROM node_scopes ORDER BY scope")
+        return [r[0] for r in await cursor.fetchall()]
+
+    async def count_nodes(self, node_type: str | None = None, scopes: set[str] | None = None) -> int:
+        db = await self._conn()
+        where, params = [], []
+        if node_type:
+            where.append("type = ?"); params.append(node_type)
+        if scopes:
+            ph = ",".join("?" for _ in scopes)
+            where.append(f"id IN (SELECT node_id FROM node_scopes WHERE scope IN ({ph}))"); params.extend(sorted(scopes))
+        sql = "SELECT COUNT(*) FROM nodes" + (" WHERE " + " AND ".join(where) if where else "")
+        cursor = await db.execute(sql, params)
+        return int((await cursor.fetchone())[0])
+
+    async def get_node_types(self, contents: list[str]) -> dict[str, str]:
+        if not contents:
+            return {}
+        db = await self._conn()
+        ph = ",".join("?" for _ in contents)
+        cursor = await db.execute(f"SELECT content, type FROM nodes WHERE content IN ({ph})", contents)
+        return {c: t for c, t in await cursor.fetchall()}
+
+    async def _rank_neighbors(self, neighbors, query_embedding, limit):
+        db = await self._conn()
+        contents = [n["content"] for n in neighbors]
+        ph = ",".join("?" for _ in contents)
+        cursor = await db.execute(f"SELECT content, embedding FROM nodes WHERE content IN ({ph})", contents)
+        q = np.asarray(query_embedding, dtype=np.float32); qn = np.linalg.norm(q) or 1.0
+        score = {}
+        for c, blob in await cursor.fetchall():
+            v = np.frombuffer(blob, dtype=np.float32)
+            score[c] = float(v @ q / ((np.linalg.norm(v) or 1.0) * qn))
+        ranked = sorted(neighbors, key=lambda n: -score.get(n["content"], -2.0))
+        return ranked[:limit]
+
+    async def count_edges(self) -> int:
+        db = await self._conn()
+        cursor = await db.execute("SELECT COUNT(*) FROM edges")
+        return int((await cursor.fetchone())[0])
 
     async def entities_starting_with(self, word: str, limit: int = 20) -> list[str]:
         db = await self._conn()
