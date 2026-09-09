@@ -464,6 +464,13 @@ class PostgresBackend(Backend):
                         neighbors[c] = {"content": c, "type": node_type, "label": label, "direction": direction}
                 return list(neighbors.values())
 
+    async def count_edges(self) -> int:
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT COUNT(*) FROM edges")
+                return int((await cur.fetchone())[0])
+
     async def entities_starting_with(self, word: str, limit: int = 20) -> list[str]:
         pool = await self._get_pool()
         w = word.lower()
