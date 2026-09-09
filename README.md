@@ -264,6 +264,18 @@ The memory loop takes the same option (`MemoryLoop(search_mode="hybrid")`, or
 `REASONGRAPH_LOOP_SEARCH=hybrid`); it stays `embedding` by default until the standing
 eval shows a gain.
 
+### Walking in levels
+
+A recall walks the graph outward from its seeds. Each level is fetched in **one backend call**
+(`nearest_neighbors_many`), not one call per node, because over a network a recall's cost is its
+round trips: measured at 110 round trips per recall, a 5 ms hop to the database nearly quadrupled
+recall latency. Backends that cannot batch inherit a default that loops, so this is transparent.
+
+Concurrency, for deployments that run several writers (an API plus extraction workers):
+node and edge upserts are ordered by key so writers cannot deadlock on the same rows, schema
+creation is serialised with an advisory lock, and transient write failures (deadlock, serialization
+failure, an aborted pipeline) are retried with backoff.
+
 ```python
 # Pure embedding similarity (default)
 results = graph.query_sync("credit freeze", search_mode="embedding")

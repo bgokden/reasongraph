@@ -1192,3 +1192,40 @@ async def test_containment_links_an_entity_to_the_longer_one(backend):
         assert off.link_contained_entities is False
     finally:
         await g.close()
+
+
+@pytest.mark.asyncio
+async def test_walk_expands_one_level_per_backend_call():
+    """A recall's cost over a network is its round trips. The walk must fetch a whole level in one
+    call, not one call per node, so latency does not multiply with the number of nodes reached."""
+    from reasongraph.backends._memory import MemoryBackend
+
+    class Counting(MemoryBackend):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        async def nearest_neighbors_many(self, contents, query_embedding, limit, scopes=None):
+            self.calls += 1
+            return await super().nearest_neighbors_many(contents, query_embedding, limit, scopes)
+
+    backend = Counting()
+    def embed(x):
+        def one(t):
+            h = _stable_hash(t)
+            return [((h >> i) & 0xFF) / 255.0 for i in range(0, 24, 8)]
+        return [one(t) for t in x] if isinstance(x, list) else one(x)
+
+    g = ReasonGraph(backend=backend, embed_model=embed, causal_extractor=False)
+    try:
+        await g.add_texts(
+            ["Ana leads the Rotterdam team.", "The Rotterdam team ships the invoice service.",
+             "The invoice service failed on Tuesday.", "Tuesday was a holiday in Berlin."],
+            extractor=lambda t: [w for w in ("Ana", "Rotterdam", "invoice service", "Tuesday", "Berlin") if w in t],
+        )
+        backend.calls = 0
+        found = await g.discover("What did Ana's team ship?", top_k=2, hops=3, max_results=10)
+        assert found
+        assert backend.calls <= 3, f"one call per level expected, got {backend.calls}"
+    finally:
+        await g.close()

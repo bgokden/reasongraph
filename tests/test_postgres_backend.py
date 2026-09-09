@@ -266,6 +266,17 @@ async def test_aggregates_and_capped_neighbors(backend):
     near_scoped = await backend.nearest_neighbors("Apple", q, 5, scopes={"t1/s1"})
     assert len(near_scoped) == 5 and all(n["content"].startswith("Fact") for n in near_scoped)
 
+    # One level, one round trip: the batched form must match the per-node form exactly.
+    many = await backend.nearest_neighbors_many(["Apple", facts[0].content], q, 5)
+    assert set(many) == {"Apple", facts[0].content}
+    assert [n["content"] for n in many["Apple"]] == [n["content"] for n in near]
+    assert [n["content"] for n in many[facts[0].content]] == [
+        n["content"] for n in await backend.nearest_neighbors(facts[0].content, q, 5)
+    ]
+    many_scoped = await backend.nearest_neighbors_many(["Apple"], q, 5, scopes={"t1/s1"})
+    assert [n["content"] for n in many_scoped["Apple"]] == [n["content"] for n in near_scoped]
+    assert await backend.nearest_neighbors_many([], q, 5) == {}
+
     assert "Apple" in await backend.entities_starting_with("apple")
     assert set(await backend.nodes_in_scopes({"t2"})) == {"Other tenant fact."}
     assert await backend.remove_scopes(["Fact 0 about Apple."], {"t1/s0"}) == 1
