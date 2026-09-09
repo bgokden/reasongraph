@@ -187,7 +187,10 @@ class EmbeddingManager:
             order = sorted(range(len(unique)), key=lambda i: blended[i], reverse=True)
             ranked = [unique[i] for i in order]
         else:
-            ranked = [r for _, r in sorted(zip(scores, unique), reverse=True)]
+            # Sort by score index, not by (score, dict): when two rerank scores tie,
+            # zip-then-sort would compare the result dicts and raise TypeError.
+            order = sorted(range(len(unique)), key=lambda i: scores[i], reverse=True)
+            ranked = [unique[i] for i in order]
         return ranked[:top_k]
 
     def relevance(self, query: str, texts: list[str]) -> list[float]:
