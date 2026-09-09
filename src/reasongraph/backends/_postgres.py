@@ -89,7 +89,9 @@ class PostgresBackend(Backend):
             )
 
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS nodes_entity_lower_idx ON nodes (LOWER(content) text_pattern_ops) WHERE type = 'entity'",
+                "CREATE INDEX IF NOT EXISTS nodes_entity_lower_idx ON nodes (LOWER(content) text_pattern_ops) WHERE type = 'entity'"
+            )
+            await conn.execute(
                 "CREATE INDEX IF NOT EXISTS edges_from_idx ON edges (from_content)"
             )
             await conn.execute(
