@@ -44,6 +44,8 @@ class ReasonGraph:
         conflict_resolver=None,
         canonicalizer: CanonicalizerFn | Mapping[str, str] | None = None,
         link_contained_entities: bool | None = None,
+        span_linker=None,
+        span_link_logit: float | None = None,
         span_link_threshold: float | None = None,
         sentence_splitter=None,
         embed_query_prefix: str | None = None,
@@ -111,6 +113,19 @@ class ReasonGraph:
         if link_contained_entities is None:
             link_contained_entities = os.environ.get("REASONGRAPH_ENTITY_CONTAINMENT", "").strip() not in ("", "0", "false", "off")
         self.link_contained_entities = bool(link_contained_entities)
+        # Span linking: by default two causal spans are tied when their embedding cosine
+        # clears span_link_threshold. A span linker is a cross-encoder trained to answer
+        # "do these two spans describe the same event?" (effect of one hop, cause of the
+        # next), which recovers paraphrased hops (nominalisation vs clause) that cosine
+        # misses; the tie is made when its logit clears span_link_logit. Either an object
+        # with predict(pairs) -> logits, or a model id / path (hf://owner/repo or local).
+        if span_linker is None and os.environ.get("REASONGRAPH_SPAN_LINKER", "").strip():
+            span_linker = os.environ["REASONGRAPH_SPAN_LINKER"].strip()
+        self._span_linker_spec = span_linker
+        self._span_linker = None
+        if span_link_logit is None:
+            span_link_logit = float(os.environ.get("REASONGRAPH_SPAN_LINK_LOGIT", "-2.2"))
+        self.span_link_logit = span_link_logit
 
     @staticmethod
     def _normalize_synthesizer(synthesizer):
@@ -589,6 +604,25 @@ class ReasonGraph:
 
         return all_entities
 
+    def _get_span_linker(self):
+        """The span linker, loaded on first use (a CrossEncoder for a model id or path)."""
+        if self._span_linker is not None or self._span_linker_spec is None:
+            return self._span_linker
+        spec = self._span_linker_spec
+        if hasattr(spec, "predict"):
+            self._span_linker = spec
+            return spec
+        name = str(spec)
+        if name.startswith("hf://"):
+            name = name[len("hf://"):]
+        try:
+            from sentence_transformers import CrossEncoder
+            self._span_linker = CrossEncoder(name)
+        except Exception as exc:  # a missing model must not break ingest: fall back to cosine
+            warnings.warn(f"span linker {spec!r} could not be loaded ({exc}); using cosine linking")
+            self._span_linker_spec = None
+        return self._span_linker
+
     async def _link_causal_spans(self, spans: list[str], threshold: float) -> None:
         """Tie each new causal span to existing causal spans it near-duplicates.
 
@@ -599,15 +633,23 @@ class ReasonGraph:
         """
         edges: list[tuple] = []
         seen: set[tuple[str, str]] = set()
+        linker = self._get_span_linker()
         for span in dict.fromkeys(spans):
-            hits = await self.backend.knn_search(self.embeddings.encode(span), top_k=6)
+            hits = await self.backend.knn_search(self.embeddings.encode(span), top_k=10 if linker else 6)
             others = [h["content"] for h in hits
                       if h.get("type") == "entity" and h["content"] != span]
             if not others:
                 continue
-            scores = self.embeddings.score(span, others)
-            for other, score in zip(others, scores):
-                if score < threshold or (span, other) in seen or (other, span) in seen:
+            if linker is not None:
+                try:
+                    logits = [float(x) for x in linker.predict([(span, o) for o in others])]
+                    cut = self.span_link_logit
+                except Exception:
+                    logits = list(self.embeddings.score(span, others)); cut = threshold
+            else:
+                logits = list(self.embeddings.score(span, others)); cut = threshold
+            for other, score in zip(others, logits):
+                if score < cut or (span, other) in seen or (other, span) in seen:
                     continue
                 neighbours = await self.backend.get_neighbors(other)
                 if not any(n.get("label") == "causes" for n in neighbours):
