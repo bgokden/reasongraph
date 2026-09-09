@@ -483,6 +483,23 @@ no recalled fact states, one more targeted query fetches the plain fact behind i
 drops or rewrites text before it is stored), `resolve_conflicts`. The hosted service
 exposes the same loop as `POST /chat`. Example agent: `examples/agents/memory_loop_agent.py`.
 
+## LangChain and LangGraph
+
+`pip install "reasongraph[langchain]"` adds three adapters that work with a local
+`ReasonGraph` or the hosted service through `reasongraph.client.MemoryClient`:
+
+```python
+from reasongraph.integrations.langchain import ReasonGraphRetriever, with_memory, memory_tools
+
+retriever = ReasonGraphRetriever(target=graph)          # documents = the facts the graph connects
+model = with_memory(ChatOpenAI(...), graph, session="support-chat")   # recall in, exchange remembered
+tools = memory_tools(graph, session="agent")            # remember / recall / discover for agents
+```
+
+Documents carry the sources, the names the fact was reached through and its cause->effect
+links in `metadata`. Full example: `examples/agents/langchain_memory.py`; a LangGraph agent
+that uses the tools: `examples/agents/langgraph_agent.py`.
+
 ## Fast inference (optional, pure ONNX)
 
 The defaults already deliver the eval quality below; this is purely a
