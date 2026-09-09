@@ -626,6 +626,20 @@ class ReasonGraph:
         neighbors = await self.backend.get_neighbors(content, walk_scopes)
         return neighbors[: self.max_degree] if len(neighbors) > self.max_degree else neighbors
 
+    async def _neighbors_many(self, contents: list[str], walk_scopes, embedding=None) -> dict[str, list[dict]]:
+        """Neighbours for a whole walk level, capped per node, in one backend call where the
+        backend supports it. A recall walks tens of nodes; per-node calls make recall latency a
+        multiple of the round trip to the database."""
+        if not contents:
+            return {}
+        if embedding is not None:
+            try:
+                return await self.backend.nearest_neighbors_many(contents, embedding, self.max_degree, walk_scopes)
+            except NotImplementedError:
+                pass
+        got = await self.backend.get_neighbors_many(contents, walk_scopes)
+        return {c: (ns[: self.max_degree] if len(ns) > self.max_degree else ns) for c, ns in got.items()}
+
     def _get_span_linker(self):
         """The span linker, loaded on first use (a CrossEncoder for a model id or path)."""
         if self._span_linker is not None or self._span_linker_spec is None:
@@ -1116,34 +1130,40 @@ class ReasonGraph:
                 order.append(c)
 
         while frontier and len(visited) < max_visited:
-            content, ntype, depth = frontier.popleft()
-            if depth >= hops:
+            # Expand a whole level at once: one backend call per level, not per node.
+            level = [frontier.popleft() for _ in range(len(frontier))]
+            level = [(c, t, d) for (c, t, d) in level if d < hops]
+            if not level:
                 continue
-            for n in await self._neighbors(content, walk_scopes, embedding):
+            fetched = await self._neighbors_many([c for c, _, _ in level], walk_scopes, embedding)
+            for content, ntype, depth in level:
                 if len(visited) >= max_visited:
                     break
-                nc, nt = n["content"], n["type"]
-                if nc in visited:
-                    continue
-                visited.add(nc)
-                if ntype == "text" and nt == "entity":
-                    # An entity bridge leaving this fact.
-                    parent[nc] = (content, None, depth + 1)
-                    frontier.append((nc, "entity", depth + 1))
-                elif ntype == "entity" and nt == "text":
-                    # A fact reached through this entity; bridge back to the fact
-                    # that led into the entity.
-                    prior_fact = parent[content][0]
-                    parent[nc] = (prior_fact, content, depth + 1)
-                    frontier.append((nc, "text", depth + 1))
-                    order.append(nc)
-                else:
-                    # text->text (direct) or entity->entity (e.g. cause->effect) edge.
-                    prior = content if nt == "text" else parent.get(content, (None,))[0]
-                    parent[nc] = (prior, None, depth + 1)
-                    frontier.append((nc, nt, depth + 1))
-                    if nt == "text":
-                        order.append(nc)
+                for n in fetched.get(content, []):
+                  if len(visited) >= max_visited:
+                      break
+                  nc, nt = n["content"], n["type"]
+                  if nc in visited:
+                      continue
+                  visited.add(nc)
+                  if ntype == "text" and nt == "entity":
+                      # An entity bridge leaving this fact.
+                      parent[nc] = (content, None, depth + 1)
+                      frontier.append((nc, "entity", depth + 1))
+                  elif ntype == "entity" and nt == "text":
+                      # A fact reached through this entity; bridge back to the fact
+                      # that led into the entity.
+                      prior_fact = parent[content][0]
+                      parent[nc] = (prior_fact, content, depth + 1)
+                      frontier.append((nc, "text", depth + 1))
+                      order.append(nc)
+                  else:
+                      # text->text (direct) or entity->entity (e.g. cause->effect) edge.
+                      prior = content if nt == "text" else parent.get(content, (None,))[0]
+                      parent[nc] = (prior, None, depth + 1)
+                      frontier.append((nc, nt, depth + 1))
+                      if nt == "text":
+                          order.append(nc)
 
         # Scope lookup for the discovered facts only -- a bounded fetch keyed by
         # the reached contents, so it scales with the result set, not the graph.

@@ -15,6 +15,8 @@ agent's own.
 
 from __future__ import annotations
 
+import os
+
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -84,6 +86,7 @@ class MemoryLoop:
                  max_chars: int = 1600, top_k: int = 5, hops: int = 3, min_score: float = 0.1,
                  min_ratio: float = 0.45,
                  extend_query: bool = True, rerank_min: float | None = None,
+                 search_mode: str | None = None,
                  observe_user: bool = True, observe_assistant: bool = True,
                  resolve_conflicts: bool = False, redact: Callable[[str], str | None] | None = None,
                  header: str = "What you remember that is relevant (with sources):") -> None:
@@ -96,6 +99,9 @@ class MemoryLoop:
         self.hops = hops
         self.extend_query = extend_query
         self.rerank_min = rerank_min
+        # how the seeds are found: "embedding" (default), "hybrid" (cosine fused with word-level
+        # trigram matches: names, codes, numbers) or "keyword"; REASONGRAPH_LOOP_SEARCH sets the default
+        self.search_mode = search_mode or os.environ.get("REASONGRAPH_LOOP_SEARCH", "embedding")
         # direct-hit filler below this cosine score is left out: an empty context beats
         # padding the prompt with unrelated facts
         self.min_score = min_score
@@ -116,10 +122,12 @@ class MemoryLoop:
         short = len(message.split()) < 4
         query = f"{previous[:300]}\n{message}" if (previous and short) else message
         found = await self.graph.discover(query, top_k=self.top_k, hops=self.hops,
-                                          max_results=self.max_facts, scopes=self.recall_scopes)
+                                          max_results=self.max_facts, scopes=self.recall_scopes,
+                                          search_mode=self.search_mode)
         seen = {f["content"] for f in found}
         if len(found) < self.max_facts:          # discover walks; query fills with direct hits
-            direct = await self.graph.query_detailed(query, top_k=self.max_facts, scopes=self.recall_scopes)
+            direct = await self.graph.query_detailed(query, top_k=self.max_facts, scopes=self.recall_scopes,
+                                                     search_mode=self.search_mode)
             for r in direct:
                 content = r["content"] if isinstance(r, dict) else str(r)
                 scopes = sorted(r.get("scopes", [])) if isinstance(r, dict) else []

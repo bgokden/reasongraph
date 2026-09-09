@@ -232,3 +232,48 @@ async def test_root_entity_walk_pulls_the_plain_fact_behind_the_deepest_hop():
         assert plain in got, got
     finally:
         await g.close()
+
+
+@pytest.mark.asyncio
+async def test_hybrid_seeds_find_a_name_the_embedder_misses():
+    """A question naming a thing ("Northwind") must reach the fact that names it, even when the
+    embedder puts other facts first. The word channel supplies the seed; the walk does the rest."""
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=False)
+    g.embeddings.rerank = _no_rerank
+    try:
+        await g.add_texts([
+            "After the billing system move in June, Northwind's invoices were sent to their old office address.",
+            "Because two invoices went unpaid, Northwind's account was suspended on 14 August.",
+            "The support desk answered every ticket within a day last quarter.",
+        ], extractor=lambda t: [], scopes={"ops"})
+
+        seeds = await g.backend.hybrid_search(
+            g.embeddings.encode_query("Why did Northwind cancel?"), "Why did Northwind cancel?",
+            top_k=3, keyword_only=True,
+        )
+        found = [s["content"] for s in seeds]
+        assert any("Northwind" in c for c in found)
+        assert not any("support desk" in c for c in found)   # no shared word, no lexical seed
+
+        loop = MemoryLoop(g, session="chat", search_mode="hybrid")
+        seen = []
+        real = g.discover
+        async def spy(q, **kw):
+            seen.append(kw.get("search_mode")); return await real(q, **kw)
+        g.discover = spy
+        await loop.recall("Why did Northwind cancel?")
+        assert seen and seen[0] == "hybrid"                  # the loop passes its mode down
+    finally:
+        await g.close()
+
+
+@pytest.mark.asyncio
+async def test_loop_search_mode_defaults_to_embedding_and_reads_the_env(monkeypatch):
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=False)
+    try:
+        assert MemoryLoop(g, session="c").search_mode == "embedding"
+        monkeypatch.setenv("REASONGRAPH_LOOP_SEARCH", "hybrid")
+        assert MemoryLoop(g, session="c").search_mode == "hybrid"
+        assert MemoryLoop(g, session="c", search_mode="embedding").search_mode == "embedding"
+    finally:
+        await g.close()

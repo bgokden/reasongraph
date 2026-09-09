@@ -256,8 +256,13 @@ graph.load_dataset_sync("financial")
 
 ## Search Modes
 
-The default (`embedding`) is the best general choice and matches `hybrid` on the eval
-below; keyword is for known-term lookups. You rarely need to change this.
+`embedding` (the default) finds seeds by meaning. `hybrid` fuses that with a word-level
+trigram channel (`pg_trgm` strict word similarity, index-assisted on Postgres): a name, a code,
+a number or a compound in the question matches the fact that contains it even when the
+embedder never saw the word. `keyword` is the trigram channel alone, for known-term lookups.
+The memory loop takes the same option (`MemoryLoop(search_mode="hybrid")`, or
+`REASONGRAPH_LOOP_SEARCH=hybrid`); it stays `embedding` by default until the standing
+eval shows a gain.
 
 ```python
 # Pure embedding similarity (default)

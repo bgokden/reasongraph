@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import warnings
 from datetime import datetime, timedelta
 
@@ -27,6 +29,12 @@ def _as_list(emb) -> list[float]:
     return list(emb)
 
 
+logger = logging.getLogger(__name__)
+
+# One well-known key for the schema-creation advisory lock (any constant; must match across processes).
+_SCHEMA_LOCK = 8145270113
+
+
 class PostgresBackend(Backend):
     """PostgreSQL + pgvector backend for scalable vector search.
 
@@ -52,6 +60,10 @@ class PostgresBackend(Backend):
         await self._pool.open()
 
         async with self._pool.connection() as conn:
+            # Several processes (API + extraction workers) may start together; concurrent
+            # CREATE TABLE/INDEX on the same objects deadlocks in Postgres. One advisory lock
+            # serialises the whole schema step; the rest is IF NOT EXISTS, so the losers no-op.
+            await conn.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_LOCK,))
             await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
             await register_vector_async(conn)
 
@@ -71,6 +83,7 @@ class PostgresBackend(Backend):
             # suits an incrementally written table; on older servers we skip the
             # index (correct, just slower) rather than fail initialization.
             await self._create_vector_index(conn)
+            await self._create_trigram_index(conn)
 
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS edges (
@@ -110,6 +123,21 @@ class PostgresBackend(Backend):
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS node_scopes_scope_idx ON node_scopes (scope)"
             )
+            await conn.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_LOCK,))
+
+    async def _create_trigram_index(self, conn) -> None:
+        """pg_trgm plus a GIN index so the lexical channel of hybrid_search is index-assisted
+        (word-similarity operators). Without the extension the channel degrades to a scan."""
+        try:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS nodes_content_trgm_idx "
+                "ON nodes USING gin (content gin_trgm_ops)"
+            )
+            self._trigram = True
+        except Exception as exc:  # pragma: no cover - depends on the server
+            logger.warning("pg_trgm unavailable, hybrid search will scan: %s", exc)
+            self._trigram = False
 
     @staticmethod
     def _supports_hnsw(version: str | None) -> bool:
@@ -145,14 +173,39 @@ class PostgresBackend(Backend):
             await self._pool.close()
             self._pool = None
 
+
+    # Transient write failures under concurrency: a deadlock or serialization failure, and the
+    # pipeline abort psycopg raises for the rest of an executemany batch once one statement failed.
+    # They mean "try again", not "this write is wrong", so retry the whole operation briefly.
+    _RETRY_SQLSTATES = ("40001", "40P01", "25P02", "55P03")
+
+    async def _with_retry(self, op, attempts: int = 4):
+        import asyncio as _asyncio
+        import random as _random
+
+        for attempt in range(attempts):
+            try:
+                return await op()
+            except Exception as exc:
+                state = getattr(exc, "sqlstate", None) or getattr(getattr(exc, "diag", None), "sqlstate", None)
+                transient = state in self._RETRY_SQLSTATES or "pipeline" in str(exc).lower()
+                if not transient or attempt == attempts - 1:
+                    raise
+                await _asyncio.sleep((0.05 * 2 ** attempt) * (1 + _random.random()))
+
     async def insert_nodes(self, nodes: list[Node]) -> None:
+        return await self._with_retry(lambda: self._insert_nodes(nodes))
+
+    async def _insert_nodes(self, nodes: list[Node]) -> None:
         pool = await self._get_pool()
         now = datetime.now()
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
+                # Sorted by primary key: two writers upserting overlapping entity nodes take the
+                # row locks in the same order, so they queue instead of deadlocking.
                 data = [
                     (node.content, node.embedding, node.created_at, now, node.type)
-                    for node in nodes
+                    for node in sorted(nodes, key=lambda n: n.content)
                 ]
                 await cur.executemany(
                     """
@@ -163,9 +216,9 @@ class PostgresBackend(Backend):
                     """,
                     data,
                 )
-                scope_rows = [
+                scope_rows = sorted(
                     (node.content, scope) for node in nodes for scope in node.scopes
-                ]
+                )
                 if scope_rows:
                     await cur.executemany(
                         """
@@ -177,10 +230,15 @@ class PostgresBackend(Backend):
                     )
 
     async def insert_edges(self, edges: list[Edge]) -> None:
+        return await self._with_retry(lambda: self._insert_edges(edges))
+
+    async def _insert_edges(self, edges: list[Edge]) -> None:
         pool = await self._get_pool()
         async with pool.connection() as conn:
             async with conn.cursor() as cur:
-                data = [(e.from_content, e.to_content, e.label) for e in edges]
+                data = sorted(
+                    (e.from_content, e.to_content, e.label) for e in edges
+                )   # same ordering rule as insert_nodes: no lock-order deadlock between writers
                 await cur.executemany(
                     """
                     INSERT INTO edges (from_content, to_content, label)
@@ -231,66 +289,66 @@ class PostgresBackend(Backend):
         rrf_k: int = 60, keyword_only: bool = False,
         scopes: set[str] | None = None,
     ) -> list[dict[str, str]]:
+        """Seeds by cosine and by words. The lexical channel uses pg_trgm's strict word
+        similarity (a query word matching a word in the fact: names, codes, numbers, compounds),
+        index-assisted, ranked; both channels are windowed and fused by reciprocal rank so a fact
+        found by one channel only still counts."""
         pool = await self._get_pool()
         vec_str = f"[{', '.join(map(str, embedding))}]"
-        # Optional "restrict to nodes in these scopes" clause + its parameter.
+        window = max(top_k * 10, 100)
         scope_sql = (
-            "WHERE content IN (SELECT node_content FROM node_scopes WHERE scope = ANY(%s))"
+            "AND content IN (SELECT node_content FROM node_scopes WHERE scope = ANY(%s))"
             if scopes else ""
         )
         scope_param = [list(scopes)] if scopes else []
         async with pool.connection() as conn:
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            if getattr(self, "_trigram", None) is None:
+                await self._create_trigram_index(conn)
             async with conn.cursor() as cur:
+                # a query word counts as matching a fact word above this trigram similarity
+                await cur.execute("SET pg_trgm.strict_word_similarity_threshold = 0.45")
+                kw_sql = f"""
+                    SELECT content, type,
+                           ROW_NUMBER() OVER (ORDER BY strict_word_similarity(%s, content) DESC) AS rank
+                    FROM nodes
+                    WHERE type = 'text' AND %s <<%% content {scope_sql}
+                    LIMIT %s
+                """
+                kw_params = (query_text, query_text, *scope_param, window)
                 if keyword_only:
-                    await cur.execute(
-                        f"""
-                        SELECT content, type
-                        FROM nodes
-                        {scope_sql}
-                        ORDER BY similarity(content, %s) DESC
-                        LIMIT %s
-                        """,
-                        (*scope_param, query_text, top_k),
-                    )
-                    return [
-                        {"content": row[0], "type": row[1]}
-                        for row in await cur.fetchall()
-                    ]
+                    await cur.execute(kw_sql, kw_params)
+                    rows = await cur.fetchall()
+                    if not rows:   # nothing above the threshold: fall back to whole-string similarity
+                        await cur.execute(
+                            f"SELECT content, type FROM nodes WHERE TRUE {scope_sql} "
+                            "ORDER BY similarity(content, %s) DESC LIMIT %s",
+                            (*scope_param, query_text, top_k),
+                        )
+                        rows = await cur.fetchall()
+                    return [{"content": r[0], "type": r[1]} for r in rows[:top_k]]
 
-                # RRF entirely in SQL using window functions
                 await cur.execute(
                     f"""
                     WITH emb_ranked AS (
                         SELECT content, type,
-                            ROW_NUMBER() OVER (
-                                ORDER BY embedding <=> '{vec_str}'
-                            ) AS rank
+                               ROW_NUMBER() OVER (ORDER BY embedding <=> '{vec_str}') AS rank
                         FROM nodes
-                        {scope_sql}
+                        WHERE TRUE {scope_sql}
+                        ORDER BY embedding <=> '{vec_str}'
+                        LIMIT %s
                     ),
-                    kw_ranked AS (
-                        SELECT content,
-                            ROW_NUMBER() OVER (
-                                ORDER BY similarity(content, %s) DESC
-                            ) AS rank
-                        FROM nodes
-                        {scope_sql}
-                    )
-                    SELECT e.content, e.type
+                    kw_ranked AS ({kw_sql})
+                    SELECT COALESCE(e.content, k.content) AS content,
+                           COALESCE(e.type, k.type) AS type,
+                           1.0 / (%s + COALESCE(e.rank, %s)) + 1.0 / (%s + COALESCE(k.rank, %s)) AS score
                     FROM emb_ranked e
-                    JOIN kw_ranked k ON e.content = k.content
-                    ORDER BY 1.0 / (%s + e.rank) + 1.0 / (%s + k.rank) DESC
+                    FULL OUTER JOIN kw_ranked k ON e.content = k.content
+                    ORDER BY score DESC
                     LIMIT %s
                     """,
-                    # Placeholder order: emb-CTE scope, kw similarity, kw-CTE
-                    # scope, then the two rrf_k and the limit.
-                    (*scope_param, query_text, *scope_param, rrf_k, rrf_k, top_k),
+                    (*scope_param, window, *kw_params, rrf_k, window + 1, rrf_k, window + 1, top_k),
                 )
-                return [
-                    {"content": row[0], "type": row[1]}
-                    for row in await cur.fetchall()
-                ]
+                return [{"content": row[0], "type": row[1]} for row in await cur.fetchall()]
 
     async def get_neighbors(
         self, content: str, scopes: set[str] | None = None
@@ -459,6 +517,46 @@ class PostgresBackend(Backend):
                     if existing is None or (label is not None and existing["label"] is None):
                         neighbors[c] = {"content": c, "type": node_type, "label": label, "direction": direction}
                 return list(neighbors.values())
+
+    async def nearest_neighbors_many(self, contents: list[str], query_embedding, limit: int,
+                                     scopes: set[str] | None = None) -> dict[str, list[dict[str, str]]]:
+        """One walk level in one round trip. A LATERAL keeps the per-source OR-join and its
+        per-source LIMIT, so each source still gets its own index-driven top-``limit`` (the plan
+        W29 measured); only the number of round trips changes."""
+        if not contents:
+            return {}
+        pool = await self._get_pool()
+        scope_clause = ""
+        params: list = [list(dict.fromkeys(contents))]
+        if scopes:
+            scope_clause = " AND n.content IN (SELECT node_content FROM node_scopes WHERE scope = ANY(%s))"
+        vec = list(map(float, query_embedding))
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""
+                    SELECT s.src, x.content, x.type, x.label,
+                           CASE WHEN x.from_content = s.src THEN 'out' ELSE 'in' END AS direction
+                    FROM unnest(%s::text[]) AS s(src)
+                    CROSS JOIN LATERAL (
+                        SELECT n.content, n.type, e.label, e.from_content
+                        FROM nodes n
+                        INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = s.src)
+                                           OR (e.from_content = n.content AND e.to_content = s.src)
+                        WHERE 1=1{scope_clause}
+                        ORDER BY n.embedding <=> %s::vector
+                        LIMIT %s
+                    ) AS x
+                    """,
+                    (*params, *([sorted(scopes)] if scopes else []), vec, int(limit)),
+                )
+                out: dict[str, dict[str, dict[str, str]]] = {c: {} for c in contents}
+                for src, c, node_type, label, direction in await cur.fetchall():
+                    bucket = out.setdefault(src, {})
+                    existing = bucket.get(c)
+                    if existing is None or (label is not None and existing["label"] is None):
+                        bucket[c] = {"content": c, "type": node_type, "label": label, "direction": direction}
+                return {src: list(v.values()) for src, v in out.items()}
 
     async def count_edges(self) -> int:
         pool = await self._get_pool()

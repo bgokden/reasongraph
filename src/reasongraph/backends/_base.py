@@ -82,6 +82,27 @@ class Backend(ABC):
             return neighbors
         return await self._rank_neighbors(neighbors, query_embedding, limit)
 
+    async def nearest_neighbors_many(self, contents: list[str], query_embedding, limit: int,
+                                     scopes: set[str] | None = None) -> dict[str, list[dict[str, str]]]:
+        """Neighbours for several nodes at once, each capped at ``limit``.
+
+        One walk level is one call. The default fetches them one by one, which is right for a
+        backend in the same process; a networked backend should override it with a single query,
+        because a recall walks many nodes and each round trip is paid over the network.
+        """
+        out: dict[str, list[dict[str, str]]] = {}
+        for content in contents:
+            out[content] = await self.nearest_neighbors(content, query_embedding, limit, scopes)
+        return out
+
+    async def get_neighbors_many(self, contents: list[str],
+                                 scopes: set[str] | None = None) -> dict[str, list[dict[str, str]]]:
+        """``get_neighbors`` for several nodes at once. See ``nearest_neighbors_many``."""
+        out: dict[str, list[dict[str, str]]] = {}
+        for content in contents:
+            out[content] = await self.get_neighbors(content, scopes)
+        return out
+
     async def _rank_neighbors(self, neighbors, query_embedding, limit):
         raise NotImplementedError
 

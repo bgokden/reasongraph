@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import json
 from datetime import datetime, timedelta
 
@@ -168,17 +170,41 @@ class MemoryBackend(Backend):
             types.append(node.type)
             embeddings.append(node.embedding)
 
-        query_lower = query_text.lower()
+        # Lexical channel: which words of the question this fact actually contains.
+        # Postgres does this with pg_trgm's strict word similarity and an index; here the same
+        # idea in Python, weighted so a match on a rare word ("Northwind") counts and a match on
+        # a common one ("the") does not. A fact sharing no question word scores zero.
+        import math
+
+        def _grams(word: str) -> set[str]:
+            padded = f"  {word} "
+            return {padded[i:i + 3] for i in range(len(padded) - 2)}
+
+        def _words(text: str) -> list[str]:
+            return [w for w in re.findall(r"\w+", text.lower()) if len(w) > 1]
+
+        q_words = _words(query_text)
+        doc_words = [set(_words(c)) for c in contents]
+        n_docs = max(1, len(contents))
+
+        def _matches(qw: str, words: set[str]) -> bool:
+            if qw in words:
+                return True
+            qg = _grams(qw)
+            return any(len(qg & _grams(w)) / len(qg | _grams(w)) >= 0.45 for w in words)   # same bar as pg_trgm.strict_word_similarity_threshold
+
+        kw_scores_raw = [0.0] * len(contents)
+        for qw in dict.fromkeys(q_words):
+            hits = [i for i, words in enumerate(doc_words) if _matches(qw, words)]
+            if not hits:
+                continue
+            idf = math.log(1.0 + n_docs / len(hits))   # a word in every fact adds nothing
+            for i in hits:
+                kw_scores_raw[i] += idf
 
         if keyword_only:
-            # Rank by substring match presence, then by position (earlier = better)
-            scored = []
-            for i, content in enumerate(contents):
-                pos = content.lower().find(query_lower)
-                if pos >= 0:
-                    scored.append((i, pos))
-            # Sort by match position (earlier matches first)
-            scored.sort(key=lambda x: x[1])
+            scored = [(i, sc) for i, sc in enumerate(kw_scores_raw) if sc > 0]
+            scored.sort(key=lambda x: -x[1])
             now = datetime.now()
             results = []
             for idx, _ in scored[:top_k]:
@@ -201,16 +227,9 @@ class MemoryBackend(Backend):
         emb_rank = np.empty_like(emb_order)
         emb_rank[emb_order] = np.arange(1, len(emb_order) + 1)
 
-        # Keyword ranks: substring match scored by position, non-matches get high rank
-        kw_scores = []
-        for content in contents:
-            pos = content.lower().find(query_lower)
-            if pos >= 0:
-                kw_scores.append(pos)
-            else:
-                kw_scores.append(float("inf"))
-
-        kw_order = sorted(range(len(kw_scores)), key=lambda i: kw_scores[i])
+        # Keyword ranks: word similarity, descending; facts below the threshold do not rank
+        kw_scores = [sc if sc > 0 else float("-inf") for sc in kw_scores_raw]
+        kw_order = sorted(range(len(kw_scores)), key=lambda i: -kw_scores[i])
         kw_rank = [0] * len(kw_scores)
         for rank_pos, idx in enumerate(kw_order, 1):
             kw_rank[idx] = rank_pos
@@ -219,7 +238,7 @@ class MemoryBackend(Backend):
         rrf_scores = []
         for i in range(len(contents)):
             emb_score = 1.0 / (rrf_k + emb_rank[i])
-            kw_score = 1.0 / (rrf_k + kw_rank[i]) if kw_scores[i] != float("inf") else 0.0
+            kw_score = 1.0 / (rrf_k + kw_rank[i]) if kw_scores[i] != float("-inf") else 0.0
             rrf_scores.append(emb_score + kw_score)
 
         rrf_arr = np.asarray(rrf_scores, dtype=np.float32)
