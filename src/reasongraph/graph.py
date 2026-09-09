@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import warnings
 from collections import deque
@@ -98,6 +99,9 @@ class ReasonGraph:
         # "the Fed" / "Federal Reserve") collapse to one shared-entity bridge. This
         # is the light stand-in for coreference; None (default) leaves entities
         # verbatim. Overridable per add_text/add_texts call.
+        if canonicalizer is None and os.environ.get("REASONGRAPH_ENTITY_NORMALIZE", "").strip() not in ("", "0", "false", "off"):
+            from reasongraph._canonical import EntityNormalizer
+            canonicalizer = EntityNormalizer()
         self._canonicalizer = self._normalize_canonicalizer(canonicalizer)
 
     @staticmethod

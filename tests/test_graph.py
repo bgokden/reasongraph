@@ -1142,3 +1142,30 @@ async def test_forget_scopes_deletes_own_facts_and_detaches_shared_ones(backend)
         assert await g.backend.get_scopes(["Zeus"]) == {}
     finally:
         await g.close()
+
+
+def test_entity_normalizer_merges_surface_forms():
+    from reasongraph._canonical import EntityNormalizer
+    n = EntityNormalizer()
+    assert n("Sabah") == n("sabah") == "sabah"
+    assert n("Bulk Export's") == n("Bulk Export") == n("bulk export.") == "bulk export"
+    assert n("Apple Inc.") == n("apple") == "apple"
+    assert n("Işık") == "ışık" and n("İstanbul") == "istanbul"      # Turkish I/İ, not Unicode casefold
+    assert n(n("  Maria  Lopez ")) == n("Maria Lopez") == "maria lopez"
+    assert n("") == ""
+
+
+@pytest.mark.asyncio
+async def test_entity_normalize_env_bridges_case_variants(monkeypatch):
+    from test_causal import _fake_embed, _no_rerank
+    monkeypatch.setenv("REASONGRAPH_ENTITY_NORMALIZE", "1")
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=False)
+    g.embeddings.rerank = _no_rerank
+    await g.initialize()
+    try:
+        ents = {"Sabah kahvesi geç geldi.": ["Sabah"], "sabah toplantısı ertelendi.": ["sabah"]}
+        await g.add_texts(list(ents), extractor=lambda t: ents[t], scopes={"tr"})
+        nodes = {n.content for n in await g.get_all_nodes() if getattr(n, "type", "") == "entity"}
+        assert nodes == {"sabah"}                      # one node, so the two facts bridge
+    finally:
+        await g.close()

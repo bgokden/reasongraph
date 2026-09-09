@@ -226,7 +226,7 @@ All of them are small and run on CPU.
 | Step | Library default | ReasonGraph Cloud | Notes |
 |---|---|---|---|
 | Sentence splitting | off (`split="sat"` or `"regex"` to enable) | SaT `sat-3l-sm` (wtpsplit) | 84% boundary recovery on messy text vs 40% for the regex splitter |
-| Entities | GLiNER `gliner-community/gliner_small-v2.5` | same | zero-shot, multilingual; 97% recall on a 6-language check, ~19 ms/call |
+| Entities | GLiNER `gliner-community/gliner_small-v2.5` | same | zero-shot, multilingual; 97% recall on a 6-language check, ~19 ms/call. `REASONGRAPH_ENTITY_NORMALIZE=1` (or `canonicalizer=EntityNormalizer()`) merges surface forms ("Sabah"/"sabah", "Bulk Export's"/"Bulk Export") into one node so facts bridge in inflected languages |
 | Cause → effect | `Berk/causal-span-pointer-v2` (fine-tuned mDeBERTa-v3, open weights) | same, plus the token gate in the same repo at threshold 0.1 | 0.70 F1 on CausalNewsCorpus dev; the gate keeps plain statements out of the causal graph. `REASONGRAPH_CAUSAL_ONNX=hf://owner/repo/file.onnx` runs the same model through onnxruntime, 2x faster on CPU with identical spans |
 | Embeddings | `all-MiniLM-L12-v2` | `paraphrase-multilingual-MiniLM-L12-v2` (fastembed) | switch when your facts are not only English |
 | Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | the multilingual reranker lifted German discovery from 62% to 88% in our eval |

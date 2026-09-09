@@ -11,7 +11,7 @@ if "TQDM_DISABLE" not in _os.environ:
     _os.environ["TQDM_DISABLE"] = "1"
 
 from reasongraph._types import Node, Edge
-from reasongraph._canonical import AliasCanonicalizer
+from reasongraph._canonical import AliasCanonicalizer, EntityNormalizer
 from reasongraph._extraction import (
     NERExtractor,
     GLiNER2Extractor,
@@ -42,6 +42,7 @@ __all__ = [
     "GlinerRelexExtractor", "HybridCausalExtractor", "CausalPointerExtractor",
     "ConflictResolver", "NLIConflictResolver", "LLMConflictResolver", "FineTunedConflictResolver", "MemoryLoop", "ContextBlock", "SentenceSplitter", "SaTSplitter", "RegexSplitter",
     "AliasCanonicalizer",
+    "EntityNormalizer",
     "FastEmbedEmbedder", "FastEmbedReranker",
     "TemplateSynthesizer", "PromptSynthesizer", "TransformersSynthesizer",
     "load_dataset",
