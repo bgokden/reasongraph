@@ -44,6 +44,7 @@ class ContextBlock:
     roots: list[str] = field(default_factory=list)       # root causes the chain terminates in
     narrative: str = ""                                  # the chain's facts, root first, as one passage
     text: str = ""                                       # the rendered block injected into the prompt
+    on_chain: set = field(default_factory=set)           # fact contents that sit on the traced causal chain
 
     @property
     def empty(self) -> bool:
@@ -316,7 +317,8 @@ class MemoryLoop:
             known = {f["content"] for f in found}
             ordered = [f for f in ordered if f in known] or ordered
             narrative = " ".join(ordered)
-        block = ContextBlock(facts=found, chain=chain, roots=roots, narrative=narrative)
+        block = ContextBlock(facts=found, chain=chain, roots=roots, narrative=narrative,
+                             on_chain=set(chain_ids))
         block.text = self._render(block)
         return block
 
