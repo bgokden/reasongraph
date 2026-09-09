@@ -162,10 +162,12 @@ async def test_causal_chain_bridges_plain_root_fact_via_entity():
 
 
 class _SayYes:
-    """A span linker that ties exactly one pair, whatever the embeddings say."""
-    def __init__(self, pair): self.pair = pair
+    """A span linker that ties exactly one (effect, cause) pair, whatever the embeddings say,
+    and records the order it was asked in."""
+    def __init__(self, pair): self.pair = pair; self.asked = []
     def predict(self, pairs):
-        return [5.0 if (a, b) == self.pair or (b, a) == self.pair else -8.0 for a, b in pairs]
+        self.asked += list(pairs)
+        return [5.0 if (a, b) == self.pair else -8.0 for a, b in pairs]
 
 
 @pytest.mark.asyncio
@@ -175,7 +177,8 @@ async def test_span_linker_ties_paraphrased_hops_cosine_misses():
             "A sharp drop in greenhouse night temperature slows tomato ripening.":
                 {"cause": "A sharp drop in greenhouse night temperature", "effect": "tomato ripening slows"}}
     causal = lambda texts: [{"causal": t in rels, "relations": [rels[t]] if t in rels else []} for t in texts]
-    pair = ("A sharp drop in greenhouse night temperature", "the greenhouse night temperature drops sharply")
+    # the matcher is asked (effect of the earlier hop, cause of the later hop), never reversed
+    pair = ("the greenhouse night temperature drops sharply", "A sharp drop in greenhouse night temperature")
     for linker, expect in ((None, None), (_SayYes(pair), 2)):
         g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=causal,
                         span_link_threshold=0.99, span_linker=linker, span_link_logit=0.0)
@@ -189,5 +192,7 @@ async def test_span_linker_ties_paraphrased_hops_cosine_misses():
                 assert hops == 1                       # fake embeddings: the paraphrase does not link
             else:
                 assert hops == expect, chain           # the linker ties the two spans, the chain reaches the boiler
+                assert all(a != b for a, b in linker.asked)
+                assert pair in linker.asked and (pair[1], pair[0]) not in linker.asked   # (effect, cause) order only
         finally:
             await g.close()
