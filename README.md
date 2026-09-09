@@ -285,6 +285,23 @@ loop = MemoryLoop(graph, session="chat", causal_hops=(3, 2))   # or REASONGRAPH_
 The default is symmetric (`None`), because which split wins is an empirical question and our
 standing eval has not yet answered it. Measure on your own data before changing it.
 
+### Repeatable answers at scale
+
+Approximate vector search returns a slightly different neighbour set run to run, and on a large hub
+the "nearest N" among many near-equidistant neighbours is genuinely ambiguous. Measured on a 100k-fact
+tenant, two runs of the *same* build returned a different fact set for about 40% of questions. The
+swapped facts were equally relevant, so answer quality did not move, but the results were not
+reproducible.
+
+Three levers, cheapest first:
+
+1. **Tie-break by content** — always on, costs nothing. Equal distances now resolve the same way every
+   time, in every query the walk makes.
+2. `REASONGRAPH_PG_DETERMINISTIC=1` — turns off parallel scan workers for vector searches, whose merge
+   order varies between runs. Cheap, and it removes the main remaining source.
+3. `REASONGRAPH_PG_EF_SEARCH=<n>` — widens the candidate window: more stable and more accurate,
+   slower on every search. Reach for it last.
+
 ### Walking in levels
 
 A recall walks the graph outward from its seeds. Each level is fetched in **one backend call**
