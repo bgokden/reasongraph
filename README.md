@@ -303,8 +303,10 @@ ReasonGraph(span_linker="my-org/same-event-cross-encoder")     # a cross-encoder
 
 or `REASONGRAPH_SPAN_LINKER` with the same values. Both see only direction-aware candidates: an effect
 span is only ever compared with a cause span. `span_link_top_k` sets how many near neighbours a span is compared against before anything judges them.
-It used to widen automatically when a linker was configured, which quietly made "cosine versus linker" two
-changes at once; set it explicitly when you want to compare one thing.
+It defaults to 6. It used to widen to 10 whenever a linker was configured, and that was measurably wrong:
+on 341 cases the wider shortlist floods the walk with look-alikes, halving the gain on rephrased chains and
+turning a small gain on ordinary chains into a small loss. Narrowing it back was the single largest
+improvement in this whole line of work, and it costs nothing.
 
 By default a linker **replaces** the embedder's own cosine, which means it can also lose links cosine was
 right about. `span_link_floor` makes it **add** instead: cosine keeps every link it would have made, and the

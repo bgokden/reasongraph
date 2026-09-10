@@ -141,8 +141,10 @@ class ReasonGraph:
             span_link_floor = float(_floor) if _floor else None
         self.span_link_floor = span_link_floor
         # How many near neighbours a span is compared against before the linker (or plain cosine)
-        # judges them. This defaulted to a wider window when a linker was configured, which quietly
-        # made "cosine versus linker" two changes at once; set it explicitly to compare one thing.
+        # judges them. This used to widen to 10 whenever a linker was configured. Measured on 341
+        # cases, that was strictly worse on every axis: the wider shortlist floods the walk with
+        # look-alikes, halving the gain on rephrased chains and turning a +1 on ordinary chains into
+        # a -1. Six for everyone; raise it only with your own numbers.
         if span_link_top_k is None:
             _tk = os.environ.get("REASONGRAPH_SPAN_LINK_TOP_K", "").strip()
             span_link_top_k = int(_tk) if _tk else None
@@ -757,7 +759,7 @@ class ReasonGraph:
         linker = self._get_span_linker()
         roles = roles or {}
         for span in dict.fromkeys(spans):
-            hits = await self.backend.knn_search(self.embeddings.encode(span), top_k=self.span_link_top_k or (10 if linker else 6))
+            hits = await self.backend.knn_search(self.embeddings.encode(span), top_k=self.span_link_top_k or 6)
             others = [h["content"] for h in hits
                       if h.get("type") == "entity" and h["content"] != span]
             if not others:
