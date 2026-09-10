@@ -302,10 +302,12 @@ ReasonGraph(span_linker="my-org/same-event-cross-encoder")     # a cross-encoder
 ```
 
 or `REASONGRAPH_SPAN_LINKER` with the same values. Both see only direction-aware candidates: an effect
-span is only ever compared with a cause span. Measured, so you can skip what we already tried: a general
-cross-encoder scored *below* plain cosine on our eval, and swapping the retrieval embedder for a stronger
-general one closed 8 of 39 broken pairs with no training at all, which is why a purpose-trained
-same-event model is the direction worth taking.
+span is only ever compared with a cause span. **Measured, so you can skip what we tried.** A general cross-encoder scored *below* plain cosine. A
+purpose-trained same-event model, on the other hand, triples root-cause recall on exactly the cases where
+the two sides are phrased differently (1.6% to 4.9%), while slightly hurting the cases that never needed it
+(6.0% to 5.0%). Whether that trade is worth it depends on your text: it breaks even when about a quarter of
+your causal links are phrased differently on each side, and in ordinary domain notes roughly two-thirds are,
+so it usually pays about three times over. Measure your own mix before assuming it.
 
 ### Repeatable answers at scale
 
