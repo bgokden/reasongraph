@@ -290,20 +290,24 @@ two more correct answers in 180 for roughly twice the database work, which is wh
 
 ### Repeatable answers at scale
 
-Approximate vector search returns a slightly different neighbour set run to run, and on a large hub
-the "nearest N" among many near-equidistant neighbours is genuinely ambiguous. Measured on a 100k-fact
-tenant, two runs of the *same* build returned a different fact set for about 40% of questions. The
-swapped facts were equally relevant, so answer quality did not move, but the results were not
-reproducible.
+Measured on a 100k-fact tenant, and the answer is reassuring: **a running service is already
+repeatable.** Ask the same question twice against the same index and you get the same facts, every
+time, on every version. The order within a result is fixed too, at no cost.
 
-Three levers, cheapest first:
+What drifts is a **rebuild**. Two indexes built independently over the same data return slightly
+different neighbours, because the search is approximate. On that tenant, 30 of 80 questions differed
+between two fresh builds, and 4 of those changed the root cause itself, so it is not merely cosmetic.
 
-1. **Tie-break by content** — always on, costs nothing. Equal distances now resolve the same way every
-   time, in every query the walk makes.
-2. `REASONGRAPH_PG_DETERMINISTIC=1` — turns off parallel scan workers for vector searches, whose merge
-   order varies between runs. Cheap, and it removes the main remaining source.
-3. `REASONGRAPH_PG_EF_SEARCH=<n>` — widens the candidate window: more stable and more accurate,
-   slower on every search. Reach for it last.
+Making two rebuilds agree requires exact search, which costs roughly 3.6x on recall latency. That is a
+migration setting, not a serving one:
+
+```
+REASONGRAPH_PG_DETERMINISTIC=1     # exact search: rebuild-stable, much slower
+REASONGRAPH_PG_EF_SEARCH=<n>       # a wider candidate window, if you want it too
+```
+
+Leave both off for serving. Turn the first on when you rebuild a store and need the answers to match
+the one it replaces.
 
 ### Walking in levels
 

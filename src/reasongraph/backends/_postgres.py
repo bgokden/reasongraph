@@ -56,18 +56,21 @@ class PostgresBackend(Backend):
         self._ef_search = os.environ.get("REASONGRAPH_PG_EF_SEARCH", "").strip()
 
     async def _tune(self, conn) -> None:
-        """Per-connection settings for vector search, when repeatability is wanted.
+        """Per-connection settings for vector search, when repeatability across REBUILDS is wanted.
 
-        Approximate nearest-neighbour search returns a slightly different set run to run: the
-        candidate window depends on the scan, and among many near-equidistant neighbours the
-        "nearest N" is genuinely ambiguous. Two cheap sources are worth removing when a deployment
-        wants repeatable answers: parallel scan workers, whose merge order varies, and a small
-        candidate window. Enable with ``REASONGRAPH_PG_DETERMINISTIC=1``; widen the window with
-        ``REASONGRAPH_PG_EF_SEARCH`` (more stable and more accurate, slower). Ties are broken by
-        content everywhere regardless, which costs nothing.
+        Measured at 100k facts: a running service is already repeatable without any of this. The same
+        question returns the same facts every time from a fixed index, and the order within a result is
+        fixed for free. What drifts is a rebuild: two indexes built independently over identical data
+        return slightly different neighbours, and that can change a root cause, not only filler.
+        Forcing agreement across rebuilds means exact search, which cost about 3.6x on recall in that
+        measurement, so it belongs to a migration and not to serving. Enable with
+        ``REASONGRAPH_PG_DETERMINISTIC=1``; ``REASONGRAPH_PG_EF_SEARCH`` widens the candidate window.
         """
         if not self._deterministic:
             return
+        # Exact search: the secondary sort key defeats the approximate index on purpose, which is
+        # what makes two independent builds agree. Slow, deliberately, and only for a migration.
+        await conn.execute("SET enable_indexscan = off")
         await conn.execute("SET max_parallel_workers_per_gather = 0")
         if self._ef_search:
             await conn.execute(f"SET hnsw.ef_search = {int(self._ef_search)}")
@@ -283,23 +286,29 @@ class PostgresBackend(Backend):
                 if scopes:
                     await cur.execute(
                         f"""
-                        SELECT content, type, 1 - (embedding <=> '{vec_str}') AS score
-                        FROM nodes
-                        WHERE content IN (
-                            SELECT node_content FROM node_scopes WHERE scope = ANY(%s)
-                        )
-                        ORDER BY embedding <=> '{vec_str}', content
-                        LIMIT {top_k}
+                        SELECT content, type, score FROM (
+                            SELECT content, type, 1 - (embedding <=> '{vec_str}') AS score,
+                                   embedding <=> '{vec_str}' AS dist
+                            FROM nodes
+                            WHERE content IN (
+                                SELECT node_content FROM node_scopes WHERE scope = ANY(%s)
+                            )
+                            ORDER BY embedding <=> '{vec_str}'
+                            LIMIT {top_k}
+                        ) t ORDER BY dist, content
                         """,
                         (list(scopes),),
                     )
                 else:
                     await cur.execute(
                         f"""
-                        SELECT content, type, 1 - (embedding <=> '{vec_str}') AS score
-                        FROM nodes
-                        ORDER BY embedding <=> '{vec_str}', content
-                        LIMIT {top_k}
+                        SELECT content, type, score FROM (
+                            SELECT content, type, 1 - (embedding <=> '{vec_str}') AS score,
+                                   embedding <=> '{vec_str}' AS dist
+                            FROM nodes
+                            ORDER BY embedding <=> '{vec_str}'
+                            LIMIT {top_k}
+                        ) t ORDER BY dist, content
                         """
                     )
                 rows = await cur.fetchall()
@@ -531,7 +540,7 @@ class PostgresBackend(Backend):
                     INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = %s)
                                        OR (e.from_content = n.content AND e.to_content = %s)
                     WHERE 1=1{scope_clause}
-                    ORDER BY n.embedding <=> %s::vector, n.content
+                    ORDER BY n.embedding <=> %s::vector
                     LIMIT %s
                     """,
                     params,
@@ -570,7 +579,7 @@ class PostgresBackend(Backend):
                         INNER JOIN edges e ON (e.to_content = n.content AND e.from_content = s.src)
                                            OR (e.from_content = n.content AND e.to_content = s.src)
                         WHERE 1=1{scope_clause}
-                        ORDER BY n.embedding <=> %s::vector, n.content
+                        ORDER BY n.embedding <=> %s::vector
                         LIMIT %s
                     ) AS x
                     """,
