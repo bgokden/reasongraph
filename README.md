@@ -321,6 +321,12 @@ set, cosine and the trained model never disagree in the band the floor arbitrate
 it to keep or cut. It stays available because another corpus may well contain that disagreement, but do not
 expect it to help without measuring.
 
+**One mode it does not handle yet.** Real notes often chain by back-reference: "this broke checkout",
+"because of that we rolled back". Extraction reads a sentence at a time, so a demonstrative pointing at the
+previous sentence is not resolved and that link is lost. Measured on public news text, back-reference is the
+most common way real prose chains causes together, and our own evaluation set contains none of it. If your
+notes read that way, expect fewer chains than the numbers below suggest.
+
 **Measured, so you can skip what we tried.** A general cross-encoder scored *below* plain cosine. A
 purpose-trained same-event model, on the other hand, triples root-cause recall on exactly the cases where
 the two sides are phrased differently (1.6% to 4.9%), while slightly hurting the cases that never needed it
