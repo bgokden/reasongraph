@@ -196,3 +196,34 @@ async def test_span_linker_ties_paraphrased_hops_cosine_misses():
                 assert pair in linker.asked and (pair[1], pair[0]) not in linker.asked   # (effect, cause) order only
         finally:
             await g.close()
+
+
+@pytest.mark.asyncio
+async def test_span_linker_can_be_a_similarity_model_not_only_a_cross_encoder():
+    """Deciding whether two spans describe the same event is its own job, so it can use its own
+    model. A bi-encoder scores by cosine over the same direction-aware candidates."""
+    from reasongraph.graph import ReasonGraph
+    from reasongraph.backends._memory import MemoryBackend
+
+    class SameEvent:                      # a stand-in for a trained same-event model
+        def encode(self, texts):
+            def vec(t):
+                t = t.lower()
+                return [1.0 if "cost" in t else 0.0, 1.0 if "reduc" in t or "cut" in t else 0.0, 0.1]
+            return [vec(t) for t in texts]
+
+    def causal(texts):
+        rel = {"The cost reduction angered the team.": {"cause": "the cost reduction", "effect": "angered the team"},
+               "Costs were reduced in March.": {"cause": "March budget", "effect": "costs were reduced"}}
+        return [{"causal": t in rel, "relations": [rel[t]] if t in rel else []} for t in texts]
+
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=causal,
+                    span_linker=SameEvent(), span_link_threshold=0.8)
+    try:
+        await g.add_texts(["Costs were reduced in March.", "The cost reduction angered the team."],
+                          extractor=lambda t: [])
+        linked = {n["content"] for n in await g.backend.get_neighbors("the cost reduction")
+                  if n.get("label") == "same_as"}
+        assert "costs were reduced" in linked      # the two wordings of one event are now one node
+    finally:
+        await g.close()

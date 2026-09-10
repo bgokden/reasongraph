@@ -686,19 +686,34 @@ class ReasonGraph:
         return {c: (ns[: self.max_degree] if len(ns) > self.max_degree else ns) for c, ns in got.items()}
 
     def _get_span_linker(self):
-        """The span linker, loaded on first use (a CrossEncoder for a model id or path)."""
+        """The span linker, loaded on first use.
+
+        Deciding whether two spans describe the same event is a different job from finding relevant
+        facts, so it can use a different model. Two shapes are accepted: a **cross-encoder**, scored
+        pairwise against ``span_link_logit``, and a **bi-encoder**, which embeds each span once and
+        compares by cosine against the ordinary span-link threshold. A bi-encoder is the cheaper
+        shape (one pass per span, cached by the encoder) and is what a same-event similarity model
+        trained on paraphrase pairs would be. Prefix a model id with ``bi:`` to load it as one.
+        """
         if self._span_linker is not None or self._span_linker_spec is None:
             return self._span_linker
         spec = self._span_linker_spec
-        if hasattr(spec, "predict"):
+        if hasattr(spec, "predict") or hasattr(spec, "encode"):
             self._span_linker = spec
             return spec
         name = str(spec)
         if name.startswith("hf://"):
             name = name[len("hf://"):]
+        bi = name.startswith("bi:")
+        if bi:
+            name = name[3:]
         try:
-            from sentence_transformers import CrossEncoder
-            self._span_linker = CrossEncoder(name)
+            if bi:
+                from sentence_transformers import SentenceTransformer
+                self._span_linker = SentenceTransformer(name)
+            else:
+                from sentence_transformers import CrossEncoder
+                self._span_linker = CrossEncoder(name)
         except Exception as exc:  # a missing model must not break ingest: fall back to cosine
             warnings.warn(f"span linker {spec!r} could not be loaded ({exc}); using cosine linking")
             self._span_linker_spec = None
@@ -741,7 +756,27 @@ class ReasonGraph:
             others = [o for o in others if o in other_roles]
             if not others:
                 continue
-            if linker is not None:
+            if linker is not None and hasattr(linker, "encode") and not hasattr(linker, "predict"):
+                # A bi-encoder: its own cosine over the same direction-aware candidate set.
+                my_roles = roles.get(span, set())
+                cands = [o for o in others
+                         if ("effect" in my_roles and "cause" in other_roles[o])
+                         or ("cause" in my_roles and "effect" in other_roles[o])]
+                if not cands:
+                    continue
+                try:
+                    import numpy as _np
+                    vecs = linker.encode([span, *cands])
+                    q = _np.asarray(vecs[0], dtype=float)
+                    qn = float(_np.linalg.norm(q)) or 1.0
+                    scored = []
+                    for o, v in zip(cands, vecs[1:]):
+                        v = _np.asarray(v, dtype=float)
+                        scored.append((o, float(q @ v / (qn * (float(_np.linalg.norm(v)) or 1.0)))))
+                    cut = threshold
+                except Exception:
+                    scored = list(zip(others, self.embeddings.score(span, others))); cut = threshold
+            elif linker is not None:
                 my_roles = roles.get(span, set())
                 pairs: list[tuple[str, str, str]] = []      # (effect, cause, other)
                 for other in others:

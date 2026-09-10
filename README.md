@@ -288,6 +288,25 @@ per-direction cap never fires. Reach for this only when your graph has genuinely
 chains, four or more hops of pure cause-to-cause. Raising `hops` itself was also measured: depth 5 buys
 two more correct answers in 180 for roughly twice the database work, which is why the default stays 3.
 
+### Linking two wordings of one event
+
+The same event turns up written two ways: "costs were reduced" in one sentence, "the cost reduction" in
+the next. Cosine over a general retrieval embedder does not put those together, and when it fails the
+causal chain breaks, which is measurably where root causes get lost.
+
+That decision is its own job, so it can use its own model. `span_linker` accepts either shape:
+
+```python
+ReasonGraph(span_linker="bi:my-org/same-event-multilingual")   # a similarity model, scored by cosine
+ReasonGraph(span_linker="my-org/same-event-cross-encoder")     # a cross-encoder, scored pairwise
+```
+
+or `REASONGRAPH_SPAN_LINKER` with the same values. Both see only direction-aware candidates: an effect
+span is only ever compared with a cause span. Measured, so you can skip what we already tried: a general
+cross-encoder scored *below* plain cosine on our eval, and swapping the retrieval embedder for a stronger
+general one closed 8 of 39 broken pairs with no training at all, which is why a purpose-trained
+same-event model is the direction worth taking.
+
 ### Repeatable answers at scale
 
 Measured on a 100k-fact tenant, and the answer is reassuring: **a running service is already
