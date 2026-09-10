@@ -260,3 +260,30 @@ async def test_span_link_floor_keeps_every_link_plain_cosine_would_have_made():
 
     assert replaced != plain or not plain      # the contrarian linker changes (drops) cosine's links
     assert plain <= floored                    # with a floor, nothing cosine found is lost
+
+
+@pytest.mark.asyncio
+async def test_back_reference_links_a_note_to_the_one_before_it():
+    """People chain causes by pointing backwards. Extraction reads one sentence at a time, so
+    "This broke X" has no visible cause; with the option on, it links to the preceding note."""
+    from reasongraph.graph import ReasonGraph
+    from reasongraph.backends._memory import MemoryBackend
+
+    notes = ["The billing migration finished on Tuesday.",
+             "This broke invoice delivery for forty accounts.",
+             "The office coffee machine was serviced."]
+
+    async def linked(**kw):
+        g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed,
+                        causal_extractor=lambda ts: [{"causal": False, "relations": []} for _ in ts], **kw)
+        try:
+            await g.add_texts(notes, extractor=lambda t: [])
+            return {n["content"] for n in await g.backend.get_neighbors(notes[1])
+                    if n.get("label") == "causes"}
+        finally:
+            await g.close()
+
+    assert await linked() == set()                                   # off by default
+    on = await linked(resolve_back_references=True)
+    assert notes[0] in on                                            # "this" is the note before it
+    assert notes[2] not in on                                        # and nothing else is touched

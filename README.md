@@ -321,11 +321,26 @@ set, cosine and the trained model never disagree in the band the floor arbitrate
 it to keep or cut. It stays available because another corpus may well contain that disagreement, but do not
 expect it to help without measuring.
 
-**One mode it does not handle yet.** Real notes often chain by back-reference: "this broke checkout",
-"because of that we rolled back". Extraction reads a sentence at a time, so a demonstrative pointing at the
-previous sentence is not resolved and that link is lost. Measured on public news text, back-reference is the
-most common way real prose chains causes together, and our own evaluation set contains none of it. If your
-notes read that way, expect fewer chains than the numbers below suggest.
+### Notes that point backwards
+
+People chain causes by pointing rather than repeating: "this broke checkout", "because of that we rolled
+back". Extraction reads one sentence at a time, so "this" refers to nothing it can see and the link is lost.
+On real incident write-ups about a fifth of the causal links between sentences are of this kind.
+
+```python
+ReasonGraph(resolve_back_references=True)   # or REASONGRAPH_RESOLVE_BACK_REFERENCES=1
+```
+
+A sentence that opens with a back-reference and asserts a cause is linked to the note before it. The device
+differs by language and is often not a pronoun at all: German and Dutch carry the reference inside an adverb
+("dadurch", "daardoor"), Turkish marks it with case endings ("bu nedenle", "bundan dolayı"), and a connective
+like "as a result" or "por ello" asserts the link on its own.
+
+**Off by default, and here is the honest state.** On generated cases it recovers a third of these otherwise
+lost links with no wrong links at all, and it changes nothing on the standing evaluation. What is not
+established is its precision on ordinary traffic, so turn it on deliberately and check. Two limits no rule
+can fix: Spanish and Turkish often drop the subject entirely, leaving no marker to find, and Turkish tends to
+express cause inside a single sentence, so it has less of this to recover in the first place.
 
 **Measured, so you can skip what we tried.** A general cross-encoder scored *below* plain cosine. A
 purpose-trained same-event model, on the other hand, triples root-cause recall on exactly the cases where

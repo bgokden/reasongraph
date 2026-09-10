@@ -50,6 +50,7 @@ class ReasonGraph:
         span_link_logit: float | None = None,
         span_link_floor: float | None = None,
         span_link_top_k: int | None = None,
+        resolve_back_references: bool | None = None,
         max_degree: int | None = None,
         span_link_threshold: float | None = None,
         sentence_splitter=None,
@@ -149,6 +150,15 @@ class ReasonGraph:
             _tk = os.environ.get("REASONGRAPH_SPAN_LINK_TOP_K", "").strip()
             span_link_top_k = int(_tk) if _tk else None
         self.span_link_top_k = span_link_top_k
+        # A note that points at the one before it ("This broke checkout", "Dadurch stieg die Last")
+        # states a cause the extractor cannot see, because it reads one sentence at a time. With
+        # this on, such a sentence is linked to the fact that precedes it in the same batch.
+        # Off by default: measured on generated cases it recovers a real and otherwise-lost link
+        # with no cross-case damage, but its precision on ordinary traffic is not yet established.
+        if resolve_back_references is None:
+            resolve_back_references = os.environ.get(
+                "REASONGRAPH_RESOLVE_BACK_REFERENCES", "").lower() in ("1", "true", "yes")
+        self.resolve_back_references = resolve_back_references
         # Hub cap: an entity linked to thousands of facts ("Apple", "the company") would
         # turn every walk through it into a scan. A walk expands at most max_degree
         # neighbours of a node, the ones nearest to the question.
@@ -608,6 +618,18 @@ class ReasonGraph:
                     # Both link back to the source sentence
                     all_edges.append((cause, text))
                     all_edges.append((effect, text))
+
+        # A note that points back at the one before it states a cause the extractor cannot see:
+        # it reads one sentence at a time, so "This broke checkout" has no visible cause. Link it
+        # to the preceding fact, which is what the writer meant by "this".
+        if self.resolve_back_references and len(active_texts) > 1:
+            from reasongraph._backref import is_back_referenced_cause
+            for prev, text in zip(active_texts, active_texts[1:]):
+                if not is_back_referenced_cause(text):
+                    continue
+                if any(len(e) == 3 and e[2] == "causes" and e[1] in (text,) for e in all_edges):
+                    continue
+                all_edges.append((prev, text, "causes"))
 
         new_spans = [c for c, kind in all_nodes if kind == "entity"
                      and any(e[0] == c or e[1] == c for e in all_edges if len(e) == 3)]
