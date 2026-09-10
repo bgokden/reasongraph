@@ -49,6 +49,7 @@ class ReasonGraph:
         span_linker=None,
         span_link_logit: float | None = None,
         span_link_floor: float | None = None,
+        span_link_top_k: int | None = None,
         max_degree: int | None = None,
         span_link_threshold: float | None = None,
         sentence_splitter=None,
@@ -139,6 +140,13 @@ class ReasonGraph:
             _floor = os.environ.get("REASONGRAPH_SPAN_LINK_FLOOR", "").strip()
             span_link_floor = float(_floor) if _floor else None
         self.span_link_floor = span_link_floor
+        # How many near neighbours a span is compared against before the linker (or plain cosine)
+        # judges them. This defaulted to a wider window when a linker was configured, which quietly
+        # made "cosine versus linker" two changes at once; set it explicitly to compare one thing.
+        if span_link_top_k is None:
+            _tk = os.environ.get("REASONGRAPH_SPAN_LINK_TOP_K", "").strip()
+            span_link_top_k = int(_tk) if _tk else None
+        self.span_link_top_k = span_link_top_k
         # Hub cap: an entity linked to thousands of facts ("Apple", "the company") would
         # turn every walk through it into a scan. A walk expands at most max_degree
         # neighbours of a node, the ones nearest to the question.
@@ -749,7 +757,7 @@ class ReasonGraph:
         linker = self._get_span_linker()
         roles = roles or {}
         for span in dict.fromkeys(spans):
-            hits = await self.backend.knn_search(self.embeddings.encode(span), top_k=10 if linker else 6)
+            hits = await self.backend.knn_search(self.embeddings.encode(span), top_k=self.span_link_top_k or (10 if linker else 6))
             others = [h["content"] for h in hits
                       if h.get("type") == "entity" and h["content"] != span]
             if not others:

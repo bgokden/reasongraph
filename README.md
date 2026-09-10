@@ -302,13 +302,22 @@ ReasonGraph(span_linker="my-org/same-event-cross-encoder")     # a cross-encoder
 ```
 
 or `REASONGRAPH_SPAN_LINKER` with the same values. Both see only direction-aware candidates: an effect
-span is only ever compared with a cause span. By default a linker **replaces** the embedder's own cosine, which means it can also lose links cosine was
+span is only ever compared with a cause span. `span_link_top_k` sets how many near neighbours a span is compared against before anything judges them.
+It used to widen automatically when a linker was configured, which quietly made "cosine versus linker" two
+changes at once; set it explicitly when you want to compare one thing.
+
+By default a linker **replaces** the embedder's own cosine, which means it can also lose links cosine was
 right about. `span_link_floor` makes it **add** instead: cosine keeps every link it would have made, and the
 linker only speaks for pairs whose cosine falls in the band between the floor and the threshold.
 
 ```python
 ReasonGraph(span_linker="bi:my-org/same-event", span_link_floor=0.6)   # or REASONGRAPH_SPAN_LINK_FLOOR
 ```
+
+On our own corpus the floor turned out to be a **no-op at every setting**: within the linker's candidate
+set, cosine and the trained model never disagree in the band the floor arbitrates, so there is nothing for
+it to keep or cut. It stays available because another corpus may well contain that disagreement, but do not
+expect it to help without measuring.
 
 **Measured, so you can skip what we tried.** A general cross-encoder scored *below* plain cosine. A
 purpose-trained same-event model, on the other hand, triples root-cause recall on exactly the cases where
