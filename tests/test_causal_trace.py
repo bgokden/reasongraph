@@ -227,3 +227,36 @@ async def test_span_linker_can_be_a_similarity_model_not_only_a_cross_encoder():
         assert "costs were reduced" in linked      # the two wordings of one event are now one node
     finally:
         await g.close()
+
+
+@pytest.mark.asyncio
+async def test_span_link_floor_keeps_every_link_plain_cosine_would_have_made():
+    """A similarity linker replaces cosine, so it can lose links cosine was right about. With a floor
+    it only ADDS: cosine keeps its own decisions, the linker may only speak for the middle band."""
+    from reasongraph.graph import ReasonGraph
+    from reasongraph.backends._memory import MemoryBackend
+
+    class Contrarian:                     # says "different" about everything
+        def encode(self, texts):
+            return [[1.0, 0.0, 0.0]] + [[0.0, 1.0, 0.0] for _ in texts[1:]]
+
+    rel = {"The outage angered the team.": {"cause": "the outage", "effect": "angered the team"},
+           "The outage started at nine.": {"cause": "nine o'clock", "effect": "the outage"}}
+    def causal(texts):
+        return [{"causal": t in rel, "relations": [rel[t]] if t in rel else []} for t in texts]
+
+    async def linked(**kw):
+        g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=causal, **kw)
+        try:
+            await g.add_texts(list(rel), extractor=lambda t: [])
+            return {n["content"] for n in await g.backend.get_neighbors("the outage")
+                    if n.get("label") == "same_as"}
+        finally:
+            await g.close()
+
+    plain = await linked(span_link_threshold=0.8)                      # cosine alone
+    replaced = await linked(span_link_threshold=0.8, span_linker=Contrarian())
+    floored = await linked(span_link_threshold=0.8, span_linker=Contrarian(), span_link_floor=0.5)
+
+    assert replaced != plain or not plain      # the contrarian linker changes (drops) cosine's links
+    assert plain <= floored                    # with a floor, nothing cosine found is lost

@@ -302,7 +302,15 @@ ReasonGraph(span_linker="my-org/same-event-cross-encoder")     # a cross-encoder
 ```
 
 or `REASONGRAPH_SPAN_LINKER` with the same values. Both see only direction-aware candidates: an effect
-span is only ever compared with a cause span. **Measured, so you can skip what we tried.** A general cross-encoder scored *below* plain cosine. A
+span is only ever compared with a cause span. By default a linker **replaces** the embedder's own cosine, which means it can also lose links cosine was
+right about. `span_link_floor` makes it **add** instead: cosine keeps every link it would have made, and the
+linker only speaks for pairs whose cosine falls in the band between the floor and the threshold.
+
+```python
+ReasonGraph(span_linker="bi:my-org/same-event", span_link_floor=0.6)   # or REASONGRAPH_SPAN_LINK_FLOOR
+```
+
+**Measured, so you can skip what we tried.** A general cross-encoder scored *below* plain cosine. A
 purpose-trained same-event model, on the other hand, triples root-cause recall on exactly the cases where
 the two sides are phrased differently (1.6% to 4.9%), while slightly hurting the cases that never needed it
 (6.0% to 5.0%). Whether that trade is worth it depends on your text: it breaks even when about a quarter of

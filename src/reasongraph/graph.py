@@ -48,6 +48,7 @@ class ReasonGraph:
         link_contained_entities: bool | None = None,
         span_linker=None,
         span_link_logit: float | None = None,
+        span_link_floor: float | None = None,
         max_degree: int | None = None,
         span_link_threshold: float | None = None,
         sentence_splitter=None,
@@ -129,6 +130,15 @@ class ReasonGraph:
         if span_link_logit is None:
             span_link_logit = float(os.environ.get("REASONGRAPH_SPAN_LINK_LOGIT", "-2.2"))
         self.span_link_logit = span_link_logit
+        # A similarity linker REPLACES the embedder's own cosine, which costs links on pairs cosine
+        # already agreed about. Give it a floor and it ADDS instead: cosine keeps every link it would
+        # have made, and the linker may only add pairs whose cosine sits in [floor, threshold).
+        # Measured: replacing triples root recall on rephrased chains but loses a point on chains that
+        # were never broken; the floor is what removes that loss. None keeps the replacing behaviour.
+        if span_link_floor is None:
+            _floor = os.environ.get("REASONGRAPH_SPAN_LINK_FLOOR", "").strip()
+            span_link_floor = float(_floor) if _floor else None
+        self.span_link_floor = span_link_floor
         # Hub cap: an entity linked to thousands of facts ("Apple", "the company") would
         # turn every walk through it into a scan. A walk expands at most max_degree
         # neighbours of a node, the ones nearest to the question.
@@ -764,6 +774,8 @@ class ReasonGraph:
                          or ("cause" in my_roles and "effect" in other_roles[o])]
                 if not cands:
                     continue
+                floor = self.span_link_floor
+                base = dict(zip(others, self.embeddings.score(span, others))) if floor is not None else {}
                 try:
                     import numpy as _np
                     vecs = linker.encode([span, *cands])
@@ -772,7 +784,18 @@ class ReasonGraph:
                     scored = []
                     for o, v in zip(cands, vecs[1:]):
                         v = _np.asarray(v, dtype=float)
-                        scored.append((o, float(q @ v / (qn * (float(_np.linalg.norm(v)) or 1.0)))))
+                        sim = float(q @ v / (qn * (float(_np.linalg.norm(v)) or 1.0)))
+                        if floor is not None:
+                            own = base.get(o, 0.0)
+                            if own >= threshold:
+                                sim = own              # cosine already agreed: keep its decision
+                            elif own < floor:
+                                sim = 0.0              # too far apart for the linker to be trusted
+                        scored.append((o, sim))
+                    if floor is not None:              # candidates cosine linked but the linker did not see
+                        for o, own in base.items():
+                            if own >= threshold and o not in dict(scored):
+                                scored.append((o, own))
                     cut = threshold
                 except Exception:
                     scored = list(zip(others, self.embeddings.score(span, others))); cut = threshold
