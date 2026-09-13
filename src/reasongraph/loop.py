@@ -23,6 +23,20 @@ from typing import Any, Callable
 
 _QUESTION = re.compile(r"\?\s*$|^(why|how|what|when|who|which|where|is|are|does|do|did|can|could|should|will)\b", re.I)
 
+#: First line of a folded-history summary, and how the next fold recognises its own work.
+SUMMARY_HEADER = "Summary of earlier messages in this conversation:"
+
+
+def _approx_tokens(text: str) -> int:
+    """Tokens, approximately, without loading a tokenizer.
+
+    A real count needs the chat model's own tokenizer, which the loop does not have and
+    should not guess at. Four characters per token is the usual English rule of thumb and
+    runs a little low on other languages, so budgets set with it are conservative rather
+    than optimistic. Pass ``count_tokens`` to use the real thing.
+    """
+    return max(1, (len(text) + 3) // 4)
+
 
 def _seed_of(f: dict) -> str | None:
     """The fact a discover result was walked from (the first content step of its path)."""
@@ -88,6 +102,10 @@ class MemoryLoop:
                  extend_query: bool = True, rerank_min: float | None = None,
                  search_mode: str | None = None,
                  causal_hops: tuple[int, int] | None = None,
+                 max_history_tokens: int | None = None, keep_tail_tokens: int | None = None,
+                 summarizer: Callable[[list[dict]], str] | None = None,
+                 summarize_in_background: bool = False,
+                 count_tokens: Callable[[str], int] | None = None,
                  observe_user: bool = True, observe_assistant: bool = True,
                  resolve_conflicts: bool = False, redact: Callable[[str], str | None] | None = None,
                  header: str = "What you remember that is relevant (with sources):") -> None:
@@ -100,6 +118,20 @@ class MemoryLoop:
         self.hops = hops
         self.extend_query = extend_query
         self.rerank_min = rerank_min
+        # History folding: when the transcript passes max_history_tokens, the oldest messages
+        # become one summary and the newest keep_tail_tokens stay verbatim. Folding a block at a
+        # time rather than a message at a time means the summarizer runs rarely, and a
+        # conversation that never reaches the budget never summarises at all.
+        self.max_history_tokens = max_history_tokens
+        self.keep_tail_tokens = keep_tail_tokens
+        self.summarizer = summarizer
+        # Off the hot path: the fold itself never calls the summarizer. It folds against the
+        # summary it already has and records what still needs summarising; that work runs
+        # after the turn when background is on, or inline before the call when it is off.
+        self.summarize_in_background = summarize_in_background
+        self.count_tokens = count_tokens or _approx_tokens
+        self._summary: str | None = None
+        self._pending: list[dict] | None = None
         # how the seeds are found: "embedding" (default), "hybrid" (cosine fused with word-level
         # trigram matches: names, codes, numbers) or "keyword"; REASONGRAPH_LOOP_SEARCH sets the default
         self.search_mode = search_mode or os.environ.get("REASONGRAPH_LOOP_SEARCH", "embedding")
@@ -414,6 +446,85 @@ class MemoryLoop:
 
     # -- glue -----------------------------------------------------------------
 
+
+    # -- history folding ------------------------------------------------------
+
+    def _tokens_of(self, msg: dict) -> int:
+        return self.count_tokens(str(msg.get("content") or ""))
+
+    def _is_summary(self, msg: dict) -> bool:
+        return (msg.get("role") == "system"
+                and str(msg.get("content") or "").startswith(SUMMARY_HEADER))
+
+    def fold_history(self, history: list[dict]) -> list[dict]:
+        """Fold the oldest messages into one summary when the transcript outgrows its budget.
+
+        Returns ``history`` unchanged while it fits ``max_history_tokens``, so short
+        conversations never summarise. Past that, the newest messages worth
+        ``keep_tail_tokens`` stay verbatim and everything older is replaced by the rolling
+        summary; an earlier summary is folded in with them, so summaries merge instead of
+        stacking.
+
+        This never calls the summarizer. It uses the summary the session already has and
+        records the folded-away messages on ``_pending`` for :meth:`flush_summary`, so a slow
+        model can never sit in the middle of a turn. Until a summary exists the old messages
+        are simply dropped, which keeps the budget; their content stays recallable because
+        ``observe`` stored each turn as a fact.
+        """
+        if not history or not self.max_history_tokens:
+            return history
+        if sum(self._tokens_of(m) for m in history) <= self.max_history_tokens:
+            return history
+
+        tail_budget = self.keep_tail_tokens
+        if tail_budget is None:
+            tail_budget = max(1, self.max_history_tokens // 2)
+
+        tail: list[dict] = []
+        used = 0
+        for msg in reversed(history):
+            if self._is_summary(msg):
+                break                                  # a prior summary belongs to the fold
+            cost = self._tokens_of(msg)
+            if tail and used + cost > tail_budget:
+                break
+            tail.append(msg)
+            used += cost
+        tail.reverse()
+
+        older = history[: len(history) - len(tail)]
+        if not older:
+            return history
+
+        self._pending = older
+        if not self._summary:
+            return tail
+        return [{"role": "system", "content": self._summary}] + tail
+
+    async def flush_summary(self) -> str | None:
+        """Summarise whatever the last fold set aside; returns the new summary, or None.
+
+        Safe to call when nothing is pending. A summarizer that raises or returns nothing
+        leaves the previous summary in place: losing the wording of old turns is acceptable,
+        breaking the conversation is not.
+        """
+        older, self._pending = self._pending, None
+        if not older or self.summarizer is None:
+            return None
+        try:
+            result = self.summarizer(older)
+            if hasattr(result, "__await__"):
+                result = await result
+            text = str(result).strip()
+        except Exception:
+            return None
+        if not text:
+            return None
+        if not text.startswith(SUMMARY_HEADER):
+            text = f"{SUMMARY_HEADER}\n{text}"
+        self._summary = text
+        return text
+
     async def messages(self, history: list[dict], *, system: str | None = None) -> tuple[list[dict], ContextBlock]:
         """OpenAI-style messages with the recalled context injected as a system message.
         ``history`` is the conversation so far, last item the user's new message."""
@@ -426,7 +537,11 @@ class MemoryLoop:
             out.append({"role": "system", "content": system})
         if block.text:
             out.append({"role": "system", "content": block.text})
-        out.extend(history)
+        folded = self.fold_history(history)
+        if self._pending is not None and not self.summarize_in_background:
+            if await self.flush_summary():
+                folded = self.fold_history(history)   # this turn gets the fresh summary
+        out.extend(folded)
         return out, block
 
     async def chat(self, call_model: Callable[[list[dict]], Any], history: list[dict], *,
@@ -440,6 +555,8 @@ class MemoryLoop:
         reply = str(reply)
         last_user = next((m["content"] for m in reversed(history) if m.get("role") == "user"), None)
         await self.observe(last_user, reply)
+        if self._pending is not None and self.summarize_in_background:
+            await self.flush_summary()                # after the reply, never before it
         return reply, block
 
     # -- sync wrappers ---------------------------------------------------------

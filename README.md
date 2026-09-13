@@ -321,6 +321,43 @@ set, cosine and the trained model never disagree in the band the floor arbitrate
 it to keep or cut. It stays available because another corpus may well contain that disagreement, but do not
 expect it to help without measuring.
 
+### Keeping a long conversation inside its context window
+
+Three things hold a long chat together: the recent messages verbatim, a summary of what came before,
+and recall of anything older that turns out to be relevant. The loop does the third by default, and
+the first two are configured on the session.
+
+```python
+loop = MemoryLoop(
+    graph, session="support-chat",
+    max_history_tokens=6000,        # fold once the transcript passes this
+    keep_tail_tokens=2000,          # this much of the newest talk stays word for word
+    summarizer=my_model,            # fn(messages) -> str; omit and old turns are dropped
+    summarize_in_background=True,   # summarise after the reply, never before it
+)
+```
+
+**Why a token budget rather than the last N messages.** A fixed count is wrong in both directions: ten
+one-line exchanges are nothing, and ten pasted stack traces overflow the window. The budget counts
+what actually costs you.
+
+**Why fold a block at a time.** When the transcript outgrows the budget, everything older than the
+tail becomes one summary and the tail stays verbatim. Summarising a block rather than a message means
+the summarizer runs rarely, and a conversation that never reaches the budget never summarises at all.
+The next fold takes the previous summary in with the newly-aged messages, so summaries merge instead
+of stacking.
+
+**The summarizer is never on the hot path.** Folding uses the summary the session already has and
+records what still needs summarising. With `summarize_in_background` the work happens after the reply
+is sent, so the summary lands one turn later; without it the fold waits. Either way a summarizer that
+is slow, down, or returns nothing leaves the conversation working, because losing the wording of old
+turns is survivable and stalling the answer is not.
+
+**What a summary is not.** It is a model's paraphrase with no source behind it, so it arrives as its
+own system message and never mixes with the recalled facts, which carry theirs. And it matters less
+here than elsewhere: messages that fall out of the window were stored as facts by `observe`, so they
+come back by meaning when they are relevant. The summary is for continuity, not for remembering.
+
 ### Notes that point backwards
 
 People chain causes by pointing rather than repeating: "this broke checkout", "because of that we rolled

@@ -356,3 +356,140 @@ async def test_loop_reads_the_causal_hop_budget_from_the_environment(monkeypatch
         assert MemoryLoop(g, session="c").causal_hops is None
     finally:
         await g.close()
+
+
+# -- history folding ---------------------------------------------------------
+
+def _turn(role, n, word="word"):
+    return {"role": role, "content": " ".join([word] * n)}
+
+
+def _loop(**kw):
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed)
+    return MemoryLoop(g, session="chat", **kw)
+
+
+def test_a_short_conversation_is_never_summarised():
+    loop = _loop(max_history_tokens=1000, summarizer=lambda msgs: "should not be called")
+    history = [_turn("user", 5), _turn("assistant", 5)]
+    assert loop.fold_history(history) == history
+    assert loop._pending is None
+
+
+def test_folding_keeps_the_newest_messages_and_defers_the_summary():
+    loop = _loop(max_history_tokens=40, keep_tail_tokens=30,
+                 summarizer=lambda msgs: "they discussed the billing migration")
+    history = [_turn("user", 40, "old"), _turn("assistant", 40, "older"), _turn("user", 40, "newest")]
+
+    out = loop.fold_history(history)
+    assert out[-1] == history[-1]                       # the newest turn is untouched
+    assert not any(m["role"] == "system" for m in out)  # no summary yet, and none was computed
+    assert [m["content"] for m in loop._pending] == [history[0]["content"], history[1]["content"]]
+
+
+@pytest.mark.asyncio
+async def test_the_summary_appears_once_it_has_been_flushed():
+    folded = []
+
+    def summarize(msgs):
+        folded.append([m["content"] for m in msgs])
+        return "they discussed the billing migration"
+
+    loop = _loop(max_history_tokens=40, keep_tail_tokens=30, summarizer=summarize)
+    history = [_turn("user", 40, "old"), _turn("assistant", 40, "older"), _turn("user", 40, "newest")]
+    loop.fold_history(history)
+    assert await loop.flush_summary()
+
+    out = loop.fold_history(history)
+    assert out[0]["role"] == "system"
+    assert out[0]["content"].startswith("Summary of earlier messages")
+    assert "billing migration" in out[0]["content"]
+    assert out[-1] == history[-1]
+    assert folded == [[history[0]["content"], history[1]["content"]]]
+
+
+@pytest.mark.asyncio
+async def test_a_second_fold_merges_the_previous_summary_instead_of_stacking():
+    calls = []
+
+    def summarize(msgs):
+        calls.append([m["content"] for m in msgs])
+        return f"summary number {len(calls)}"
+
+    loop = _loop(max_history_tokens=40, keep_tail_tokens=30, summarizer=summarize)
+    first = [_turn("user", 40, "a"), _turn("assistant", 40, "b"), _turn("user", 40, "c")]
+    loop.fold_history(first)
+    await loop.flush_summary()
+    folded = loop.fold_history(first)
+
+    grown = folded + [_turn("assistant", 40, "d"), _turn("user", 40, "e")]
+    loop.fold_history(grown)
+    await loop.flush_summary()
+    again = loop.fold_history(grown)
+
+    assert sum(1 for m in again if m["role"] == "system") == 1
+    assert "summary number 1" in " ".join(calls[1])     # the old summary went into the new one
+    assert again[-1]["content"] == grown[-1]["content"]
+
+
+def test_without_a_summarizer_the_budget_still_holds():
+    loop = _loop(max_history_tokens=40, keep_tail_tokens=30)
+    history = [_turn("user", 40, "old"), _turn("assistant", 40, "older"), _turn("user", 40, "new")]
+    out = loop.fold_history(history)
+    assert out == [history[-1]]
+    assert not any(m["role"] == "system" for m in out)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_summarizer_leaves_the_conversation_intact():
+    def explode(msgs):
+        raise RuntimeError("the summarizer is down")
+
+    loop = _loop(max_history_tokens=40, keep_tail_tokens=30, summarizer=explode)
+    history = [_turn("user", 40, "old"), _turn("assistant", 40, "new")]
+    out = loop.fold_history(history)
+    assert out and out[-1] == history[-1]
+    assert await loop.flush_summary() is None
+    assert loop._summary is None
+
+
+def test_the_budget_is_tokens_not_messages():
+    loop = _loop(max_history_tokens=40, keep_tail_tokens=30)
+    many_short = [_turn("user", 1) for _ in range(6)]
+    assert loop.fold_history(many_short) == many_short          # six messages, few tokens
+    one_long = [_turn("user", 200, "verbose"), _turn("user", 2, "tail")]
+    assert loop.fold_history(one_long) == [one_long[-1]]        # one message, over budget
+
+
+def test_a_custom_token_counter_is_used():
+    loop = _loop(max_history_tokens=10, keep_tail_tokens=5,
+                 count_tokens=lambda t: len(t.split()))
+    history = [_turn("user", 8, "x"), _turn("assistant", 8, "y")]
+    assert loop.fold_history(history) == [history[-1]]
+    assert loop._pending == [history[0]]
+
+
+@pytest.mark.asyncio
+async def test_background_summarising_keeps_the_model_call_first():
+    order = []
+
+    def summarize(msgs):
+        order.append("summarize")
+        return "earlier they talked about billing"
+
+    def call_model(msgs):
+        order.append("model")
+        return "ok"
+
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed)
+    loop = MemoryLoop(g, session="chat", max_history_tokens=40, keep_tail_tokens=30,
+                      summarizer=summarize, summarize_in_background=True)
+    await g.initialize()
+    try:
+        history = [_turn("user", 40, "old"), _turn("assistant", 40, "older"),
+                   {"role": "user", "content": "and now?"}]
+        await loop.chat(call_model, history)
+        assert order == ["model", "summarize"]          # never before the reply
+        assert loop._summary and "billing" in loop._summary
+    finally:
+        await g.close()
