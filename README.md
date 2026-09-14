@@ -60,6 +60,24 @@ get a free key (10k requests a month), remote MCP endpoint, browser console and 
 Extraction runs with small models on servers PrimAxiom operates (currently in the EU); facts are
 only sent to an LLM provider if you ask for a synthesized answer. Early access.
 
+### JavaScript and TypeScript
+
+Agents that are not written in Python talk to the hosted service through a dependency-free client
+([`clients/typescript`](clients/typescript)). It uses the platform `fetch`, so it runs on Node 18+,
+Bun, Deno, Cloudflare Workers and the browser.
+
+```ts
+import { Memory, memoryTools } from "reasongraph";
+
+const mem = new Memory({ apiKey: process.env.REASONGRAPH_API_KEY });
+await mem.remember("scout", "TSMC is building a chip fab in Phoenix, Arizona.");
+const facts = await mem.discover("What could disrupt the Phoenix fab?");
+```
+
+`memoryTools(mem)` returns OpenAI-style tool definitions with their executors attached, for agents
+that call functions directly without a framework: `remember`, `recall` and `why`.
+
+
 ## Installation
 
 ```bash
