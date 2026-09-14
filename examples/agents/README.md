@@ -23,6 +23,7 @@ pip install httpx openai
 | [`research_agent.py`](research_agent.py) | A tool-using agent that **reads sources, remembers facts, and answers questions** by recalling + discovering connections across everything it has read. | `python research_agent.py` |
 | [`two_agents_shared_memory.py`](two_agents_shared_memory.py) | Two agents with **separate sessions on one memory**: the analyst reaches facts only the scout recorded, through shared entities. No message passing. | `python two_agents_shared_memory.py` |
 | [`claude_code/`](claude_code/) | **Claude Code with persistent memory** across sessions via MCP (remote HTTP or local stdio). | see its README |
+| [`langchain_memory_class.py`](langchain_memory_class.py) | `ReasonGraphMemory` as a classic **LangChain memory**: prints what the agent sees each turn (recalled facts, folded history, rolling summary). | `pip install "reasongraph[langchain]" langchain-openai && python langchain_memory_class.py` |
 | [`langgraph_agent.py`](langgraph_agent.py) | The research agent as a **LangGraph** graph with memory tools. | `pip install langgraph langchain-openai && python langgraph_agent.py` |
 | [`memory_client.py`](memory_client.py) | The 60-line HTTP client the others share. | import it |
 

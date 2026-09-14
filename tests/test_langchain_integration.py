@@ -66,3 +66,81 @@ def test_memory_tools_round_trip():
         assert "closed the main road" in tools["discover"].invoke({"question": "Why is the main road closed?"})
     finally:
         g.close_sync()
+
+
+def test_memory_class_recalls_facts_and_keeps_a_buffer_when_no_budget_is_set():
+    from reasongraph.integrations.langchain import ReasonGraphMemory
+    g = _graph()
+    try:
+        mem = ReasonGraphMemory(target=g, session="chat")
+        assert mem.memory_variables == ["memory", "history"]
+
+        first = mem.load_memory_variables({"input": "Why is the main road closed?"})
+        assert "The flood closed the main road." in first["memory"]   # recalled, with its source
+        assert "[notes" in first["memory"]
+        assert first["history"] == ""                                  # nothing said yet
+
+        mem.save_context({"input": "Why is the main road closed?"}, {"output": "Because the river flooded."})
+        second = mem.load_memory_variables({"input": "And the warehouse?"})
+        assert second["history"] == "Human: Why is the main road closed?\nAI: Because the river flooded."
+        assert "Rotterdam" in second["memory"]
+
+        mem.return_messages = True
+        msgs = mem.load_memory_variables({"input": "x"})["history"]
+        assert [type(m) for m in msgs] == [HumanMessage, AIMessage]
+
+        # what the agent said is itself a fact now, in the chat session
+        assert "Because the river flooded." in g.query_sync("the river flooded", top_k=5, scopes={"chat"})
+    finally:
+        g.close_sync()
+
+
+def test_memory_class_folds_old_turns_but_never_forgets_them():
+    from reasongraph.integrations.langchain import ReasonGraphMemory
+    g = _graph()
+    try:
+        summaries = []
+
+        def summarize(msgs):
+            summaries.append([m["content"] for m in msgs])
+            return "The user's ferry to Texel leaves at nine."
+
+        mem = ReasonGraphMemory(target=g, session="chat", max_history_tokens=40, keep_tail_tokens=25,
+                                summarizer=summarize)
+        mem.save_context({"input": "My ferry to Texel leaves at nine tomorrow, remind me to pack the tent."},
+                         {"output": "Noted, the ferry to Texel at nine and the tent."})
+        mem.save_context({"input": "What is the weather like on the island in May?"},
+                         {"output": "Usually mild, around fifteen degrees with wind."})
+        mem.save_context({"input": "Is the road still closed?"}, {"output": "Yes, the flood closed it."})
+
+        seen = mem.load_memory_variables({"input": "When does my ferry leave?"})
+        assert "Is the road still closed?" in seen["history"]           # newest turn verbatim
+        assert "pack the tent" not in seen["history"]                   # oldest turn folded out
+        assert summaries and "pack the tent" in summaries[0][0]         # ...into the summary
+        assert mem.summary and "Texel" in mem.summary
+        assert seen["history"].startswith("Summary:")
+        assert "ferry to Texel leaves at nine" in seen["memory"]        # and still recalled as a fact
+
+        mem.clear()
+        assert mem.load_memory_variables({"input": "ferry"})["history"] == ""
+        assert not any("Texel" in t for t in g.query_sync("ferry to Texel", top_k=5))
+        assert "The warehouse is in Rotterdam." in g.query_sync("The warehouse is in Rotterdam.", top_k=5)   # other sessions untouched
+    finally:
+        g.close_sync()
+
+
+def test_chat_message_history_pairs_turns_and_folds():
+    from reasongraph.integrations.langchain import ReasonGraphChatMessageHistory
+    g = _graph()
+    try:
+        h = ReasonGraphChatMessageHistory(g, session="chat", max_history_tokens=20, keep_tail_tokens=10,
+                                          summarizer=lambda msgs: "earlier: a ferry and a tent")
+        h.add_messages([HumanMessage(content="My ferry to Texel leaves at nine, remind me to pack the tent."),
+                        AIMessage(content="Noted.")])
+        h.add_messages([HumanMessage(content="Is the road closed?"), AIMessage(content="Yes, by the flood.")])
+        msgs = h.messages
+        assert isinstance(msgs[0], SystemMessage) and "ferry" in msgs[0].content
+        assert msgs[-1].content == "Yes, by the flood."
+        assert any("Texel" in t for t in g.query_sync("My ferry to Texel leaves at nine", top_k=5, scopes={"chat"}))
+    finally:
+        g.close_sync()

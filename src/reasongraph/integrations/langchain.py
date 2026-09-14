@@ -1,6 +1,6 @@
 """LangChain and LangGraph adapters.
 
-Three things, each a few lines to use:
+Five things, each a few lines to use:
 
 * :class:`ReasonGraphRetriever` -- a ``BaseRetriever`` whose documents are the facts the
   graph connects to the question (paths through shared names, cause->effect links),
@@ -10,22 +10,45 @@ Three things, each a few lines to use:
   (the deep memory integration, as a Runnable).
 * :func:`memory_tools` -- ``remember`` / ``recall`` / ``discover`` tools for agents
   (``langgraph.prebuilt.create_react_agent(model, tools=memory_tools(...))``).
+* :class:`ReasonGraphMemory` -- the classic ``BaseMemory`` shape (``load_memory_variables``
+  / ``save_context``): what the agent sees each turn is the facts the graph connects to
+  the input, with sources, plus the transcript folded to a token budget with a rolling
+  summary. Nothing is deleted by folding; a folded-out turn is still a fact and comes
+  back by recall.
+* :class:`ReasonGraphChatMessageHistory` -- the same transcript as a
+  ``BaseChatMessageHistory`` for ``RunnableWithMessageHistory`` and LangGraph.
 
-All three work with a local :class:`reasongraph.ReasonGraph` or a hosted service through
+All of them work with a local :class:`reasongraph.ReasonGraph` or a hosted service through
 :class:`reasongraph.client.MemoryClient`. Install with ``pip install reasongraph[langchain]``.
 """
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, PrivateAttr
 
-__all__ = ["ReasonGraphRetriever", "with_memory", "memory_tools"]
+# ``BaseMemory`` lived in langchain-core until 1.0 and in langchain-classic after; without
+# either the class keeps the same shape (a pydantic model with the four memory methods) so
+# it still drops into anything that duck-types a memory.
+try:  # pragma: no cover - which import succeeds depends on the installed LangChain
+    from langchain_core.memory import BaseMemory as _BaseMemory
+except ImportError:
+    try:
+        from langchain_classic.memory import BaseMemory as _BaseMemory
+    except ImportError:
+        _BaseMemory = BaseModel
+
+__all__ = ["ReasonGraphRetriever", "with_memory", "memory_tools",
+           "ReasonGraphMemory", "ReasonGraphChatMessageHistory"]
 
 
 def _is_client(target: Any) -> bool:
@@ -178,3 +201,227 @@ def memory_tools(target: Any, session: str = "agent") -> list[StructuredTool]:
         StructuredTool.from_function(recall, name="recall", description=recall.__doc__),
         StructuredTool.from_function(discover, name="discover", description=discover.__doc__),
     ]
+
+
+# -- memory classes -------------------------------------------------------------
+
+
+def _run(target: Any, coro):
+    """Drive a coroutine from sync code, on the graph's loop when there is one."""
+    if hasattr(target, "_run"):
+        return target._run(coro)
+    return asyncio.run(coro)
+
+
+def _text_of(m: Any) -> str:
+    return str(m.content if isinstance(m, BaseMessage) else m)
+
+
+def _to_dicts(msgs: list[BaseMessage]) -> list[dict]:
+    role = {HumanMessage: "user", AIMessage: "assistant", SystemMessage: "system"}
+    return [{"role": next((r for t, r in role.items() if isinstance(m, t)), "user"), "content": _text_of(m)}
+            for m in msgs]
+
+
+def _from_dicts(msgs: list[dict]) -> list[BaseMessage]:
+    kinds = {"user": HumanMessage, "assistant": AIMessage, "system": SystemMessage}
+    return [kinds.get(m["role"], HumanMessage)(content=m["content"]) for m in msgs]
+
+
+def _as_string(msgs: list[dict], human_prefix: str, ai_prefix: str) -> str:
+    names = {"user": human_prefix, "assistant": ai_prefix, "system": "Summary"}
+    return "\n".join(f"{names.get(m['role'], m['role'])}: {m['content']}" for m in msgs)
+
+
+class _Transcript:
+    """The conversation so far plus the folding that decides what the model sees.
+
+    Every turn is stored as a fact in ``target`` when observed; the transcript held here
+    is the folded view (rolling summary, then the newest turns), which is what gets
+    injected. With a local ``ReasonGraph`` the library's ``MemoryLoop`` does both
+    recall and folding; with a ``MemoryClient`` recall goes through the hosted
+    ``discover`` and folding runs locally on the same code.
+    """
+
+    def __init__(self, target: Any, session: str, *, max_facts: int, hops: int,
+                 max_history_tokens: int | None, keep_tail_tokens: int | None,
+                 summarizer: Callable[[list[dict]], str] | None, observe_assistant: bool,
+                 header: str) -> None:
+        from reasongraph.loop import MemoryLoop
+        self.target, self.session, self.hops, self.max_facts, self.header = target, session, hops, max_facts, header
+        self.client = _is_client(target)
+        self.loop = MemoryLoop(None if self.client else target, session=session, max_facts=max_facts, hops=hops,
+                               max_history_tokens=max_history_tokens, keep_tail_tokens=keep_tail_tokens,
+                               summarizer=summarizer, summarize_in_background=True,
+                               observe_assistant=observe_assistant)
+        self.observe_assistant = observe_assistant
+        self.history: list[dict] = []
+
+    def recall(self, question: str) -> str:
+        if not question:
+            return ""
+        if self.client:
+            facts = _connections(self.target, question, None, 5, self.hops, self.max_facts)
+            return _render(facts, self.header) if facts else ""
+        previous = next((m["content"] for m in reversed(self.history) if m["role"] == "assistant"), None)
+        return self.loop.recall_sync(question, previous=previous).text
+
+    def folded(self) -> list[dict]:
+        return self.loop.fold_history(self.history)
+
+    def add(self, user: str | None, assistant: str | None) -> None:
+        if user:
+            self.history.append({"role": "user", "content": user})
+        if assistant:
+            self.history.append({"role": "assistant", "content": assistant})
+        if self.client:
+            texts = [t for t, keep in ((user, True), (assistant, self.observe_assistant)) if t and keep]
+            if texts:
+                self.target.remember_many(self.session, texts)
+        else:
+            self.loop.observe_sync(user, assistant)
+        # Fold now that the reply is out, never in the middle of a turn: the turns past the
+        # budget become the rolling summary and the transcript is replaced by the folded view,
+        # so the next fold merges the previous summary instead of stacking another on top.
+        folded = self.loop.fold_history(self.history)
+        if self.loop._pending is not None:
+            if _run(None if self.client else self.target, self.loop.flush_summary()):
+                folded = self.loop.fold_history(self.history)
+        self.history = folded
+
+    @property
+    def summary(self) -> str | None:
+        return self.loop._summary
+
+    def clear(self) -> None:
+        self.history = []
+        self.loop._summary = None
+        self.loop._pending = None
+        if self.client:
+            self.target.forget_session(self.session)
+        else:
+            self.target.forget_sync({self.session})
+
+
+class ReasonGraphMemory(_BaseMemory):
+    """Memory for a chain or agent, in the classic ``BaseMemory`` shape.
+
+    ``load_memory_variables`` returns two variables:
+
+    * ``memory_key`` (default ``"memory"``): the facts the graph connects to the input,
+      rendered with their sources and cause->effect links, empty when nothing relates.
+    * ``history_key`` (default ``"history"``): the transcript, folded to
+      ``max_history_tokens`` with the oldest turns as one rolling summary and the newest
+      ``keep_tail_tokens`` verbatim. Unset means the whole transcript, as a buffer memory.
+
+    ``save_context`` stores the exchange as facts in ``session`` and appends it to the
+    transcript. Folding decides what the model sees; it deletes nothing, and a turn that
+    left the window comes back through ``memory_key`` when it is relevant again.
+    ``clear`` forgets the session in the graph as well as the transcript.
+
+    ``target`` is a local ``ReasonGraph`` or a ``MemoryClient``. ``summarizer`` takes the
+    folded-out messages (``[{"role", "content"}]``) and returns a summary; it runs after
+    ``save_context``, never in the middle of a turn. Without one the budget still holds
+    and the old turns simply leave the window.
+    """
+
+    target: Any
+    session: str = "chat"
+    memory_key: str = "memory"
+    history_key: str = "history"
+    input_key: str | None = None
+    output_key: str | None = None
+    return_messages: bool = False
+    human_prefix: str = "Human"
+    ai_prefix: str = "AI"
+    max_facts: int = 8
+    hops: int = 3
+    max_history_tokens: int | None = None
+    keep_tail_tokens: int | None = None
+    summarizer: Any = None
+    observe_assistant: bool = True
+    header: str = "What you remember that is relevant (with sources):"
+
+    model_config = {"arbitrary_types_allowed": True}
+    _transcript: _Transcript = PrivateAttr(default=None)
+
+    def _t(self) -> _Transcript:
+        if self._transcript is None:
+            self._transcript = _Transcript(self.target, self.session, max_facts=self.max_facts, hops=self.hops,
+                                           max_history_tokens=self.max_history_tokens,
+                                           keep_tail_tokens=self.keep_tail_tokens, summarizer=self.summarizer,
+                                           observe_assistant=self.observe_assistant, header=self.header)
+        return self._transcript
+
+    @property
+    def memory_variables(self) -> list[str]:
+        return [self.memory_key, self.history_key]
+
+    def _pick(self, values: dict[str, Any], key: str | None, exclude: list[str]) -> str | None:
+        if key is not None:
+            v = values.get(key)
+            return _text_of(v) if v is not None else None
+        candidates = [k for k in values if k not in exclude]
+        if len(candidates) != 1:
+            raise ValueError(f"one input expected, got {sorted(candidates)}; set input_key/output_key")
+        return _text_of(values[candidates[0]])
+
+    def load_memory_variables(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        t = self._t()
+        question = self._pick(inputs, self.input_key, self.memory_variables) if inputs else None
+        folded = t.folded()
+        history: Any = _from_dicts(folded) if self.return_messages else _as_string(folded, self.human_prefix, self.ai_prefix)
+        return {self.memory_key: t.recall(question or ""), self.history_key: history}
+
+    def save_context(self, inputs: dict[str, Any], outputs: dict[str, str]) -> None:
+        user = self._pick(inputs, self.input_key, self.memory_variables)
+        reply = self._pick(outputs, self.output_key, [])
+        self._t().add(user, reply)
+
+    def clear(self) -> None:
+        self._t().clear()
+
+    @property
+    def summary(self) -> str | None:
+        """The rolling summary of the turns that left the window, once one has been written."""
+        return self._t().summary
+
+    @property
+    def messages(self) -> list[BaseMessage]:
+        """The transcript as the model would see it now: summary first, newest turns verbatim."""
+        return _from_dicts(self._t().folded())
+
+
+class ReasonGraphChatMessageHistory(BaseChatMessageHistory):
+    """The transcript as a ``BaseChatMessageHistory``, for ``RunnableWithMessageHistory``.
+
+    ``messages`` is the folded view (rolling summary, then the newest turns verbatim) and
+    ``add_messages`` stores each exchange as facts in ``session``. Pair it with
+    :class:`ReasonGraphRetriever` or :func:`with_memory` for the recall half.
+    """
+
+    def __init__(self, target: Any, session: str = "chat", *, max_history_tokens: int | None = None,
+                 keep_tail_tokens: int | None = None, summarizer: Callable[[list[dict]], str] | None = None,
+                 observe_assistant: bool = True) -> None:
+        self._t = _Transcript(target, session, max_facts=8, hops=3, max_history_tokens=max_history_tokens,
+                              keep_tail_tokens=keep_tail_tokens, summarizer=summarizer,
+                              observe_assistant=observe_assistant, header="")
+
+    @property
+    def messages(self) -> list[BaseMessage]:
+        return _from_dicts(self._t.folded())
+
+    def add_messages(self, messages: list[BaseMessage]) -> None:
+        user = assistant = None
+        for m in messages:
+            if isinstance(m, AIMessage):
+                assistant = _text_of(m)
+            elif not isinstance(m, SystemMessage):
+                if user is not None:
+                    self._t.add(user, assistant); assistant = None
+                user = _text_of(m)
+        if user is not None or assistant is not None:
+            self._t.add(user, assistant)
+
+    def clear(self) -> None:
+        self._t.clear()

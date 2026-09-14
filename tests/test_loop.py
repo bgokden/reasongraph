@@ -464,9 +464,9 @@ def test_the_budget_is_tokens_not_messages():
 def test_a_custom_token_counter_is_used():
     loop = _loop(max_history_tokens=10, keep_tail_tokens=5,
                  count_tokens=lambda t: len(t.split()))
-    history = [_turn("user", 8, "x"), _turn("assistant", 8, "y")]
+    history = [_turn("user", 8, "x"), _turn("assistant", 8, "y"), _turn("user", 4, "z")]
     assert loop.fold_history(history) == [history[-1]]
-    assert loop._pending == [history[0]]
+    assert loop._pending == history[:2]
 
 
 @pytest.mark.asyncio
@@ -493,3 +493,26 @@ async def test_background_summarising_keeps_the_model_call_first():
         assert loop._summary and "billing" in loop._summary
     finally:
         await g.close()
+
+
+def test_folding_never_leaves_a_reply_without_its_question():
+    loop = _loop(max_history_tokens=40, keep_tail_tokens=12, summarizer=lambda msgs: "earlier")
+    history = [_turn("user", 20, "old"), _turn("assistant", 20, "older"),
+               _turn("user", 10, "question"), _turn("assistant", 10, "answer")]
+    out = loop.fold_history(history)
+    assert [m["role"] for m in out] == ["user", "assistant"]     # the pair, not just the answer
+    assert out[0]["content"] == history[2]["content"]
+
+
+def test_the_summarizer_sees_an_earlier_summary_as_record_not_as_a_system_line():
+    from reasongraph.loop import SUMMARY_HEADER, SUMMARY_PROMPT, make_summarizer
+    seen = {}
+    summarize = make_summarizer(lambda msgs: seen.setdefault("msgs", msgs) and "merged")
+    out = summarize([{"role": "system", "content": f"{SUMMARY_HEADER}\nthey picked Saturday"},
+                     {"role": "user", "content": "and the tent?"}])
+    assert out == "merged"
+    assert seen["msgs"][0] == {"role": "system", "content": SUMMARY_PROMPT}
+    transcript = seen["msgs"][1]["content"]
+    assert "system:" not in transcript and SUMMARY_HEADER not in transcript
+    assert transcript.startswith("[Earlier part of this conversation") and "they picked Saturday" in transcript
+    assert transcript.endswith("user: and the tent?")

@@ -683,6 +683,35 @@ Documents carry the sources, the names the fact was reached through and its caus
 links in `metadata`. Full example: `examples/agents/langchain_memory.py`; a LangGraph agent
 that uses the tools: `examples/agents/langgraph_agent.py`.
 
+### A memory class for chains and agents
+
+`ReasonGraphMemory` is the classic `BaseMemory` shape (`load_memory_variables` /
+`save_context`), so it drops in wherever a LangChain memory goes. Each turn the agent sees
+two things: `memory`, the facts the graph connects to the input with their sources and
+cause->effect links, and `history`, the transcript folded to a token budget with the oldest
+turns as one rolling summary and the newest verbatim.
+
+```python
+from reasongraph.integrations.langchain import ReasonGraphMemory
+from reasongraph.loop import make_summarizer
+
+memory = ReasonGraphMemory(target=graph, session="trip-chat",
+                           max_history_tokens=2000, keep_tail_tokens=800,
+                           summarizer=make_summarizer(lambda msgs: llm.invoke(msgs).content))
+
+seen = memory.load_memory_variables({"input": "When am I crossing, and why did it change?"})
+seen["memory"]    # "- The storm cancelled my ferry to Texel on Friday... [trip-chat]\n  because: The storm -> ..."
+seen["history"]   # "Summary: ...\nHuman: Any tips for the drive?\nAI: Check the tires..."
+memory.save_context({"input": "..."}, {"output": "..."})
+```
+
+Folding decides what the model sees and deletes nothing: a turn that left the window is
+still a fact and comes back through `memory` when it is relevant again. The summary is
+written after `save_context`, never in the middle of a turn, and without a summarizer the
+budget still holds. `ReasonGraphChatMessageHistory` offers the same transcript as a
+`BaseChatMessageHistory` for `RunnableWithMessageHistory`. Walkthrough with what the agent
+sees at every turn: `examples/agents/langchain_memory_class.py`.
+
 ## Fast inference (optional, pure ONNX)
 
 The defaults already deliver the eval quality below; this is purely a

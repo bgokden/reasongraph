@@ -26,6 +26,47 @@ _QUESTION = re.compile(r"\?\s*$|^(why|how|what|when|who|which|where|is|are|does|
 #: First line of a folded-history summary, and how the next fold recognises its own work.
 SUMMARY_HEADER = "Summary of earlier messages in this conversation:"
 
+#: What :func:`make_summarizer` asks the model. The second sentence matters: a fold hands the
+#: previous summary in with the new messages, and a model that is not told so treats it as a
+#: claim to check rather than a record to carry forward, and drops or "corrects" it.
+SUMMARY_PROMPT = (
+    "Summarise the conversation below so it can stand in for those messages. The transcript may "
+    "begin with a summary of even earlier messages: it is part of the record, so merge it in and "
+    "keep every detail from it. Keep decisions, open questions, names, places, times, numbers and "
+    "anything the next reply may need. Write plain prose, no preamble, no bullet points, and never "
+    "invent or second-guess anything that is not in the messages."
+)
+
+
+def make_summarizer(call_model: Callable[[list[dict]], Any], prompt: str = SUMMARY_PROMPT) -> Callable[[list[dict]], Any]:
+    """A ``summarizer`` for :class:`MemoryLoop` from any chat function.
+
+    ``call_model`` takes OpenAI-style messages and returns the reply text (sync or async).
+    The folded-out messages are rendered as a transcript under ``prompt``.
+    """
+    def summarize(messages: list[dict]) -> Any:
+        return call_model([{"role": "system", "content": prompt},
+                           {"role": "user", "content": render_for_summary(messages)}])
+    return summarize
+
+
+def render_for_summary(messages: list[dict]) -> str:
+    """The folded-out messages as the summarizer should see them.
+
+    An earlier summary is labelled as the record it is rather than shown as a ``system:`` line:
+    a small model given ``system: Summary of earlier messages...`` reads it as an instruction
+    and drops everything in it (0 of 3 runs kept it on a 7B model; 3 of 3 with this rendering).
+    """
+    lines = []
+    for m in messages:
+        content = str(m.get("content") or "")
+        if m.get("role") == "system" and content.startswith(SUMMARY_HEADER):
+            lines.append("[Earlier part of this conversation, already summarised; carry every detail forward]\n"
+                         + content[len(SUMMARY_HEADER):].strip() + "\n[Newer messages]")
+        else:
+            lines.append(f"{m.get('role', 'user')}: {content}")
+    return "\n".join(lines)
+
 
 def _approx_tokens(text: str) -> int:
     """Tokens, approximately, without loading a tokenizer.
@@ -491,6 +532,12 @@ class MemoryLoop:
             tail.append(msg)
             used += cost
         tail.reverse()
+        # A reply without its question reads as a non sequitur, so keep the pair together:
+        # the budget is approximate, the transcript's sense is not.
+        if tail and tail[0].get("role") == "assistant":
+            before = len(history) - len(tail) - 1
+            if before >= 0 and history[before].get("role") == "user":
+                tail.insert(0, history[before])
 
         older = history[: len(history) - len(tail)]
         if not older:
