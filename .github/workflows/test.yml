@@ -66,3 +66,35 @@ jobs:
 
       - name: Postgres backend tests ran (not skipped)
         run: uv run pytest tests/test_postgres_backend.py -q -rs 2>&1 | tee /tmp/pg.txt; ! grep -q "SKIPPED" /tmp/pg.txt
+
+  # The JavaScript client ships to npm separately and has no build step, so its tests are
+  # node's own runner plus one strict typecheck of the declarations against real usage.
+  typescript-client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --test test/*.test.js
+      - name: The published types match the published client
+        run: |
+          npm install --no-save typescript
+          cat > tscheck.ts <<'TS'
+          import { Memory, memoryTools, MemoryError, type Fact } from "./src/index.js";
+          const mem = new Memory({ apiKey: "k" });
+          async function main() {
+            const facts: Fact[] = await mem.discover("why?", { topK: 3 });
+            const trace = await mem.traceCauses(facts[0].content);
+            const hop: string = trace.chain[0].cause;
+            const reply = await mem.chat([{ role: "user", content: "hi" }], { maxHistoryTokens: 4000 });
+            const out: string = await memoryTools(mem)[0].execute({ text: "x" });
+            try { await mem.stats(); } catch (e) { if (e instanceof MemoryError) { const s: number = e.status; } }
+            return [hop, reply.reply, out];
+          }
+          main();
+          TS
+          ./node_modules/.bin/tsc --noEmit --strict --module nodenext --moduleResolution nodenext --target es2022 tscheck.ts
