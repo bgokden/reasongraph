@@ -19,20 +19,20 @@ from reasongraph.loop import make_summarizer
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 graph = ReasonGraph()
 graph.initialize_sync()
-# what the agent knew before this chat: an earlier session with the same user
-graph.add_texts_sync(["Berk is allergic to shellfish.", "Berk's sister Ayse lives in Den Helder.",
-                      "The Texel ferry leaves from Den Helder every hour."], scopes={"profile"})
+# what the agent knew before this chat: an earlier session with the same team
+graph.add_texts_sync(["Mara's team freezes deploys on Fridays.", "Jonas owns the staging cluster.",
+                      "Staging runs Kubernetes 1.29."], scopes={"team-notes"})
 
-memory = ReasonGraphMemory(target=graph, session="trip-chat",
+memory = ReasonGraphMemory(target=graph, session="ops-chat",
                            max_history_tokens=110, keep_tail_tokens=55,   # tiny, so folding shows up
                            summarizer=make_summarizer(lambda msgs: llm.invoke(msgs).content))
-SYSTEM = "You are a travel companion. Two sentences at most. Use what you remember when it applies."
+SYSTEM = "You are an on-call assistant. Two sentences at most. Use what you remember when it applies."
 
-for user in ["The storm cancelled my ferry to Texel on Friday, so I'm going Saturday morning instead.",
-             "Can you suggest a restaurant on Texel for Saturday evening?",
-             "What should I pack for a windy weekend on the island?",
-             "Any tips for the drive up to the ferry?",
-             "Remind me: when am I actually crossing to Texel, and why did it change?"]:
+for user in ["The staging deploy failed last night because the TLS certificate expired, so I rolled back to 2.3.1.",
+             "How can we renew that certificate automatically next time?",
+             "What should I check before re-running the deploy?",
+             "Any tips for making rollbacks faster?",
+             "Remind me: which version is staging on now, and why did we roll back?"]:
     seen = memory.load_memory_variables({"input": user})
     context = "\n\n".join(part for part in (seen["memory"], seen["history"] and f"Conversation so far:\n{seen['history']}") if part)
     reply = llm.invoke([SystemMessage(content=SYSTEM), SystemMessage(content=context), HumanMessage(content=user)]).content

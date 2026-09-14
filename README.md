@@ -695,13 +695,13 @@ turns as one rolling summary and the newest verbatim.
 from reasongraph.integrations.langchain import ReasonGraphMemory
 from reasongraph.loop import make_summarizer
 
-memory = ReasonGraphMemory(target=graph, session="trip-chat",
+memory = ReasonGraphMemory(target=graph, session="ops-chat",
                            max_history_tokens=2000, keep_tail_tokens=800,
                            summarizer=make_summarizer(lambda msgs: llm.invoke(msgs).content))
 
-seen = memory.load_memory_variables({"input": "When am I crossing, and why did it change?"})
-seen["memory"]    # "- The storm cancelled my ferry to Texel on Friday... [trip-chat]\n  because: The storm -> ..."
-seen["history"]   # "Summary: ...\nHuman: Any tips for the drive?\nAI: Check the tires..."
+seen = memory.load_memory_variables({"input": "Which version is staging on, and why?"})
+seen["memory"]    # "- We rolled staging back to 2.3.1 because the certificate expired. [ops-chat]\n  because: ..."
+seen["history"]   # "Summary: ...\nHuman: How do I speed up rollbacks?\nAI: Keep the previous image warm..."
 memory.save_context({"input": "..."}, {"output": "..."})
 ```
 

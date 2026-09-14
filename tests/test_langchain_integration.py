@@ -103,27 +103,27 @@ def test_memory_class_folds_old_turns_but_never_forgets_them():
 
         def summarize(msgs):
             summaries.append([m["content"] for m in msgs])
-            return "The user's ferry to Texel leaves at nine."
+            return "The staging deploy was rolled back to 2.3.1."
 
         mem = ReasonGraphMemory(target=g, session="chat", max_history_tokens=40, keep_tail_tokens=25,
                                 summarizer=summarize)
-        mem.save_context({"input": "My ferry to Texel leaves at nine tomorrow, remind me to pack the tent."},
-                         {"output": "Noted, the ferry to Texel at nine and the tent."})
-        mem.save_context({"input": "What is the weather like on the island in May?"},
-                         {"output": "Usually mild, around fifteen degrees with wind."})
+        mem.save_context({"input": "The staging deploy was rolled back to 2.3.1 because the certificate expired."},
+                         {"output": "Noted, staging is on 2.3.1 after the certificate expiry."})
+        mem.save_context({"input": "How long does a certificate renewal usually take?"},
+                         {"output": "A few minutes once the DNS challenge is answered."})
         mem.save_context({"input": "Is the road still closed?"}, {"output": "Yes, the flood closed it."})
 
-        seen = mem.load_memory_variables({"input": "When does my ferry leave?"})
+        seen = mem.load_memory_variables({"input": "Which version is staging on?"})
         assert "Is the road still closed?" in seen["history"]           # newest turn verbatim
-        assert "pack the tent" not in seen["history"]                   # oldest turn folded out
-        assert summaries and "pack the tent" in summaries[0][0]         # ...into the summary
-        assert mem.summary and "Texel" in mem.summary
+        assert "certificate expired" not in seen["history"]             # oldest turn folded out
+        assert summaries and "certificate expired" in summaries[0][0]   # ...into the summary
+        assert mem.summary and "2.3.1" in mem.summary
         assert seen["history"].startswith("Summary:")
-        assert "ferry to Texel leaves at nine" in seen["memory"]        # and still recalled as a fact
+        assert "rolled back to 2.3.1" in seen["memory"]                 # and still recalled as a fact
 
         mem.clear()
-        assert mem.load_memory_variables({"input": "ferry"})["history"] == ""
-        assert not any("Texel" in t for t in g.query_sync("ferry to Texel", top_k=5))
+        assert mem.load_memory_variables({"input": "staging"})["history"] == ""
+        assert not any("2.3.1" in t for t in g.query_sync("staging deploy rolled back to 2.3.1", top_k=5))
         assert "The warehouse is in Rotterdam." in g.query_sync("The warehouse is in Rotterdam.", top_k=5)   # other sessions untouched
     finally:
         g.close_sync()
@@ -134,13 +134,13 @@ def test_chat_message_history_pairs_turns_and_folds():
     g = _graph()
     try:
         h = ReasonGraphChatMessageHistory(g, session="chat", max_history_tokens=20, keep_tail_tokens=10,
-                                          summarizer=lambda msgs: "earlier: a ferry and a tent")
-        h.add_messages([HumanMessage(content="My ferry to Texel leaves at nine, remind me to pack the tent."),
+                                          summarizer=lambda msgs: "earlier: a rollback to 2.3.1")
+        h.add_messages([HumanMessage(content="Staging was rolled back to 2.3.1 because the certificate expired."),
                         AIMessage(content="Noted.")])
         h.add_messages([HumanMessage(content="Is the road closed?"), AIMessage(content="Yes, by the flood.")])
         msgs = h.messages
-        assert isinstance(msgs[0], SystemMessage) and "ferry" in msgs[0].content
+        assert isinstance(msgs[0], SystemMessage) and "2.3.1" in msgs[0].content
         assert msgs[-1].content == "Yes, by the flood."
-        assert any("Texel" in t for t in g.query_sync("My ferry to Texel leaves at nine", top_k=5, scopes={"chat"}))
+        assert any("2.3.1" in t for t in g.query_sync("Staging was rolled back to 2.3.1", top_k=5, scopes={"chat"}))
     finally:
         g.close_sync()
