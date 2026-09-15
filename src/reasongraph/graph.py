@@ -1403,6 +1403,7 @@ class ReasonGraph:
         reached_facts: set[str] = set()
         reached_targets: set[str] = set()
         has_next: set[str] = set()
+        via: dict[str, list[str]] = {}    # bridged alias -> spans it continues; a hop from the alias is a hop from them
 
         while frontier and len(visited_spans) <= max_visited:
             span, depth = frontier.popleft()
@@ -1426,16 +1427,32 @@ class ReasonGraph:
                 if (span, other) in blocked_edges:
                     continue
                 has_next.add(span)
+                pending = list(via.get(span, []))    # the spans this alias continues are no terminals either
+                while pending:
+                    back = pending.pop()
+                    if back not in has_next:
+                        has_next.add(back); pending += via.get(back, [])
                 reached_targets.add(other)
                 cause, effect = (span, other) if edge_dir == "out" else (other, span)
                 chain.append({"cause": cause, "effect": effect, "depth": depth})
                 if other not in visited_spans and len(visited_spans) < max_visited:
                     visited_spans.add(other)
                     frontier.append((other, depth + 1))
-                    if bridge and edge_dir == "out":
+                    if bridge:
                         # Same event, different wording, no same_as edge: continue from
-                        # cause spans that share a content word with this effect.
-                        for alias in await self._lexical_bridges(other, exclude=visited_spans):
+                        # spans of the opposite role that share a content word with this
+                        # one. Forward, an effect continues from cause spans; backward, a
+                        # cause ("the billing job ran twice whenever a payment retried")
+                        # continues from effect spans ("The billing job ran twice").
+                        role = "cause" if edge_dir == "out" else "effect"
+                        # a visited alias is not walked twice, but it is still recorded: a
+                        # cause that continues into a span with a next hop is no root
+                        for alias in await self._lexical_bridges(other, role=role,
+                                                                 min_score=self.bridge_walk_min_score,
+                                                                 scopes=walk_scopes):
+                            via.setdefault(alias, []).append(other)
+                            if alias in has_next:
+                                has_next.add(other)
                             if alias not in visited_spans and len(visited_spans) < max_visited:
                                 visited_spans.add(alias)
                                 frontier.append((alias, depth + 1))
@@ -1472,6 +1489,14 @@ class ReasonGraph:
         start = [p["cause"] for p in pairs] if direction == "effects" else [p["effect"] for p in pairs]
         if extra_start:
             start = list(dict.fromkeys(start + [x for x in extra_start]))
+        if not start and bridge:
+            # A plain fact asserts no relation of its own ("Several partners were suddenly
+            # throttled on our API this month"), but another fact may explain the event it
+            # describes ("They were throttled because the rate limiter ..."). Start from the
+            # spans of other facts that name the same event: effect spans when walking back
+            # to causes, cause spans when walking forward to consequences.
+            start = await self._lexical_bridges(origin, role="effect" if edge_dir == "in" else "cause",
+                                                scopes=walk_scopes)
 
         chain, reached_facts, reached_targets, has_next = await self._causal_reach(
             start, edge_dir, max_depth=max_depth, walk_scopes=walk_scopes,
@@ -1506,19 +1531,30 @@ class ReasonGraph:
 
     async def trace_effects(self, content: str, *, max_depth: int = 6, scopes=None,
                             isolate: bool | None = None, include_superseded: bool = False,
-                            max_visited: int = 1000, walk_scopes=None) -> dict:
-        """Forward causal walk: what the fact nearest ``content`` caused downstream."""
+                            max_visited: int = 1000, walk_scopes=None, bridge: bool = False) -> dict:
+        """Forward causal walk: what the fact nearest ``content`` caused downstream.
+
+        ``bridge=True`` also crosses facts that word one event differently without a
+        ``same_as`` tie (a shared content word plus embedding closeness, see
+        :meth:`_lexical_bridges`), and lets a plain fact start the walk from the spans of
+        other facts that name its event.
+        """
         return await self._trace(content, "effects", max_depth=max_depth, scopes=scopes,
                                   isolate=isolate, include_superseded=include_superseded,
-                                  max_visited=max_visited, walk_scopes=walk_scopes)
+                                  max_visited=max_visited, walk_scopes=walk_scopes, bridge=bridge)
 
     async def trace_causes(self, content: str, *, max_depth: int = 6, scopes=None,
                            isolate: bool | None = None, include_superseded: bool = False,
-                           max_visited: int = 1000, walk_scopes=None) -> dict:
-        """Backward causal walk: what led to the fact nearest ``content``."""
+                           max_visited: int = 1000, walk_scopes=None, bridge: bool = False) -> dict:
+        """Backward causal walk: what led to the fact nearest ``content``.
+
+        ``bridge=True`` as in :meth:`trace_effects`: the walk continues from a cause span
+        to effect spans of other facts that word the same event, and a plain fact
+        ("partners were throttled this month") starts from the effect spans that name it.
+        """
         return await self._trace(content, "causes", max_depth=max_depth, scopes=scopes,
                                  isolate=isolate, include_superseded=include_superseded,
-                                 max_visited=max_visited, walk_scopes=walk_scopes)
+                                 max_visited=max_visited, walk_scopes=walk_scopes, bridge=bridge)
 
     async def root_causes(self, content: str, **kwargs) -> list[str]:
         """The root cause spans behind ``content`` (backward-walk terminals)."""
@@ -1544,6 +1580,14 @@ class ReasonGraph:
     ama veya değil""".split())
 
     bridge_min_score: float = 0.45
+    #: The floor for a bridge taken mid-walk, span to span ("the mail worker was silently
+    #: dropping messages over a size limit" -> "The messages went over the size limit").
+    #: Higher than bridge_min_score: a plain fact against a short span sits low even when
+    #: they are the same event (0.45 keeps 15 of 17 true pairs), while two spans of one
+    #: event score well above the pairs that merely share a word ("... mail worker ..." ->
+    #: "The worker stopped retrying"): at 0.55, 18 of 19 true span pairs pass and 1 of 52
+    #: false ones, against 7 of 52 at 0.45. Measured on the multilingual MiniLM.
+    bridge_walk_min_score: float = 0.55
 
     @classmethod
     def _bridge_tokens(cls, text: str) -> set[str]:
@@ -1559,29 +1603,38 @@ class ReasonGraph:
         return out
 
     async def _lexical_bridges(self, text: str, *, exclude: set[str] = frozenset(),
-                               top_k: int = 15) -> list[str]:
-        """Cause spans (of any fact) that share a content word with ``text`` and are
-        semantically close to it. Used by :meth:`causal_chain` to continue a walk
-        across facts that describe one event with different span boundaries, e.g.
-        effect "the system throttles performance" -> cause "Throttling performance",
-        or a plain root fact "CPU temperature exceeded 85°C" -> cause "the CPU
-        temperature rises". Paraphrases without a shared word still need ``same_as``."""
+                               top_k: int = 15, role: str = "cause",
+                               min_score: float | None = None, scopes: set[str] | None = None) -> list[str]:
+        """Causal spans (of any fact) that share a content word with ``text`` and are
+        semantically close to it: cause spans by default, effect spans with
+        ``role="effect"``. Used by :meth:`causal_chain` and the bridged traces to
+        continue a walk across facts that describe one event with different span
+        boundaries, e.g. effect "the system throttles performance" -> cause "Throttling
+        performance", or a plain root fact "CPU temperature exceeded 85°C" -> cause "the
+        CPU temperature rises". Paraphrases without a shared word still need ``same_as``."""
         toks = self._bridge_tokens(text)
         if not toks:
             return []
-        hits = await self.backend.knn_search(self.embeddings.encode(text), top_k=top_k)
+        floor = self.bridge_min_score if min_score is None else min_score
+        hits = await self.backend.knn_search(self.embeddings.encode(text), top_k=top_k, scopes=scopes)
         cands = [h for h in hits if h.get("type") == "entity" and h["content"] != text
                  and h["content"] not in exclude]
         if not cands:
             return []
-        scores = self.embeddings.score(text, [h["content"] for h in cands])
+        # every backend returns the cosine it ranked by; encoding the candidates again
+        # to recompute it is the one avoidable model call on this path
+        if all(isinstance(h.get("score"), (int, float)) for h in cands):
+            scores = [float(h["score"]) for h in cands]
+        else:
+            scores = self.embeddings.score(text, [h["content"] for h in cands])
         out: list[str] = []
         for h, score in zip(cands, scores):
             cand = h["content"]
-            if score < self.bridge_min_score or not (toks & self._bridge_tokens(cand)):
+            if score < floor or not (toks & self._bridge_tokens(cand)):
                 continue
-            neighbours = await self.backend.get_neighbors(cand)
-            if any(n.get("label") == "causes" and n.get("direction") == "out" for n in neighbours):
+            neighbours = await self.backend.get_neighbors(cand, scopes)
+            want = "out" if role == "cause" else "in"
+            if any(n.get("label") == "causes" and n.get("direction") == want for n in neighbours):
                 out.append(cand)
         return out
 
