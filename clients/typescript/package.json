@@ -1,6 +1,6 @@
 {
   "name": "reasongraph",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Graph memory for AI agents: remember facts, recall them by meaning, and trace what caused what.",
   "type": "module",
   "main": "./src/index.js",
