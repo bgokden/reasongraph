@@ -58,8 +58,14 @@ class MemoryClient:
         return res.get("connections", res) if isinstance(res, dict) else res
 
     def chat(self, messages: list[dict], *, session: str = "chat", system: str | None = None,
-             observe: bool = True, max_facts: int = 8) -> dict:
-        return self._post("/chat", messages=messages, session=session, system=system, observe=observe, max_facts=max_facts)
+             observe: bool = True, max_facts: int = 8, max_history_tokens: int | None = None,
+             keep_tail_tokens: int | None = None) -> dict:
+        """One chat turn with the relevant memory in front of the model. ``max_history_tokens``
+        folds a long conversation to that budget (newest turns verbatim, older ones as a rolling
+        summary); unset leaves the deployment default, which is no folding."""
+        return self._post("/chat", messages=messages, session=session, system=system, observe=observe,
+                          max_facts=max_facts, max_history_tokens=max_history_tokens,
+                          keep_tail_tokens=keep_tail_tokens)
 
     def facts(self, texts: list[str]) -> dict:
         return self._post("/facts", texts=texts)
