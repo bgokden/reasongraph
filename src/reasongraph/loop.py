@@ -38,14 +38,38 @@ SUMMARY_PROMPT = (
 )
 
 
-def make_summarizer(call_model: Callable[[list[dict]], Any], prompt: str = SUMMARY_PROMPT) -> Callable[[list[dict]], Any]:
+#: Appended to the prompt when the loop knows how much room the summary has. Without it the
+#: model picks its own length: asked again and again as the conversation grows, it compresses
+#: what it already wrote, and detail bleeds out of the summary one fold at a time.
+SUMMARY_LENGTH_HINT = (
+    " You have room for about {words} words. Use it: write up to that length and keep the "
+    "detail rather than compressing further, but never go far beyond it."
+)
+
+#: Words per token, roughly, for turning a token budget into the word count a prompt can ask
+#: for. English runs near 1.3 tokens a word; asking in words is what models actually follow.
+_WORDS_PER_TOKEN = 0.75
+
+
+def summary_length_hint(max_tokens: int | None) -> str:
+    """The sentence that tells a summarizer how long its summary may be; ``""`` for no budget."""
+    if not max_tokens or max_tokens <= 0:
+        return ""
+    return SUMMARY_LENGTH_HINT.format(words=max(20, int(max_tokens * _WORDS_PER_TOKEN)))
+
+
+def make_summarizer(call_model: Callable[[list[dict]], Any], prompt: str = SUMMARY_PROMPT) -> Callable[..., Any]:
     """A ``summarizer`` for :class:`MemoryLoop` from any chat function.
 
     ``call_model`` takes OpenAI-style messages and returns the reply text (sync or async).
     The folded-out messages are rendered as a transcript under ``prompt``.
+
+    The returned function takes an optional ``max_tokens``: the room the summary has in the
+    history budget. :meth:`MemoryLoop.flush_summary` passes it, and it becomes a word target
+    in the prompt. Called without it the summary has no length target, as before.
     """
-    def summarize(messages: list[dict]) -> Any:
-        return call_model([{"role": "system", "content": prompt},
+    def summarize(messages: list[dict], max_tokens: int | None = None) -> Any:
+        return call_model([{"role": "system", "content": prompt + summary_length_hint(max_tokens)},
                            {"role": "user", "content": render_for_summary(messages)}])
     return summarize
 
@@ -173,6 +197,7 @@ class MemoryLoop:
         self.count_tokens = count_tokens or _approx_tokens
         self._summary: str | None = None
         self._pending: list[dict] | None = None
+        self._summarizer_takes_budget: bool | None = None
         # how the seeds are found: "embedding" (default), "hybrid" (cosine fused with word-level
         # trigram matches: names, codes, numbers) or "keyword"; REASONGRAPH_LOOP_SEARCH sets the default
         self.search_mode = search_mode or os.environ.get("REASONGRAPH_LOOP_SEARCH", "embedding")
@@ -493,6 +518,23 @@ class MemoryLoop:
     def _tokens_of(self, msg: dict) -> int:
         return self.count_tokens(str(msg.get("content") or ""))
 
+    def _tail_budget(self) -> int:
+        """How many tokens of the newest messages stay verbatim through a fold."""
+        if self.keep_tail_tokens is not None:
+            return self.keep_tail_tokens
+        return max(1, (self.max_history_tokens or 2) // 2)
+
+    @property
+    def summary_budget_tokens(self) -> int | None:
+        """The room the rolling summary has: the history budget less the verbatim tail.
+
+        The two share ``max_history_tokens``, so this is what the summary may take without
+        pushing the folded history past its budget. ``None`` when no budget is set.
+        """
+        if not self.max_history_tokens:
+            return None
+        return max(1, self.max_history_tokens - self._tail_budget())
+
     def _is_summary(self, msg: dict) -> bool:
         return (msg.get("role") == "system"
                 and str(msg.get("content") or "").startswith(SUMMARY_HEADER))
@@ -517,9 +559,7 @@ class MemoryLoop:
         if sum(self._tokens_of(m) for m in history) <= self.max_history_tokens:
             return history
 
-        tail_budget = self.keep_tail_tokens
-        if tail_budget is None:
-            tail_budget = max(1, self.max_history_tokens // 2)
+        tail_budget = self._tail_budget()
 
         tail: list[dict] = []
         used = 0
@@ -548,6 +588,28 @@ class MemoryLoop:
             return tail
         return [{"role": "system", "content": self._summary}] + tail
 
+    def _call_summarizer(self, older: list[dict]) -> Any:
+        """Call the summarizer with the summary's token budget when it takes one.
+
+        A summarizer written before the budget existed takes only the messages, and plenty of
+        them are lambdas that cannot be inspected, so an unexpected-keyword ``TypeError`` is
+        retried without it. The retry is remembered: the fallback costs one call, not every call.
+        """
+        if self.summarizer is None:
+            return None
+        budget = self.summary_budget_tokens
+        if budget is None or self._summarizer_takes_budget is False:
+            return self.summarizer(older)
+        try:
+            result = self.summarizer(older, max_tokens=budget)
+        except TypeError as exc:
+            if "max_tokens" not in str(exc):
+                raise                       # a TypeError from inside the summarizer, not our call
+            self._summarizer_takes_budget = False
+            return self.summarizer(older)
+        self._summarizer_takes_budget = True
+        return result
+
     async def flush_summary(self) -> str | None:
         """Summarise whatever the last fold set aside; returns the new summary, or None.
 
@@ -559,7 +621,7 @@ class MemoryLoop:
         if not older or self.summarizer is None:
             return None
         try:
-            result = self.summarizer(older)
+            result = self._call_summarizer(older)
             if hasattr(result, "__await__"):
                 result = await result
             text = str(result).strip()

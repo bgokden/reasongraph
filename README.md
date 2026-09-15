@@ -350,7 +350,7 @@ loop = MemoryLoop(
     graph, session="support-chat",
     max_history_tokens=6000,        # fold once the transcript passes this
     keep_tail_tokens=2000,          # this much of the newest talk stays word for word
-    summarizer=my_model,            # fn(messages) -> str; omit and old turns are dropped
+    summarizer=my_model,            # fn(messages, max_tokens=None) -> str; omit and old turns are dropped
     summarize_in_background=True,   # summarise after the reply, never before it
 )
 ```
@@ -364,6 +364,13 @@ tail becomes one summary and the tail stays verbatim. Summarising a block rather
 the summarizer runs rarely, and a conversation that never reaches the budget never summarises at all.
 The next fold takes the previous summary in with the newly-aged messages, so summaries merge instead
 of stacking.
+
+**Why the summary is given a length.** The summary and the verbatim tail share `max_history_tokens`,
+so what is left once the tail is counted is the room the summary has: `loop.summary_budget_tokens`.
+A model not told that room picks its own length, and since every fold hands it its own last summary
+to merge, it compresses what it already wrote — detail bleeds out one fold at a time. The loop passes
+the budget as `max_tokens`, and `make_summarizer` turns it into a word target in the prompt. A
+summarizer that takes only `messages` still works; it is simply called without the target.
 
 **The summarizer is never on the hot path.** Folding uses the summary the session already has and
 records what still needs summarising. With `summarize_in_background` the work happens after the reply
