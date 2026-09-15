@@ -5,19 +5,9 @@ Graph memory for AI agents: remember facts, recall them by meaning, and trace wh
 No dependencies. Uses the platform `fetch`, so it runs on Node 18+, Bun, Deno, Cloudflare Workers
 and in the browser.
 
-Not on npm yet. It is plain JavaScript with types alongside and no build step, so copy this
-folder into your project, or install it by path from a checkout:
-
 ```bash
-npm install ./path/to/reasongraph/clients/typescript
+npm install reasongraph
 ```
-
-Releasing it (maintainers): `.github/workflows/publish-npm.yml` publishes on a `js-v<version>`
-tag with trusted publishing. One-time setup on npmjs.com: create the `reasongraph` package
-(first publish can be manual: `npm login && npm publish --access public` from this folder),
-then under the package's Settings, Trusted Publisher, add GitHub Actions with repository
-`bgokden/reasongraph`, workflow `publish-npm.yml`, environment `npm`. After that a release is:
-bump `version` here, `git tag js-v<version> && git push origin js-v<version>`.
 
 ```ts
 import { Memory } from "reasongraph";
@@ -77,3 +67,6 @@ recall.
 ```ts
 await mem.chat(messages, { maxHistoryTokens: 6000, keepTailTokens: 2000 });
 ```
+
+Releasing (maintainers): bump `version` in `package.json`, then `git tag js-v<version> && git push
+origin js-v<version>`; `.github/workflows/publish-npm.yml` publishes it with trusted publishing.

@@ -64,8 +64,7 @@ only sent to an LLM provider if you ask for a synthesized answer. Early access.
 
 Agents that are not written in Python talk to the hosted service through a dependency-free client
 ([`clients/typescript`](clients/typescript)). It uses the platform `fetch`, so it runs on Node 18+,
-Bun, Deno, Cloudflare Workers and the browser. Not on npm yet: copy the folder into your project or
-install it from the repository (see its README).
+Bun, Deno, Cloudflare Workers and the browser. `npm install reasongraph`.
 
 ```ts
 import { Memory, memoryTools } from "reasongraph";

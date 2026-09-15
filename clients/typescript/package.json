@@ -1,6 +1,6 @@
 {
   "name": "reasongraph",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Graph memory for AI agents: remember facts, recall them by meaning, and trace what caused what.",
   "type": "module",
   "main": "./src/index.js",
@@ -11,5 +11,5 @@
   "scripts": { "test": "node --test test/*.test.js" },
   "keywords": ["memory", "agents", "rag", "knowledge-graph", "causal"],
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/bgokden/reasongraph" }
+  "repository": { "type": "git", "url": "git+https://github.com/bgokden/reasongraph.git" }
 }
