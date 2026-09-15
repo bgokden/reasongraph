@@ -5,8 +5,11 @@ Graph memory for AI agents: remember facts, recall them by meaning, and trace wh
 No dependencies. Uses the platform `fetch`, so it runs on Node 18+, Bun, Deno, Cloudflare Workers
 and in the browser.
 
+Not on npm yet. It is plain JavaScript with types alongside and no build step, so copy this
+folder into your project, or install it by path from a checkout:
+
 ```bash
-npm install reasongraph
+npm install ./path/to/reasongraph/clients/typescript
 ```
 
 ```ts
