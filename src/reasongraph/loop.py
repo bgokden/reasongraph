@@ -38,12 +38,14 @@ SUMMARY_PROMPT = (
 )
 
 
-#: Appended to the prompt when the loop knows how much room the summary has. Without it the
-#: model picks its own length: asked again and again as the conversation grows, it compresses
-#: what it already wrote, and detail bleeds out of the summary one fold at a time.
+#: Appended to the prompt when the summary is capped (``summary_length_target``). Measured on
+#: qwen2.5 7B, eight folds, a 110-token share: told a length the model holds near it and drops
+#: detail to get there (17 details kept -> 11); told nothing it keeps all 17 and runs to 374
+#: tokens instead. So this buys a summary that fits at the price of what is in it, which is
+#: why the loop does not send it unless asked.
 SUMMARY_LENGTH_HINT = (
-    " You have room for about {words} words. Use it: write up to that length and keep the "
-    "detail rather than compressing further, but never go far beyond it."
+    " Keep the summary to about {words} words. Prefer dropping the least important detail "
+    "over going far beyond that length."
 )
 
 #: Words per token, roughly, for turning a token budget into the word count a prompt can ask
@@ -65,8 +67,9 @@ def make_summarizer(call_model: Callable[[list[dict]], Any], prompt: str = SUMMA
     The folded-out messages are rendered as a transcript under ``prompt``.
 
     The returned function takes an optional ``max_tokens``: the room the summary has in the
-    history budget. :meth:`MemoryLoop.flush_summary` passes it, and it becomes a word target
-    in the prompt. Called without it the summary has no length target, as before.
+    history budget, which becomes a word cap in the prompt. :meth:`MemoryLoop.flush_summary`
+    passes it only when the session sets ``summary_length_target``; a cap costs detail (see
+    :data:`SUMMARY_LENGTH_HINT`). Called without it the summary has no length target.
     """
     def summarize(messages: list[dict], max_tokens: int | None = None) -> Any:
         return call_model([{"role": "system", "content": prompt + summary_length_hint(max_tokens)},
@@ -169,7 +172,7 @@ class MemoryLoop:
                  causal_hops: tuple[int, int] | None = None,
                  max_history_tokens: int | None = None, keep_tail_tokens: int | None = None,
                  summarizer: Callable[[list[dict]], str] | None = None,
-                 summarize_in_background: bool = False,
+                 summarize_in_background: bool = False, summary_length_target: bool = False,
                  count_tokens: Callable[[str], int] | None = None,
                  observe_user: bool = True, observe_assistant: bool = True,
                  resolve_conflicts: bool = False, redact: Callable[[str], str | None] | None = None,
@@ -194,6 +197,10 @@ class MemoryLoop:
         # summary it already has and records what still needs summarising; that work runs
         # after the turn when background is on, or inline before the call when it is off.
         self.summarize_in_background = summarize_in_background
+        # Cap the summary at its share of the budget (summary_budget_tokens). Off by default:
+        # measured on a small model it keeps the summary nearer its share and loses detail
+        # doing it. Turn it on when the prompt must fit, not to keep the summary faithful.
+        self.summary_length_target = summary_length_target
         self.count_tokens = count_tokens or _approx_tokens
         self._summary: str | None = None
         self._pending: list[dict] | None = None
@@ -589,15 +596,15 @@ class MemoryLoop:
         return [{"role": "system", "content": self._summary}] + tail
 
     def _call_summarizer(self, older: list[dict]) -> Any:
-        """Call the summarizer with the summary's token budget when it takes one.
+        """Call the summarizer, with the summary's token cap when the session asked for one.
 
-        A summarizer written before the budget existed takes only the messages, and plenty of
+        A summarizer written before the cap existed takes only the messages, and plenty of
         them are lambdas that cannot be inspected, so an unexpected-keyword ``TypeError`` is
         retried without it. The retry is remembered: the fallback costs one call, not every call.
         """
         if self.summarizer is None:
             return None
-        budget = self.summary_budget_tokens
+        budget = self.summary_budget_tokens if self.summary_length_target else None
         if budget is None or self._summarizer_takes_budget is False:
             return self.summarizer(older)
         try:

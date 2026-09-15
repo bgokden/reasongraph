@@ -530,15 +530,20 @@ def test_the_summary_budget_is_the_history_budget_less_the_verbatim_tail():
 
 
 @pytest.mark.asyncio
-async def test_the_summarizer_is_told_how_much_room_the_summary_has():
-    """Without a target the model picks its own length and compresses what it wrote last fold."""
+async def test_the_summary_is_capped_only_when_the_session_asks_for_it():
+    """A cap keeps the summary near its share and costs detail getting there, so it is opt-in."""
     from reasongraph.loop import make_summarizer
-    seen = {}
-    summarize = make_summarizer(lambda msgs: seen.setdefault("sys", msgs[0]["content"]) and "merged")
-    loop = _loop(max_history_tokens=40, keep_tail_tokens=30, summarizer=summarize)
-    loop.fold_history([_turn("user", 40, "old"), _turn("assistant", 40, "older"), _turn("user", 40, "newest")])
-    assert await loop.flush_summary()
-    assert "about 20 words" in seen["sys"]      # 10 tokens of room, floored at 20 words
+
+    async def prompt_with(**kw):
+        seen = {}
+        summarize = make_summarizer(lambda msgs: seen.setdefault("sys", msgs[0]["content"]) and "merged")
+        loop = _loop(max_history_tokens=40, keep_tail_tokens=30, summarizer=summarize, **kw)
+        loop.fold_history([_turn("user", 40, "old"), _turn("assistant", 40, "older"), _turn("user", 40, "newest")])
+        assert await loop.flush_summary()
+        return seen["sys"]
+
+    assert "words" not in await prompt_with()                       # default: no length asked for
+    assert "about 20 words" in await prompt_with(summary_length_target=True)   # 10 tokens, floored
 
 
 @pytest.mark.asyncio
@@ -551,7 +556,8 @@ async def test_a_summarizer_that_predates_the_budget_still_works():
         calls.append(len(msgs))
         return "merged"
 
-    loop = _loop(max_history_tokens=40, keep_tail_tokens=30, summarizer=old_style)
+    loop = _loop(max_history_tokens=40, keep_tail_tokens=30, summarizer=old_style,
+                 summary_length_target=True)
     history = [_turn("user", 40, "old"), _turn("assistant", 40, "older"), _turn("user", 40, "newest")]
     loop.fold_history(history)
     assert await loop.flush_summary() == "Summary of earlier messages in this conversation:\nmerged"
@@ -566,7 +572,8 @@ async def test_a_type_error_from_inside_the_summarizer_is_not_read_as_a_bad_sign
     def broken(msgs, max_tokens=None):
         raise TypeError("unsupported operand type(s) for +: 'int' and 'str'")
 
-    loop = _loop(max_history_tokens=40, keep_tail_tokens=30, summarizer=broken)
+    loop = _loop(max_history_tokens=40, keep_tail_tokens=30, summarizer=broken,
+                 summary_length_target=True)
     loop.fold_history([_turn("user", 40, "old"), _turn("assistant", 40, "older"), _turn("user", 40, "newest")])
     assert await loop.flush_summary() is None  # the previous summary survives; nothing is retried
     assert loop._summarizer_takes_budget is None

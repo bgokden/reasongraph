@@ -351,6 +351,7 @@ loop = MemoryLoop(
     max_history_tokens=6000,        # fold once the transcript passes this
     keep_tail_tokens=2000,          # this much of the newest talk stays word for word
     summarizer=my_model,            # fn(messages, max_tokens=None) -> str; omit and old turns are dropped
+    summary_length_target=False,    # cap the summary at its share of the budget; costs detail
     summarize_in_background=True,   # summarise after the reply, never before it
 )
 ```
@@ -365,12 +366,21 @@ the summarizer runs rarely, and a conversation that never reaches the budget nev
 The next fold takes the previous summary in with the newly-aged messages, so summaries merge instead
 of stacking.
 
-**Why the summary is given a length.** The summary and the verbatim tail share `max_history_tokens`,
-so what is left once the tail is counted is the room the summary has: `loop.summary_budget_tokens`.
-A model not told that room picks its own length, and since every fold hands it its own last summary
-to merge, it compresses what it already wrote — detail bleeds out one fold at a time. The loop passes
-the budget as `max_tokens`, and `make_summarizer` turns it into a word target in the prompt. A
-summarizer that takes only `messages` still works; it is simply called without the target.
+**What the summary costs, and why it is not capped by default.** The summary and the verbatim tail
+share `max_history_tokens`, so what is left once the tail is counted is the room the summary has:
+`loop.summary_budget_tokens`. Nothing makes the model respect it. Measured on qwen2.5 7B over eight
+folds with a 110-token share, keeping a list of 17 details that a later reply could need:
+
+| | summary after 8 folds | details kept |
+| --- | --- | --- |
+| no length asked for (default) | 374 tokens | 17 of 17 |
+| `summary_length_target=True` | 228 tokens | 11 of 17 |
+
+Told a length, the model holds near it and drops detail to get there; told nothing, it keeps
+everything and overruns its share instead. Neither is free, so the choice is yours: the default
+keeps the detail, and `summary_length_target=True` passes `summary_budget_tokens` to the summarizer
+as `max_tokens` when the prompt has to fit. A summarizer that takes only `messages` still works
+either way. One model, one transcript, one seed — worth re-measuring on yours.
 
 **The summarizer is never on the hot path.** Folding uses the summary the session already has and
 records what still needs summarising. With `summarize_in_background` the work happens after the reply
