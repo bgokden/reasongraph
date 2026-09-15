@@ -12,8 +12,8 @@
 {"new": "Maria Lopez cancelled her subscription.", "old": "Maria Lopez reported an export bug in May.", "label": false, "kind": "complement"}
 {"new": "The export limit was raised to 500 MB.", "old": "The export limit is 50 MB.", "label": true, "kind": "value update"}
 {"new": "The export limit was raised to 500 MB.", "old": "Exports are delivered as ZIP files.", "label": false, "kind": "complement"}
-{"new": "Frankfurt airport staff called off Friday's strike.", "old": "Frankfurt airport staff will strike on Friday.", "label": true, "kind": "reversal"}
-{"new": "Frankfurt airport staff called off Friday's strike.", "old": "Berk flies through Frankfurt on Friday.", "label": false, "kind": "complement"}
+{"new": "The Frankfurt data centre cancelled Friday's maintenance.", "old": "The Frankfurt data centre has maintenance on Friday.", "label": true, "kind": "reversal"}
+{"new": "The Frankfurt data centre cancelled Friday's maintenance.", "old": "Idris starts the pricing page rollout in the Frankfurt region on Friday.", "label": false, "kind": "complement"}
 {"new": "TSMC paused construction of the Phoenix plant.", "old": "TSMC is building a plant in Phoenix.", "label": true, "kind": "state change"}
 {"new": "TSMC paused construction of the Phoenix plant.", "old": "TSMC supplies Apple with M-series chips.", "label": false, "kind": "complement"}
 {"new": "The default model is now Qwen 3.8.", "old": "The default model is GPT-OSS 20B.", "label": true, "kind": "replacement"}
@@ -22,8 +22,8 @@
 {"new": "Dana works remotely from Lisbon.", "old": "Dana leads the platform team.", "label": false, "kind": "complement"}
 {"new": "The project deadline slipped to 30 November.", "old": "The project deadline is 31 October.", "label": true, "kind": "schedule update"}
 {"new": "The project deadline slipped to 30 November.", "old": "The project has three milestones.", "label": false, "kind": "complement"}
-{"new": "Berk prefers window seats.", "old": "Berk prefers aisle seats.", "label": true, "kind": "preference update"}
-{"new": "Berk prefers window seats.", "old": "Berk prefers direct flights.", "label": false, "kind": "complement"}
+{"new": "Idris prefers morning deploys.", "old": "Idris prefers evening deploys.", "label": true, "kind": "preference update"}
+{"new": "Idris prefers morning deploys.", "old": "Idris prefers to postpone a rollout when the first region is at risk.", "label": false, "kind": "complement"}
 {"new": "The database was migrated to Postgres 17.", "old": "The database runs Postgres 16.", "label": true, "kind": "version update"}
 {"new": "The database was migrated to Postgres 17.", "old": "The database is backed up nightly.", "label": false, "kind": "complement"}
 {"new": "Support hours are now 08:00 to 20:00.", "old": "Support hours are 09:00 to 17:00.", "label": true, "kind": "value update"}

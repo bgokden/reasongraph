@@ -65,7 +65,7 @@ PROBES = [
     ("reversed", "en", "The outage was caused by a lightning strike.", "lightning strike", "the outage"),
     ("reversed", "en", "Crop yields fell due to the prolonged drought.", "prolonged drought", "crop yields fell"),
     ("reversed", "en", "The company went bankrupt as a result of the fraud.", "the fraud", "bankrupt"),
-    ("reversed", "en", "Many flights were delayed owing to the storm.", "the storm", "flights were delayed"),
+    ("reversed", "en", "Many shipments were delayed owing to the storm.", "the storm", "shipments were delayed"),
 ]
 
 KINDS = ["explicit", "multilingual", "implicit", "reversed"]

@@ -390,9 +390,9 @@ async def test_dedup_merge_is_gated_on_entities():
     every entity of the new text may absorb it."""
     from reasongraph import ReasonGraph
     from test_causal import _fake_encode, _no_rerank
-    a = "Frankfurt airport ground staff announced a strike for Friday."
-    b = "Zurich airport ground staff announced a strike for Thursday."
-    c = "Frankfurt airport staff announced a Friday strike."
+    a = "Frankfurt data centre staff announced maintenance for Friday."
+    b = "Zurich data centre staff announced maintenance for Thursday."
+    c = "Frankfurt data centre staff announced Friday maintenance."
     def embed(x):   # b and c get a's vector: cosine 1.0, the dedup threshold is met
         enc = lambda t: _fake_encode(a if t in (b, c) else t)
         return [enc(t) for t in x] if isinstance(x, list) else enc(x)

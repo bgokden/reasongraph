@@ -24,10 +24,10 @@ SCENARIOS = {
         "support-bot": ["Maria Lopez reported that Bulk Export fails for files over 50 MB."],
         "product-notes": ["Bulk Export's size limit was lowered to 50 MB in the May release to cut storage costs."],
         "billing-bot": ["Maria Lopez downgraded to the Free plan in June."]}),
-    "travel": ("Anything I should know about Friday's trip?", {
-        "calendar": ["On Friday Berk flies from Amsterdam to San Francisco with a connection in Frankfurt."],
-        "news": ["Frankfurt airport ground staff announced a strike for Friday, which cancels most connecting flights."],
-        "preferences": ["Berk prefers direct flights when a connection is at risk."]}),
+    "ops": ("Anything I should know about Friday's pricing page rollout?", {
+        "calendar": ["On Friday Idris starts the rollout of the new pricing page to all EU customers, beginning with the Frankfurt region."],
+        "status": ["The Frankfurt data centre has maintenance on Friday that takes its database replicas offline, which blocks the pricing page rollout in the Frankfurt region."],
+        "preferences": ["Idris prefers to postpone a rollout when the first region is at risk."]}),
     "analyst": ("How does the Arizona water crisis affect Apple?", {
         "tech-report": ["TSMC is building a $40B chip plant in Phoenix, Arizona, that needs 10M gallons of water a day."],
         "environment": ["Arizona ordered water cuts for industrial users after Lake Mead hit a record low."],
