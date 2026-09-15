@@ -12,6 +12,13 @@ folder into your project, or install it by path from a checkout:
 npm install ./path/to/reasongraph/clients/typescript
 ```
 
+Releasing it (maintainers): `.github/workflows/publish-npm.yml` publishes on a `js-v<version>`
+tag with trusted publishing. One-time setup on npmjs.com: create the `reasongraph` package
+(first publish can be manual: `npm login && npm publish --access public` from this folder),
+then under the package's Settings, Trusted Publisher, add GitHub Actions with repository
+`bgokden/reasongraph`, workflow `publish-npm.yml`, environment `npm`. After that a release is:
+bump `version` here, `git tag js-v<version> && git push origin js-v<version>`.
+
 ```ts
 import { Memory } from "reasongraph";
 

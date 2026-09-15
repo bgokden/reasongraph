@@ -1,0 +1,37 @@
+name: Publish the JavaScript client to npm
+
+# The client has its own version (clients/typescript/package.json), so it releases on its own
+# tag: js-v0.1.0. Trusted publishing (OIDC), like the PyPI workflow: no token to rotate, and
+# every release carries provenance. One-time setup on npmjs.com is in the repo's
+# clients/typescript/README.md.
+on:
+  push:
+    tags: ["js-v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    defaults:
+      run:
+        working-directory: clients/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing needs npm 11.5 or newer; the runner's bundled npm may be older.
+      - run: npm install -g npm@latest
+      - name: The tag matches the package version
+        run: |
+          want="${GITHUB_REF_NAME#js-v}"
+          have=$(node -p "require('./package.json').version")
+          echo "tag $want, package.json $have"
+          [ "$want" = "$have" ] || { echo "bump version in clients/typescript/package.json to $want"; exit 1; }
+      - run: npm test
+      - run: npm publish --access public --provenance
