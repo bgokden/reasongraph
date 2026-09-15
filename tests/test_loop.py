@@ -183,6 +183,58 @@ async def test_chain_facts_keep_their_slot_in_a_busy_memory():
         await g.close()
 
 
+# A vague question ("anything to watch before the next billing run?") seeds the symptom, which
+# asserts nothing, and the two explanations word the shared event differently with no tie
+# between them; the explanation itself ranks below plain facts that merely sound like the question.
+_INCIDENT = {
+    "The Aurora billing job started double-charging a handful of accounts.": None,
+    "The double-charging happened because the billing job ran twice whenever a payment retried.":
+        {"cause": "the billing job ran twice whenever a payment retried", "effect": "the double-charging"},
+    "The billing job ran twice because queue acknowledgements were turned off in the release config.":
+        {"cause": "queue acknowledgements were turned off in the release config", "effect": "the billing job ran twice"},
+}
+_BILLING_NOISE = ["The billing run usually finishes within two hours on a weekend.",
+                  "The finance team asked to move the monthly billing run to the first business day.",
+                  "A new export button was added to the billing summary page last week."]
+
+
+def _incident_causal(texts):
+    return [{"causal": bool(_INCIDENT.get(t)), "relations": [_INCIDENT[t]] if _INCIDENT.get(t) else []}
+            for t in texts]
+
+
+@pytest.mark.asyncio
+async def test_a_vague_question_reaches_the_root_through_the_symptom():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=_incident_causal,
+                    span_link_threshold=None)
+    g.embeddings.rerank = _no_rerank
+    g.bridge_min_score = g.bridge_walk_min_score = -1.0     # fake embeddings: the shared-word rule decides
+    symptom, explanation, root = list(_INCIDENT)
+    # what the embedder thinks of each fact against the question: noise and the symptom on top,
+    # the explanation below every plain fact, the root out of reach by wording
+    rank = {_BILLING_NOISE[0]: 0.6, _BILLING_NOISE[1]: 0.58, symptom: 0.55, _BILLING_NOISE[2]: 0.5,
+            explanation: 0.3, root: 0.1}
+    g.embeddings.score = lambda q, texts: [rank.get(t, 0.4) for t in texts]
+    await g.initialize()
+    try:
+        await g.add_texts(list(_INCIDENT) + _BILLING_NOISE, extractor=lambda t: [], scopes={"ops"})
+        question = "Anything I should watch for before the next billing run?"
+        block = await MemoryLoop(g, max_facts=4, top_k=4).recall(question)
+        got = [f["content"] for f in block.facts]
+        assert root in got and explanation in got, got
+        assert block.roots == ["queue acknowledgements were turned off in the release config"]
+        # the symptom the walk started from is not part of the chain: it keeps no chain slot,
+        # so with room for four the two chain facts come first and the symptom competes as filler
+        assert got[:2] == [explanation, root] or got[:2] == [root, explanation]
+        # off: the explanation is still traced (it asserts a relation, wherever it ranks), but
+        # the walk stops at the untied hop and the root fact never arrives
+        off = await MemoryLoop(g, max_facts=4, top_k=4, bridge_causes=False).recall(question)
+        assert root not in [f["content"] for f in off.facts]
+        assert off.roots == ["the billing job ran twice whenever a payment retried"]
+    finally:
+        await g.close()
+
+
 @pytest.mark.asyncio
 async def test_narrative_orders_the_chain_root_first_and_previous_turn_is_not_prepended():
     g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=_causal)

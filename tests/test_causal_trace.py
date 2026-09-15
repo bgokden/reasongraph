@@ -287,3 +287,53 @@ async def test_back_reference_links_a_note_to_the_one_before_it():
     on = await linked(resolve_back_references=True)
     assert notes[0] in on                                            # "this" is the note before it
     assert notes[2] not in on                                        # and nothing else is touched
+
+
+# --- bridged backward trace: a vague question seeds the symptom, not the explanation ---
+# Three facts of one incident, worded the way notes are: the symptom asserts nothing, the two
+# explanations name the same event differently, and nothing ties them (span_link off).
+_INCIDENT = {
+    "The Aurora billing job started double-charging a handful of accounts.": None,
+    "The double-charging happened because the billing job ran twice whenever a payment retried.":
+        {"cause": "the billing job ran twice whenever a payment retried", "effect": "the double-charging"},
+    "The billing job ran twice because queue acknowledgements were turned off in the release config.":
+        {"cause": "queue acknowledgements were turned off in the release config", "effect": "the billing job ran twice"},
+    # another team's incident that shares a word with the first cause span but is not its event
+    "The mail worker stopped retrying because the dead-letter queue was removed.":
+        {"cause": "the dead-letter queue was removed", "effect": "the mail worker stopped retrying"},
+}
+
+
+def _incident_causal(texts):
+    return [{"causal": bool(_INCIDENT.get(t)), "relations": [_INCIDENT[t]] if _INCIDENT.get(t) else []}
+            for t in texts]
+
+
+@pytest.mark.asyncio
+async def test_bridged_trace_starts_from_a_plain_fact_and_crosses_untied_hops():
+    g = ReasonGraph(backend=MemoryBackend(), embed_model=_fake_embed, causal_extractor=_incident_causal,
+                    span_link_threshold=None)
+    g.embeddings.rerank = _no_rerank
+    g.bridge_min_score = g.bridge_walk_min_score = -1.0   # fake embeddings: the shared-word rule decides
+    await g.initialize()
+    await g.add_texts(list(_INCIDENT), extractor=lambda t: [], scopes={"ops"})
+    try:
+        symptom = "The Aurora billing job started double-charging a handful of accounts."
+        # as shipped: a fact with no relation of its own has nothing to walk from
+        plain = await g.trace_causes(symptom, max_depth=3)
+        assert plain["chain"] == [] and plain["terminals"] == []
+        # bridged: the effect span that names the symptom's event starts the walk, and the
+        # walk continues from "the billing job ran twice whenever a payment retried" to the
+        # effect span "the billing job ran twice" although no same_as edge ties them
+        bridged = await g.trace_causes(symptom, max_depth=3, bridge=True)
+        hops = [(h["cause"], h["effect"]) for h in bridged["chain"]]
+        assert ("the billing job ran twice whenever a payment retried", "the double-charging") in hops
+        assert ("queue acknowledgements were turned off in the release config", "the billing job ran twice") in hops
+        assert bridged["terminals"] == ["queue acknowledgements were turned off in the release config"]
+        # the mail worker's incident shares no content word with any span on the path
+        assert not any("mail worker" in c or "dead-letter" in c for c, _ in hops)
+        # a walk confined to another scope finds no bridge at all
+        scoped = await g.trace_causes(symptom, max_depth=3, bridge=True, walk_scopes={"elsewhere"})
+        assert scoped["chain"] == []
+    finally:
+        await g.close()
