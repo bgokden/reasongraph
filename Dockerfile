@@ -1,6 +1,8 @@
-# reasongraph agent-memory service.
-# Build:  docker build -t reasongraph-service .
-# Run:    docker compose up   (Postgres-backed; see docker-compose.yml)
+# reasongraph agent-memory service, and the stdio MCP server from the same image.
+# Build:  docker build -t reasongraph .
+# HTTP:   docker compose up   (Postgres-backed; see docker-compose.yml)
+# MCP (stdio, for Claude Desktop / Cursor / Glama):
+#         docker run -i --rm -v ~/.reasongraph:/data -e REASONGRAPH_DATABASE_URL=/data/memory.sqlite reasongraph reasongraph-mcp
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -15,7 +17,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --upgrade pip && \
-    pip install ".[service,gliner,fastembed,postgres]"
+    pip install ".[service,gliner,fastembed,postgres,sqlite]"
 
 EXPOSE 8000
 

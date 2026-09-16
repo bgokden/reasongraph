@@ -1,5 +1,7 @@
 # ReasonGraph
 
+<!-- mcp-name: ai.primaxiom.memory/reasongraph -->
+
 A graph-based **memory for AI agents**: it ingests facts, auto-extracts entities and cause->effect relations, and discovers connections across independent documents *and* across agent sessions -- with conflict resolution, time-travel, causal tracing, and counterfactuals.
 
 [![PyPI version](https://img.shields.io/pypi/v/reasongraph?color=blue)](https://pypi.org/project/reasongraph/)
@@ -23,6 +25,13 @@ On top of retrieval it works as agent memory: **scopes/sessions** (agents discov
 ```bash
 claude mcp add --transport http memory https://memory.primaxiom.ai/mcp \
   --header "Authorization: Bearer rgm_YOUR_KEY"
+```
+
+**Local MCP server (stdio, everything on your machine, SQLite):**
+
+```bash
+pip install "reasongraph[service,gliner,fastembed,sqlite]"
+claude mcp add memory -- reasongraph-mcp
 ```
 
 **Python, in-process:**
