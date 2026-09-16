@@ -1404,11 +1404,13 @@ class ReasonGraph:
         reached_targets: set[str] = set()
         has_next: set[str] = set()
         via: dict[str, list[str]] = {}    # bridged alias -> spans it continues; a hop from the alias is a hop from them
+        bridges_left = self.bridge_budget if bridge else 0
 
         while frontier and len(visited_spans) <= max_visited:
             span, depth = frontier.popleft()
             if depth >= max_depth:
                 continue
+            continued = False      # did an edge or an alias take the walk on from here
             for n in await self.backend.get_neighbors(span, walk_scopes):
                 if n.get("type") == "text":
                     reached_facts.add(n["content"])
@@ -1417,6 +1419,7 @@ class ReasonGraph:
                     # An alias of this span (same event, different wording): continue
                     # the walk from it at the same depth without recording a hop.
                     alias = n["content"]
+                    continued = True
                     if alias not in visited_spans and len(visited_spans) < max_visited:
                         visited_spans.add(alias)
                         frontier.append((alias, depth))
@@ -1426,6 +1429,7 @@ class ReasonGraph:
                 other = n["content"]
                 if (span, other) in blocked_edges:
                     continue
+                continued = True
                 has_next.add(span)
                 pending = list(via.get(span, []))    # the spans this alias continues are no terminals either
                 while pending:
@@ -1438,24 +1442,31 @@ class ReasonGraph:
                 if other not in visited_spans and len(visited_spans) < max_visited:
                     visited_spans.add(other)
                     frontier.append((other, depth + 1))
-                    if bridge:
-                        # Same event, different wording, no same_as edge: continue from
-                        # spans of the opposite role that share a content word with this
-                        # one. Forward, an effect continues from cause spans; backward, a
-                        # cause ("the billing job ran twice whenever a payment retried")
-                        # continues from effect spans ("The billing job ran twice").
-                        role = "cause" if edge_dir == "out" else "effect"
-                        # a visited alias is not walked twice, but it is still recorded: a
-                        # cause that continues into a span with a next hop is no root
-                        for alias in await self._lexical_bridges(other, role=role,
-                                                                 min_score=self.bridge_walk_min_score,
-                                                                 scopes=walk_scopes):
-                            via.setdefault(alias, []).append(other)
-                            if alias in has_next:
-                                has_next.add(other)
-                            if alias not in visited_spans and len(visited_spans) < max_visited:
-                                visited_spans.add(alias)
-                                frontier.append((alias, depth + 1))
+            if bridge and not continued and bridges_left > 0 and depth + 1 < max_depth:
+                # Dead end: no edge and no same_as alias takes the walk on from this span.
+                # Same event, different wording, no same_as tie: continue from spans of the
+                # opposite role that share a content word with this one. Forward, an effect
+                # continues from cause spans; backward, a cause ("the billing job ran twice
+                # whenever a payment retried") continues from effect spans ("The billing
+                # job ran twice"). Bridging only where the walk would otherwise stop, a few
+                # aliases at a time and a few times per trace, is what keeps a busy graph's
+                # look-alike spans from pulling in foreign chains (R15) and keeps the cost
+                # near the plain walk's (R46): a span with a real next hop never bridges.
+                role = "cause" if edge_dir == "out" else "effect"
+                aliases = await self._lexical_bridges(span, role=role, min_score=self.bridge_walk_min_score,
+                                                      scopes=walk_scopes)
+                fresh = [a for a in aliases if a not in visited_spans][:self.bridge_fanout]
+                for alias in aliases:
+                    # a visited alias is not walked twice, but it is still recorded: a
+                    # cause that continues into a span with a next hop is no root
+                    via.setdefault(alias, []).append(span)
+                    if alias in has_next:
+                        has_next.add(span)
+                if fresh:
+                    bridges_left -= 1
+                for alias in fresh:
+                    visited_spans.add(alias)
+                    frontier.append((alias, depth + 1))
 
         return chain, reached_facts, reached_targets, has_next
 
@@ -1495,8 +1506,8 @@ class ReasonGraph:
             # describes ("They were throttled because the rate limiter ..."). Start from the
             # spans of other facts that name the same event: effect spans when walking back
             # to causes, cause spans when walking forward to consequences.
-            start = await self._lexical_bridges(origin, role="effect" if edge_dir == "in" else "cause",
-                                                scopes=walk_scopes)
+            start = (await self._lexical_bridges(origin, role="effect" if edge_dir == "in" else "cause",
+                                                 scopes=walk_scopes))[:self.bridge_fanout]
 
         chain, reached_facts, reached_targets, has_next = await self._causal_reach(
             start, edge_dir, max_depth=max_depth, walk_scopes=walk_scopes,
@@ -1588,6 +1599,13 @@ class ReasonGraph:
     #: "The worker stopped retrying"): at 0.55, 18 of 19 true span pairs pass and 1 of 52
     #: false ones, against 7 of 52 at 0.45. Measured on the multilingual MiniLM.
     bridge_walk_min_score: float = 0.55
+    #: Bounds on the bridged walk (``bridge=True``): at most this many aliases per dead
+    #: end, and at most this many dead ends bridged per trace. The gain the bridge is
+    #: for (a symptom leading to its explanation) needs one or two crossings; an unbounded
+    #: walk on a busy graph crosses into look-alike incidents and costs an order of
+    #: magnitude more (R46/R15).
+    bridge_fanout: int = 2
+    bridge_budget: int = 3
 
     @classmethod
     def _bridge_tokens(cls, text: str) -> set[str]:
@@ -1627,16 +1645,14 @@ class ReasonGraph:
             scores = [float(h["score"]) for h in cands]
         else:
             scores = self.embeddings.score(text, [h["content"] for h in cands])
-        out: list[str] = []
-        for h, score in zip(cands, scores):
-            cand = h["content"]
-            if score < floor or not (toks & self._bridge_tokens(cand)):
-                continue
-            neighbours = await self.backend.get_neighbors(cand, scopes)
-            want = "out" if role == "cause" else "in"
-            if any(n.get("label") == "causes" and n.get("direction") == want for n in neighbours):
-                out.append(cand)
-        return out
+        keep = [h["content"] for h, score in zip(cands, scores)
+                if score >= floor and (toks & self._bridge_tokens(h["content"]))]
+        if not keep:
+            return []
+        want = "out" if role == "cause" else "in"
+        neighbours = await self.backend.get_neighbors_many(keep, scopes)
+        return [cand for cand in keep
+                if any(n.get("label") == "causes" and n.get("direction") == want for n in neighbours.get(cand, []))]
 
     async def causal_chain(self, from_content: str, to_content: str, *, max_depth: int = 6,
                            scopes=None, isolate: bool | None = None,

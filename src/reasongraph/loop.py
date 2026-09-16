@@ -166,13 +166,18 @@ class MemoryLoop:
             relation of its own. A vague question ("anything to watch before the next
             billing run?") seeds the symptom ("the billing job started double-charging"),
             not the explanation; without the bridge the trace stops there.
+        max_trace_starts: how many recalled facts a recall traces from (the top three by
+            wording, then the other recalled facts that assert a relation, in recall order).
+            Each trace is a graph walk; unbounded, a busy recall set made one recall an
+            order of magnitude slower (R46).
         header: first line of the injected system message.
     """
 
     def __init__(self, graph, session: str = "chat", *, recall_scopes=None, max_facts: int = 8,
                  max_chars: int = 1600, top_k: int = 5, hops: int = 3, min_score: float = 0.1,
                  min_ratio: float = 0.45,
-                 extend_query: bool = True, bridge_causes: bool = True, rerank_min: float | None = None,
+                 extend_query: bool = True, bridge_causes: bool = True, max_trace_starts: int = 6,
+                 rerank_min: float | None = None,
                  search_mode: str | None = None,
                  causal_hops: tuple[int, int] | None = None,
                  max_history_tokens: int | None = None, keep_tail_tokens: int | None = None,
@@ -191,6 +196,7 @@ class MemoryLoop:
         self.hops = hops
         self.extend_query = extend_query
         self.bridge_causes = bridge_causes
+        self.max_trace_starts = max_trace_starts
         self.rerank_min = rerank_min
         # History folding: when the transcript passes max_history_tokens, the oldest messages
         # become one summary and the newest keep_tail_tokens stay verbatim. Folding a block at a
@@ -346,7 +352,7 @@ class MemoryLoop:
                 asserted = await self.graph._causal_of([f["content"] for f in found[3:]])
             except Exception:
                 asserted = {}
-            starts = list(found[:3]) + [f for f in found[3:] if asserted.get(f["content"])]
+            starts = (list(found[:3]) + [f for f in found[3:] if asserted.get(f["content"])])[:self.max_trace_starts]
             for f in starts:
                 try:
                     traced = await self.graph.trace_causes(f["content"], max_depth=self.hops,
