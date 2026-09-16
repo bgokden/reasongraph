@@ -67,6 +67,29 @@ jobs:
       - name: Postgres backend tests ran (not skipped)
         run: uv run pytest tests/test_postgres_backend.py -q -rs 2>&1 | tee /tmp/pg.txt; ! grep -q "SKIPPED" /tmp/pg.txt
 
+  # The langchain-reasongraph distribution is a thin package over reasongraph.integrations.langchain;
+  # its tests are LangChain's standard retriever tests, run against the checkout's reasongraph.
+  langchain-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.12
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ runner.os }}-py3.12-v1
+          restore-keys: hf-models-${{ runner.os }}-
+      - name: Install the package against this checkout
+        run: |
+          uv venv .venv-lc --python 3.12
+          uv pip install --python .venv-lc/bin/python -e ".[langchain]" -e "packages/langchain-reasongraph[test]"
+      - run: .venv-lc/bin/python -m pytest packages/langchain-reasongraph/tests -q
+
   # The JavaScript client ships to npm separately and has no build step, so its tests are
   # node's own runner plus one strict typecheck of the declarations against real usage.
   typescript-client:

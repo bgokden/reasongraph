@@ -37,3 +37,4 @@ uv.lock
 
 # Local scratch
 tmp/
+.venv-lc/

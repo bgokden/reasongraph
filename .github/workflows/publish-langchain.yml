@@ -1,0 +1,32 @@
+name: Publish langchain-reasongraph to PyPI
+
+# Tag `langchain-v<version>` (e.g. langchain-v0.1.0) to publish; the version in
+# packages/langchain-reasongraph/pyproject.toml must match. Needs the PyPI project
+# "langchain-reasongraph" to trust this workflow (trusted publishing, environment pypi).
+on:
+  push:
+    tags: ["langchain-v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    defaults:
+      run:
+        working-directory: packages/langchain-reasongraph
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.12
+      - name: Check the tag matches the package version
+        run: |
+          v=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          [ "langchain-v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != langchain-v$v"; exit 1; }
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/langchain-reasongraph/dist

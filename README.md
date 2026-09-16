@@ -694,6 +694,8 @@ exposes the same loop as `POST /chat`. Example agent: `examples/agents/memory_lo
 
 ## LangChain and LangGraph
 
+`pip install langchain-reasongraph` (the LangChain partner-style package, with LangChain's
+standard retriever tests; source in `packages/langchain-reasongraph`) or
 `pip install "reasongraph[langchain]"` adds three adapters that work with a local
 `ReasonGraph` or the hosted service through `reasongraph.client.MemoryClient`:
 
