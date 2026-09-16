@@ -613,7 +613,11 @@ ReasonGraph(causal_extractor=CausalPointerExtractor(
 `causal_chain` also bridges facts that phrase one event differently ("the system
 throttles performance" -> "Throttling performance", or a plain root fact whose
 words reappear in the next cause span), so directed chains survive wording changes
-even without `span_link_threshold`.
+even without `span_link_threshold`. `trace_causes(..., bridge=True)` walks back the same
+way: from a cause span to the effect spans of other facts that name its event ("the billing
+job ran twice whenever a payment retried" -> "The billing job ran twice"), and from a plain
+fact with no relation of its own to the effect spans that describe it, so a symptom someone
+noted ("the billing job started double-charging") leads to the explanation recorded later.
 
 Otherwise it falls back to the **hybrid** (`HybridCausalExtractor`): a fast,
 model-free multilingual **cue pass** handles explicit and reversed phrasing with
@@ -688,6 +692,10 @@ stores an exchange. Options: `max_facts` / `max_chars` (context budget), `min_sc
 cosine cannot tell "same topic" from "answers this", the reranker can; -4 with the
 default reranker), `extend_query` (when a why-question's chain ends in a root cause
 no recalled fact states, one more targeted query fetches the plain fact behind it),
+`bridge_causes` (on by default: the causal trace crosses facts that word one event
+differently and starts from a plain symptom, which is what a vague question such as
+"anything to watch before the next billing run?" seeds; on a busy 15-incident memory that
+took the root cause from 33% to 73% of such questions with the small production embedder),
 `observe_user` / `observe_assistant`, `redact` (a function that
 drops or rewrites text before it is stored), `resolve_conflicts`. The hosted service
 exposes the same loop as `POST /chat`. Example agent: `examples/agents/memory_loop_agent.py`.

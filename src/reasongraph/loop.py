@@ -161,13 +161,23 @@ class MemoryLoop:
         extend_query: when a why-question's chain ends in a root cause that no recalled
             fact states, run one more query with that root cause so the plain fact
             behind it (often the deepest, hardest one to retrieve) is pulled in too.
+        bridge_causes: let the causal trace cross facts that word one event differently
+            with no ``same_as`` tie between them, and start from a plain fact that has no
+            relation of its own. A vague question ("anything to watch before the next
+            billing run?") seeds the symptom ("the billing job started double-charging"),
+            not the explanation; without the bridge the trace stops there.
+        max_trace_starts: how many recalled facts a recall traces from (the top three by
+            wording, then the other recalled facts that assert a relation, in recall order).
+            Each trace is a graph walk; unbounded, a busy recall set made one recall an
+            order of magnitude slower (R46).
         header: first line of the injected system message.
     """
 
     def __init__(self, graph, session: str = "chat", *, recall_scopes=None, max_facts: int = 8,
                  max_chars: int = 1600, top_k: int = 5, hops: int = 3, min_score: float = 0.1,
                  min_ratio: float = 0.45,
-                 extend_query: bool = True, rerank_min: float | None = None,
+                 extend_query: bool = True, bridge_causes: bool = True, max_trace_starts: int = 6,
+                 rerank_min: float | None = None,
                  search_mode: str | None = None,
                  causal_hops: tuple[int, int] | None = None,
                  max_history_tokens: int | None = None, keep_tail_tokens: int | None = None,
@@ -185,6 +195,8 @@ class MemoryLoop:
         self.top_k = top_k
         self.hops = hops
         self.extend_query = extend_query
+        self.bridge_causes = bridge_causes
+        self.max_trace_starts = max_trace_starts
         self.rerank_min = rerank_min
         # History folding: when the transcript passes max_history_tokens, the oldest messages
         # become one summary and the newest keep_tail_tokens stay verbatim. Folding a block at a
@@ -329,19 +341,38 @@ class MemoryLoop:
             # retrieval misses most, and a small model answers with the nearest cause
             # unless the root is spelled out
             hops_seen: set[tuple] = set()
-            for f in found[:3]:
+            # The top three facts by wording plus every other recalled fact that asserts a
+            # relation of its own, in recall order: to a vague question the explanation
+            # ("results went stale because the index stopped receiving delete events") ranks
+            # below the facts that merely sound like the question, and a trace that starts
+            # only from the top three never sees it. Recall order matters because the chain
+            # and root caps below fill in trace order. One bounded lookup tells which facts
+            # carry relations.
+            try:
+                asserted = await self.graph._causal_of([f["content"] for f in found[3:]])
+            except Exception:
+                asserted = {}
+            starts = (list(found[:3]) + [f for f in found[3:] if asserted.get(f["content"])])[:self.max_trace_starts]
+            for f in starts:
                 try:
-                    traced = await self.graph.trace_causes(f["content"], max_depth=self.hops)
+                    traced = await self.graph.trace_causes(f["content"], max_depth=self.hops,
+                                                           bridge=self.bridge_causes)
                 except Exception:
                     continue
-                if traced.get("chain"):
+                # The origin keeps a slot as part of the chain only when it asserts one of
+                # its hops; a plain fact the bridge started from merely names the event.
+                if any(h.get("fact") == f["content"] for h in traced.get("chain", [])):
                     chain_ids.add(f["content"])
                 for h in traced.get("chain", []):
                     key = (h.get("cause"), h.get("effect"))
                     if key not in hops_seen and len(chain) < 8:
                         hops_seen.add(key); chain.append(h)
                 for r in traced.get("terminals", []):
-                    if r not in roots:
+                    # one root per event: the linker ties "a clock-skew fix shipped with the
+                    # wrong offset" to "clock-skew fix shipped with the wrong offset", and
+                    # both come back as terminals
+                    low = r.strip().lower()
+                    if not any(low in x.lower() or x.lower() in low for x in roots):
                         roots.append(r)
             for h in chain:                          # pull in the facts that assert those hops
                 fact = h.get("fact")
@@ -358,7 +389,10 @@ class MemoryLoop:
                     # part of the fact that asserts the last hop, and the plain fact behind
                     # it rarely repeats the span's words. The cosine gate below decides.
                     try:
-                        more = await self.graph.query_detailed(root, top_k=2, scopes=self.recall_scopes)
+                        # top_k=4, not 2: the root span is itself a node in the index and the
+                        # fact that asserts it is already in context, so the first two answers
+                        # are spoken for before the plain fact behind the root gets a slot
+                        more = await self.graph.query_detailed(root, top_k=4, scopes=self.recall_scopes)
                         more = [r for r in more if isinstance(r, dict)]
                         # query_detailed's score is the reranker's, not bounded: gate on the
                         # embedding cosine to the root span, as the first pass did to the question
@@ -369,12 +403,13 @@ class MemoryLoop:
                             more = [r for r, x in zip(more, sc) if x >= max(self.min_score, 0.35)]
                     except Exception:
                         continue
+                    added = 0
                     for r in more:
                         content = r["content"]
-                        if content not in seen:
+                        if content not in seen and added < 2:
                             found.append({"content": content, "scopes": sorted(r.get("scopes", [])),
                                           "path": [], "causes": [], "cross_session": False})
-                            seen.add(content); chain_ids.add(content)
+                            seen.add(content); chain_ids.add(content); added += 1
         # The deepest fact of the chain rarely states its own cause; the plain fact behind it
         # ("the boiler was switched off in April") shares a name with it and nothing else. One
         # entity hop from that fact, plain facts only (no causal relation of their own), cap 2.
