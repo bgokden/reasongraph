@@ -1135,6 +1135,11 @@ Other production controls:
   (`--fake` for model-free timing). Indicative real-model, in-memory numbers:
   query ~14ms, discover ~7ms, causal trace ~3ms p50.
 
+## Work with us
+
+Want ReasonGraph on your own data, as a hosted service ([memory.primaxiom.ai](https://memory.primaxiom.ai)), or inside your agents? **[PrimAxiom Labs](https://primaxiom.ai)** builds and runs AI systems for companies: a short paid scoping step, then a four-week pilot.
+Email **berk@primaxiom.ai** · [primaxiom.ai](https://primaxiom.ai)
+
 ## License
 
 MIT
