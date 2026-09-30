@@ -130,3 +130,7 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+
+[tool.uv]
+# CI runs on linux x86_64; keep resolution to versions that ship wheels there
+required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
